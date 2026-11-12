@@ -157,6 +157,8 @@ blimey run <show> … [--state-dir <folder>]                         # where sta
 blimey service install [--dry-run] <run arguments>                  # keep `blimey run <run arguments>` going under launchd
 blimey service uninstall
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
+blimey record <out.mid> [--midi-port IAC] [--until-stop] [--artnet <emu.dump> [--artnet-universe <n>]]
+blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run outputs>]
 ```
 
 `validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
@@ -195,6 +197,29 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 `blimey service install <run arguments>` checks the arguments as `run` would, then writes the launch agent `~/Library/LaunchAgents/app.blimey.engine.plist` and starts it. launchd starts the engine at login and restarts it within a second whenever it exits. Relative paths are taken from the folder the command ran in, and the engine's stdout and stderr go to `engine.log` in the state folder. Installing again replaces the agent; `--dry-run` prints the plist instead. `blimey service uninstall` stops and removes it.
 
 `scripts/fault-injection.sh [kill|midi|serial]` (macOS) checks recovery against the real binary, an emulated Enttec box on a pty and a virtual CoreMIDI port: killing the engine mid-song, dropping the MIDI port, unplugging the box.
+
+## Recording and soak
+
+`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, or with `--until-stop` at the first Stop after a Start or Continue. `--artnet <dump>` also records the ArtDmx packets received on UDP 6454 for one universe (`--artnet-universe`, default 0) to a [frame dump](frame-dump.md) on the same timeline: one line per packet, so times are not on the 25 ms grid.
+
+`blimey soak <setlist>` plays a setlist's songs back to back, 2 s apart and each starting on a frame, looped for `--hours` (default 4), through the same render loop as `run`. A setlist is a YAML file, paths relative to it:
+
+```yaml
+show: .                                  # the show folder
+songs:                                   # played in this order, then again
+  - recordings/tell-me.mid
+```
+
+In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen`, `--artnet`, `--edit`), or with `--emulated-enttec` through the real driver to an emulated box on a pseudo terminal. `--accelerated` runs on a fake clock with no outputs, as fast as the machine renders. It prints a report, writes it to `claude-artifacts/soak/<setlist>-<mode>-<unix time>.txt` and exits 1 if a check fails:
+
+| Check | Measured | Passes when |
+| --- | --- | --- |
+| frames | Frames sent a frame period (25 ms) or more after their deadline, plus frames the emulated box never received | None |
+| jitter | How late each frame went out after its deadline: p50, p99 and max, in 0.1 ms steps | p99 under 5 ms |
+| drift | Each song's frames, from the third pass on, against the same song in the second pass (the first starts from a fresh engine) | None differ |
+| memory | Process RSS from `ps`, about 20 times over the run | Peak after the first pass is at most 1 MiB above RSS at its end |
+
+It needs at least three passes. Memory is flat when it stays within 1 MiB: the engine keeps nothing from one frame to the next, so what remains is allocator noise, while a leak of 8 bytes a frame passes 1 MiB within an hour and of 1 byte a frame within 8 hours.
 
 ## HTTP API
 
