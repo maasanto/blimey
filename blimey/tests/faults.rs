@@ -130,6 +130,23 @@ fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
 
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
+fn engine_runs_without_its_state_folder() {
+    let device = EmulatedEnttec::plug_in();
+    let (port_name, scratch_dir) = scratch("state");
+    let not_a_folder = scratch_dir.join("a-file");
+    fs::write(&not_a_folder, "").unwrap();
+    let mut reaper = reaper(&port_name);
+    let _engine = Engine::start(&device, &port_name, &not_a_folder);
+    wait_for(&device, None);
+    send(&mut reaper, &SELECT_SONG);
+    send(&mut reaper, &BLUE_SNAP);
+
+    wait_for(&device, Some(BLUE_AT_FULL));
+    fs::remove_dir_all(scratch_dir).unwrap();
+}
+
+#[test]
+#[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
     let device = EmulatedEnttec::plug_in();
     let (port_name, state_dir) = scratch("midi");

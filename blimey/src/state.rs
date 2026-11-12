@@ -37,6 +37,13 @@ impl Default for SavedState {
 }
 
 impl SavedState {
+    pub fn of(status: &Status) -> SavedState {
+        SavedState {
+            song: status.song.clone(),
+            master: status.master,
+        }
+    }
+
     /// The channel-2 MIDI that takes a fresh engine to this state, due at once: the song's
     /// Program Change, then CC 7 for the master. Cues are not resumed: the engine waits for
     /// the next one.
@@ -94,22 +101,11 @@ impl StateFile {
         &self.saved
     }
 
-    /// Saves the song and master of `status` if they changed. Never fails: a write error is
-    /// reported once on stderr and retried on the next change.
-    pub fn record(&mut self, status: &Status) {
-        let state = SavedState {
-            song: status.song.clone(),
-            master: status.master,
-        };
-        if state == self.saved {
-            return;
-        }
+    /// Never fails: a write error is reported once until a write succeeds again.
+    pub fn save(&mut self, state: &SavedState) {
         let text = json!({ "song": state.song, "master": state.master }).to_string();
         match write_atomically(&self.path, &text) {
-            Ok(()) => {
-                self.saved = state;
-                self.is_failure_reported = false;
-            }
+            Ok(()) => self.is_failure_reported = false,
             Err(error) if !self.is_failure_reported => {
                 eprintln!("state: cannot write {}: {error}", self.path.display());
                 self.is_failure_reported = true;
@@ -129,7 +125,7 @@ fn parse(text: &str) -> Option<SavedState> {
 
 /// A crash mid-write leaves the old state or the new one.
 // ponytail: no fsync, which guards against power loss rather than a crash and would cost a disk
-// flush per frame during a master fade. Add one if power cuts ever lose the state.
+// flush per change during a master fade. Add one if power cuts ever lose the state.
 fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, text)?;
@@ -160,90 +156,6 @@ impl<M: MidiSource> MidiSource for Resumed<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blimey_engine::look::Look;
-    use blimey_engine::{FakeClock, FakeDmx, run};
-
-    const SHOW: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/shows/cues");
-
-    /// Records the state like `blimey run` does, and keeps the frames.
-    struct Persisted {
-        state: StateFile,
-        frames: FakeDmx,
-    }
-
-    impl blimey_engine::DmxSink for Persisted {
-        fn send(&mut self, at: Duration, frame: &blimey_engine::Frame) -> io::Result<()> {
-            self.frames.send(at, frame)
-        }
-
-        fn status(&mut self, status: &Status) {
-            self.state.record(status);
-        }
-    }
-
-    fn events(messages: &[&[u8]]) -> Vec<MidiEvent> {
-        messages
-            .iter()
-            .map(|message| MidiEvent {
-                at: Duration::ZERO,
-                message: message.to_vec(),
-            })
-            .collect()
-    }
-
-    /// Runs one frame of `show` after `messages`, recording the state in `dir`.
-    fn run_once(dir: &Path, show: &Show, messages: &[&[u8]]) -> blimey_engine::Frame {
-        let state = StateFile::open(dir);
-        let resume = state.saved().resume_events(show);
-        let mut sink = Persisted {
-            state,
-            frames: FakeDmx::default(),
-        };
-        let mut midi = Resumed::new(resume, Resumed::new(events(messages), NoMidi));
-        run(
-            &mut FakeClock::default(),
-            &mut midi,
-            show,
-            &Look::default(),
-            &mut sink,
-            1,
-        )
-        .unwrap();
-        sink.frames.frames[0].values
-    }
-
-    struct NoMidi;
-
-    impl MidiSource for NoMidi {
-        fn poll(&mut self, _until: Duration) -> Option<MidiEvent> {
-            None
-        }
-    }
-
-    #[test]
-    fn a_restarted_engine_resumes_the_song_and_master_and_waits_for_the_next_cue() {
-        let dir = std::env::temp_dir().join(format!("blimey-state-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let show = Show::load(Path::new(SHOW)).unwrap();
-        let blue_snap: &[u8] = &[0x91, 37, 127];
-
-        let before_restart = run_once(&dir, &show, &[&[0xC1, 1], &[0xB1, 7, 64], blue_snap]);
-        let after_restart = run_once(&dir, &show, &[]);
-        let next_cue = run_once(&dir, &show, &[blue_snap]);
-
-        assert_eq!(before_restart[0..4], [129, 0, 0, 255], "dimmer at 64/127");
-        assert_eq!(after_restart[0..4], [0, 0, 0, 0], "no cue resumed");
-        assert_eq!(next_cue, before_restart, "song and master resumed");
-        assert_eq!(
-            StateFile::open(&dir).saved(),
-            &SavedState {
-                song: Some("first".into()),
-                master: 64.0 / 127.0
-            }
-        );
-        fs::remove_dir_all(dir).unwrap();
-    }
 
     #[test]
     fn a_corrupt_state_file_gives_a_fresh_start() {
