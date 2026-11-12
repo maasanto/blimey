@@ -6,14 +6,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use blimey_engine::{MidiEvent, MidiSource, Show, Status};
+use blimey_engine::{MidiEvent, MidiSource, Show, Status, resume_messages};
 use serde_json::{Value, json};
 
 const FILE_NAME: &str = "state.json";
-const PROGRAM_CHANGE: u8 = 0xC1;
-const CONTROL_CHANGE: u8 = 0xB1;
-const MASTER_CONTROLLER: u8 = 7;
-const MIDI_DATA_MAX: f32 = 127.0;
 
 /// Where `blimey run` keeps its state and event log unless told otherwise: outside the show
 /// folder, which stays read-only in show mode.
@@ -45,22 +41,20 @@ impl SavedState {
     /// Program Change, then CC 7 for the master. Cues are not resumed: the engine waits for
     /// the next one.
     pub fn resume_events(&self, show: &Show) -> Vec<MidiEvent> {
-        let event = |message: Vec<u8>| MidiEvent {
-            at: Duration::ZERO,
-            message,
-        };
-        let mut events = Vec::new();
-        if let Some(name) = &self.song {
-            match show.songs.iter().find(|song| &song.name == name) {
-                Some(song) => events.push(event(vec![PROGRAM_CHANGE, song.program])),
-                None => eprintln!("state: the saved song {name:?} is not in the show; no song"),
+        let program = self.song.as_ref().and_then(|name| {
+            let song = show.songs.iter().find(|song| &song.name == name);
+            if song.is_none() {
+                eprintln!("state: the saved song {name:?} is not in the show; no song");
             }
-        }
-        if self.master < 1.0 {
-            let value = (self.master.clamp(0.0, 1.0) * MIDI_DATA_MAX).round() as u8;
-            events.push(event(vec![CONTROL_CHANGE, MASTER_CONTROLLER, value]));
-        }
-        events
+            Some(song?.program)
+        });
+        resume_messages(program, self.master)
+            .into_iter()
+            .map(|message| MidiEvent {
+                at: Duration::ZERO,
+                message,
+            })
+            .collect()
     }
 }
 

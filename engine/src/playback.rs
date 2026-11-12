@@ -111,6 +111,21 @@ impl Default for Playback {
     }
 }
 
+/// The channel-2 MIDI that takes a fresh engine to the song with `program` and to `master`
+/// (0–1): its Program Change, then CC 7 unless the master is at full, where it starts.
+/// Cues are not part of it: after a restart the engine waits for the next one.
+pub fn resume_messages(program: Option<u8>, master: f32) -> Vec<Vec<u8>> {
+    let mut messages = Vec::new();
+    if let Some(program) = program {
+        messages.push(vec![CUE_PROGRAM_CHANGE, program]);
+    }
+    if master < 1.0 {
+        let value = (master.clamp(0.0, 1.0) * MIDI_DATA_MAX).round() as u8;
+        messages.push(vec![CUE_CONTROL_CHANGE, MASTER_CONTROLLER, value]);
+    }
+    messages
+}
+
 impl Playback {
     pub fn apply(&mut self, show: &Show, event: &MidiEvent) {
         if let Some(clock) = &mut self.clock {
