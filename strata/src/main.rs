@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use serialport::SerialPortType;
+use strata_engine::look::Look;
 use strata_engine::{MidiFile, MonotonicClock, Show, first_difference, format_dump, parse_dump};
 
 use crate::enttec::EnttecPro;
@@ -99,7 +100,14 @@ fn run(show_dir: &Path, midi_port: &str, dmx_port: String) -> Result<ExitCode, B
     let mut dmx = EnttecPro::new(dmx_port);
     eprintln!("strata: running {}; Ctrl-C to stop", show_dir.display());
     // u32::MAX frames at 40 Hz is over three years: in practice, until the process is stopped.
-    strata_engine::run(&mut clock, &mut midi, &show, &mut dmx, u32::MAX)?;
+    strata_engine::run(
+        &mut clock,
+        &mut midi,
+        &show,
+        &Look::default(),
+        &mut dmx,
+        u32::MAX,
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
