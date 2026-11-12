@@ -99,7 +99,7 @@ impl CueEntry {
 
 /// Builds a look from `{ <fixture or group>: { color: …, dimmer: … } }`, in file order, so a
 /// later target wins over an earlier one on the fixtures they share.
-pub(crate) fn resolve_look(show: &Show, values: &Mapping) -> Result<Look, String> {
+pub fn resolve_look(show: &Show, values: &Mapping) -> Result<Look, String> {
     let mut look = Look::default();
     for (target, settings) in values {
         let target = target

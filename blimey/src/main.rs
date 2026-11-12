@@ -403,7 +403,7 @@ fn fire(
     eprintln!("blimey: holding the look; Ctrl-C to stop");
     blimey_engine::run(
         &mut MonotonicClock::default(),
-        &mut NoMidi,
+        &mut StreamedMidi::new(NoMidi, output.stream.as_ref()),
         shows,
         &look,
         &mut output,
@@ -412,7 +412,7 @@ fn fire(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `fire` listens to no MIDI: the look alone drives the output.
+/// `fire` listens to no MIDI port; with `--listen`, MIDI posted to the API still plays.
 struct NoMidi;
 
 impl MidiSource for NoMidi {
@@ -433,7 +433,7 @@ impl DmxSink for LiveOutput {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
         let mut frame = *frame;
         if let Some(stream) = &self.stream {
-            stream.apply_test_flash(at, &mut frame);
+            stream.apply_overlays(at, &mut frame);
         }
         if let Some(dmx) = &mut self.dmx {
             dmx.send(at, &frame)?;

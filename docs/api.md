@@ -126,7 +126,7 @@ What the MIDI does (plan §5). Output depends only on the show and the MIDI rece
 
 Fades run from the note's timestamp, not from the next frame.
 
-**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`. When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
+**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`; an edited `bpm` sets the pace from the next frame, without moving musical time (the builder's metronome). When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
 
 Layers, lowest first: legacy notes, the safe look after panic, cues, then the master dimmer. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no fixture uses (legacy-only). Other channels, such as a shutter, keep their value.
 
@@ -165,11 +165,11 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 `run` survives losing its devices: a MIDI port that is missing at start, disappears or comes back as a new port with the same name is reconnected within about half a second, and an Enttec box that is unplugged is reopened on every frame until it is back. Both are reported on stderr.
 
-`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed, reloading the show in edit mode; the look keeps applying to the fixtures it names.
+`fire` goes through the same render loop as `blimey run`, with no MIDI port; with `--listen` in edit mode, MIDI posted to `POST /api/midi` still plays. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed, reloading the show in edit mode; the look keeps applying to the fixtures it names.
 
 `--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
 
-**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses edits and fixture tests with `403`. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may save show files and test fixtures. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
+**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, cue edits, undo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
 `--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
@@ -198,20 +198,64 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 ## HTTP API
 
-Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file or fixture), `403` (show mode), `422` (content refused) or `500`.
+Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, or a file changed since the save to undo), `422` (content refused) or `500`.
+
+### Show summary: `GET /api/show`
+
+What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each.
+
+```json
+{ "palettes": { "deep-blue": "#0028ff" }, "songs": [{ "name": "tell-me", "program": 3 }] }
+```
 
 ### Show files: `GET` and `PUT /api/show/<file>`
 
-The one path through which the UI, and later agents, change show files. `<file>` is a path in the show folder; today only `rig.yaml`. The body of both is the file's content as JSON, in the shape of its schema.
+The one path through which the UI, and later agents, change show files. `<file>` is a path in the show folder: `rig.yaml` or `songs/<name>.yaml`, a name of letters, digits, `-` and `_`. The body of both is the file's content as JSON, in the shape of its schema, keys in file order (a look's entries apply in order).
 
-`PUT` replaces the file (`204` on success):
+`PUT` replaces the file, or creates a song (`204` on success):
 
-1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader, the same checks as at start-up. Either refusal is a `422` naming the problem, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1`, and leaves the file untouched.
-2. The file is written in canonical form: block-style YAML with fields in a fixed order. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form.
+1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader against the rest of the show on disk, the same checks as at start-up. Either refusal is a `422` naming the problem, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/other.yaml: program 3 already selects song "tell-me"`, and leaves the file untouched.
+2. The file is written in canonical form. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form, so an edit changes only the lines it touches.
+   - `rig.yaml`: block-style YAML with fields in a fixed order.
+   - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.
 3. The write is atomic: a crash leaves the old file or the new one, never half of one.
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
-To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
+To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back. To set a song's metronome tempo, do the same with its `bpm`.
+
+### Cues: `PUT` and `DELETE /api/songs/<song>/cues/<note>`
+
+`PUT` saves one cue on a channel-2 note of `songs/<song>.yaml`, through the same checks and canonical write as `PUT /api/show/<file>` (`204`):
+
+```json
+{ "cue": { "name": "verse-blue", "type": "scene", "fade_in": "2s", "values": { "all-wash": { "color": "deep-blue" } } }, "replaces": 37 }
+```
+
+- `cue` is the cue as in the song file.
+- `replaces` is the note the cue had before, when editing one; the cue moves from it to `<note>`. Omit it, or send `null`, for a new cue.
+- A note that another cue already uses is refused with `409`: `songs/tell-me.yaml: note 36 already fires cue "verse-blue"; pick a free note, or edit that cue`. The engine never merges or overwrites a cue it wasn't asked to replace.
+
+`DELETE` removes the cue on `<note>` (`204`; `404` if there is none).
+
+### Undo: `POST /api/undo`
+
+Undoes the last save made through the API since the engine started, whichever file it was: `PUT /api/show/<file>` or a cue `PUT` or `DELETE`. The previous content goes back byte for byte, comments and formatting included, after the same checks as a write; a file the save created is removed. Returns `{ "file": "songs/tell-me.yaml" }`.
+
+One level only: a second undo, or one before any save, is a `404`. If the file has changed since the save (by hand, say), undo is refused with `409` rather than lose that change.
+
+### Look preview: `PUT` and `DELETE /api/preview`
+
+`PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. It stays until replaced or cleared by `DELETE`, or until the engine stops. Nothing is saved.
+
+### MIDI: `POST /api/midi`
+
+Plays one MIDI message as if it came in from the MIDI port, to audition cues without Reaper (`204`):
+
+```json
+{ "message": [145, 36, 127] }
+```
+
+`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
 ### Fixture test: `POST /api/fixtures/<name>/test`
 
@@ -281,4 +325,4 @@ The engine renders at 40 Hz. A slow client skips frames and always gets the late
 - `at_ms`: engine time the message arrived, on the same clock as `frame`.
 - `message`: the raw bytes, status byte first.
 
-Sent by `run` only, in arrival order, before the frame they affect. MIDI clock ticks (`F8`) and active sensing (`FE`) are left out; Start, Stop, Continue and Song Position are sent. A client more than 256 messages behind skips the oldest.
+Sent for MIDI from the port (`run`) and from `POST /api/midi`, in arrival order, before the frame they affect. MIDI clock ticks (`F8`) and active sensing (`FE`) are left out; Start, Stop, Continue and Song Position are sent. A client more than 256 messages behind skips the oldest.

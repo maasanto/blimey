@@ -5,7 +5,8 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -13,6 +14,7 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
+use blimey_engine::look;
 use blimey_engine::rig::Rig;
 use blimey_engine::{DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status};
 use serde_json::{Value, json};
@@ -20,7 +22,10 @@ use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, watch};
 
-use crate::api::{self, Api, Mode, TestFlash};
+use crate::api::{self, Api, Mode, Preview, TestFlash};
+
+/// MIDI posted to the API, waiting for the render loop.
+type InjectedMidi = Arc<Mutex<Receiver<Vec<u8>>>>;
 use crate::ui;
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -38,6 +43,8 @@ pub struct StreamSink {
     status: Status,
     frames: watch::Sender<Arc<str>>,
     midi: broadcast::Sender<Arc<str>>,
+    injected_midi: InjectedMidi,
+    preview: Preview,
     test_flash: TestFlash,
     /// Serves the stream; dropping the sink stops it.
     _server: Runtime,
@@ -67,6 +74,8 @@ impl StreamSink {
         let (frames, receiver) = watch::channel(Arc::from(""));
         let (midi, _) = broadcast::channel(MIDI_BACKLOG);
         let test_flash = TestFlash::default();
+        let preview = Preview::default();
+        let (inject_midi, injected_midi) = mpsc::channel();
         let stream = Stream {
             rig: rig.clone(),
             mode,
@@ -81,6 +90,9 @@ impl StreamSink {
                 mode,
                 rig: rig.clone(),
                 test_flash: test_flash.clone(),
+                preview: preview.clone(),
+                midi: inject_midi,
+                last_save: Default::default(),
             }))
             .fallback(ui::serve);
         server.spawn(async move {
@@ -93,14 +105,26 @@ impl StreamSink {
             status: Status::default(),
             frames,
             midi,
+            injected_midi: Arc::new(Mutex::new(injected_midi)),
+            preview,
             test_flash,
             _server: server,
         })
     }
 
-    /// Draws a fixture test started from the UI over `frame`, if one is running.
-    pub fn apply_test_flash(&self, at: Duration, frame: &mut Frame) {
-        self.test_flash.apply(&self.rig.borrow(), at, frame);
+    /// Draws what the UI puts above every layer over `frame`: the builder's look, then a
+    /// fixture test if one is running.
+    pub fn apply_overlays(&self, at: Duration, frame: &mut Frame) {
+        let rig = self.rig.borrow();
+        look::render(
+            &rig,
+            &self
+                .preview
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            frame,
+        );
+        self.test_flash.apply(&rig, at, frame);
     }
 }
 
@@ -148,10 +172,12 @@ impl<S: ShowSource> ShowSource for StreamedShow<S> {
     }
 }
 
-/// The engine's MIDI input, with every event it delivers sent to the stream as a `midi` message.
+/// The engine's MIDI input plus MIDI posted to the API, with every event it delivers sent to
+/// the stream as a `midi` message.
 pub struct StreamedMidi<M> {
     midi: M,
     log: Option<broadcast::Sender<Arc<str>>>,
+    injected: Option<InjectedMidi>,
 }
 
 impl<M> StreamedMidi<M> {
@@ -159,13 +185,26 @@ impl<M> StreamedMidi<M> {
         StreamedMidi {
             midi,
             log: stream.map(|stream| stream.midi.clone()),
+            injected: stream.map(|stream| stream.injected_midi.clone()),
         }
+    }
+
+    /// A posted message, stamped `until`: it acts on the frame that picks it up.
+    fn injected(&self, until: Duration) -> Option<MidiEvent> {
+        let injected = self.injected.as_ref()?;
+        let message = injected
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .try_recv()
+            .ok()?;
+        Some(MidiEvent { at: until, message })
     }
 }
 
 impl<M: MidiSource> MidiSource for StreamedMidi<M> {
+    /// Input events come first, so events stay in time order.
     fn poll(&mut self, until: Duration) -> Option<MidiEvent> {
-        let event = self.midi.poll(until)?;
+        let event = self.midi.poll(until).or_else(|| self.injected(until))?;
         if let Some(log) = self.log.as_ref().filter(|_| !is_ticking(&event.message)) {
             // Fails only when no client is connected.
             let _ = log.send(midi_message(&event).to_string().into());
@@ -288,25 +327,33 @@ mod tests {
     }
 
     #[test]
-    fn midi_events_are_streamed_except_clock_ticks() {
+    fn midi_events_and_posted_midi_are_streamed_except_clock_ticks() {
         let (log, mut streamed) = broadcast::channel(MIDI_BACKLOG);
+        let (post, posted) = mpsc::channel();
         let event = |ms, message: &[u8]| MidiEvent {
             at: Duration::from_millis(ms),
             message: message.to_vec(),
         };
-        let sent = vec![
+        let received = vec![
             event(1000, &[MIDI_TIMING_CLOCK]),
             event(1250, &[0x91, 36, 127]),
             event(1260, &[0xFA]),
         ];
+        post.send(vec![0x81, 36, 0]).unwrap();
         let mut midi = StreamedMidi {
-            midi: Events(sent.clone()),
+            midi: Events(received.clone()),
             log: Some(log),
+            injected: Some(Arc::new(Mutex::new(posted))),
         };
 
         let taken: Vec<MidiEvent> =
             std::iter::from_fn(|| midi.poll(Duration::from_secs(2))).collect();
-        assert_eq!(taken, sent, "the engine still gets every event");
+        let mut expected = received;
+        expected.push(event(2000, &[0x81, 36, 0]));
+        assert_eq!(
+            taken, expected,
+            "the engine gets every event, posted ones after the input's, at the frame that takes them"
+        );
 
         let messages: Vec<Value> = std::iter::from_fn(|| streamed.try_recv().ok())
             .map(|message| serde_json::from_str(&message).unwrap())
@@ -316,6 +363,7 @@ mod tests {
             [
                 json!({ "type": "midi", "at_ms": 1250, "message": [0x91, 36, 127] }),
                 json!({ "type": "midi", "at_ms": 1260, "message": [0xFA] }),
+                json!({ "type": "midi", "at_ms": 2000, "message": [0x81, 36, 0] }),
             ]
         );
     }
