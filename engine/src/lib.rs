@@ -208,9 +208,9 @@ impl DmxSink for FakeDmx {
 
 /// Renders `frame_count` frames, frame N due at N × `FRAME_PERIOD` on `clock`.
 ///
-/// Layers, lowest first (plan §5): legacy notes, `look` on the fixtures it sets, cues (pixel
-/// cues among them), then the master dimmer. Each frame renders at its deadline, so fades depend only on event
-/// timestamps. Deadlines are absolute, so a late frame never shifts the ones after it.
+/// Layers, lowest first (plan §5): legacy notes, `look` on the fixtures it sets, cues, pixel
+/// cues, then the master dimmer. Each frame renders at its deadline, so fades depend only on
+/// event timestamps. Deadlines are absolute, so a late frame never shifts the ones after it.
 pub fn run(
     clock: &mut impl Clock,
     midi: &mut impl MidiSource,

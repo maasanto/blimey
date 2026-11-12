@@ -376,12 +376,44 @@ impl Rig {
             .collect()
     }
 
-    /// The colour each pixel shows for a DMX frame, white and dimmer folded in, for previews.
-    pub fn pixel_colours<'rig>(&'rig self, frame: &Frame) -> Vec<(&'rig str, Vec<Rgb>)> {
+    /// The colour each pixel of each fixture, then each grid, shows for a frame on the Enttec
+    /// universe (`frame`) and the Art-Net ones (`artnet`, dark where missing), white and dimmer
+    /// folded in, for previews.
+    pub fn pixel_colours<'rig>(
+        &'rig self,
+        frame: &Frame,
+        artnet: &ArtNetFrames,
+    ) -> Vec<(&'rig str, Vec<Rgb>)> {
+        let dark = [0; DMX_CHANNELS];
+        let grid_colours = |grid: &'rig PixelGrid| {
+            let colours = grid.pixels.iter().map(|pixel| {
+                let universe = match pixel.universe {
+                    Universe::Enttec => frame,
+                    Universe::ArtNet(port_address) => artnet.get(&port_address).unwrap_or(&dark),
+                };
+                emitted(pixel.channels, 1.0, |channel| universe[channel])
+            });
+            (grid.name.as_str(), colours.collect())
+        };
         self.fixtures
             .iter()
             .map(|fixture| (fixture.name.as_str(), fixture.pixel_colours(frame)))
+            .chain(self.grids.iter().map(grid_colours))
             .collect()
+    }
+}
+
+/// What a pixel shows: its white added to red, green and blue, scaled by `dimmer`, clipped at
+/// full. `value` reads a channel.
+fn emitted(channels: PixelChannels, dimmer: f32, value: impl Fn(usize) -> u8) -> Rgb {
+    let level =
+        |channel: Option<usize>| channel.map_or(0.0, |channel| f32::from(value(channel)) / 255.0);
+    let white = level(channels.white);
+    let lit = |colour: Option<usize>| ((level(colour) + white) * dimmer).min(1.0);
+    Rgb {
+        red: lit(channels.red),
+        green: lit(channels.green),
+        blue: lit(channels.blue),
     }
 }
 
@@ -420,23 +452,13 @@ impl Fixture {
     }
 
     fn pixel_colours(&self, frame: &Frame) -> Vec<Rgb> {
-        let level = |offset: Option<usize>| {
-            offset.map_or(0.0, |offset| {
-                f32::from(frame[self.address - 1 + offset]) / 255.0
-            })
-        };
-        let dimmer = self.dimmer.map_or(1.0, |offset| level(Some(offset)));
+        let value = |offset: usize| frame[self.address - 1 + offset];
+        let dimmer = self
+            .dimmer
+            .map_or(1.0, |offset| f32::from(value(offset)) / 255.0);
         self.pixels
             .iter()
-            .map(|pixel| {
-                let white = level(pixel.channels.white);
-                let lit = |colour: Option<usize>| ((level(colour) + white) * dimmer).min(1.0);
-                Rgb {
-                    red: lit(pixel.channels.red),
-                    green: lit(pixel.channels.green),
-                    blue: lit(pixel.channels.blue),
-                }
-            })
+            .map(|pixel| emitted(pixel.channels, dimmer, value))
             .collect()
     }
 }
@@ -778,6 +800,26 @@ mod tests {
             error("columns: 2, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0.5, y: 0, width: 0.6 }")
                 .ends_with("leaves the 0-1 stage canvas")
         );
+    }
+
+    #[test]
+    fn the_canonical_form_keeps_a_grid_and_reads_back_the_same() {
+        let content = serde_json::json!({ "fixtures": [{
+            "canvas": { "height": 1, "width": 1, "x": 0, "y": 0 },
+            "address": 1, "universe": 2, "output": "artnet", "wiring": "serpentine",
+            "colour_order": "WGRB", "rows": 2, "columns": 3, "type": "pixel-grid", "name": "wall"
+        }] });
+
+        let yaml = canonical_yaml(content).unwrap();
+
+        assert!(
+            yaml.starts_with("fixtures:\n- name: wall\n  type: pixel-grid\n  columns: 3\n"),
+            "{yaml}"
+        );
+        assert!(yaml.contains("colour_order: WGRB\n"), "{yaml}");
+        let rig = Rig::parse(&yaml, Path::new(".")).unwrap();
+        assert_eq!(rig.grids[0].pixels.len(), 6);
+        assert_eq!(rig.grids[0].pixels[0].universe, Universe::ArtNet(2));
     }
 
     #[test]

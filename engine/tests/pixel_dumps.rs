@@ -2,7 +2,7 @@
 //! `tests/fixtures/dumps/pixel/<rig>/<shape>-<effect>.dump`, plus the mapping and determinism
 //! checks behind them.
 //!
-//! Each case selects a 150 BPM song and fires one pixel cue at 0 ms: red, width 0.5, speed
+//! Each case selects a 150 BPM song and fires one pixel cue at 0 ms: red, width 0.25, speed
 //! 0.25 beats (100 ms, 4 frames), seed 7. A reference holds those 4 frames: one cycle.
 //! Regenerate the references, after checking the change is wanted, with
 //! `BLIMEY_BLESS=1 cargo test -p blimey-engine --test pixel_dumps`.
@@ -46,19 +46,28 @@ impl MidiSource for Events {
 /// Renders `frames` frames of `rig` with `cue` (the YAML body of a pixel cue, indented 4)
 /// fired at `fired_at`.
 fn render(rig: &str, cue: &str, fired_at: Duration, frames: u32) -> Vec<RecordedFrame> {
+    let cues = format!("  {CUE_NOTE}:\n    name: pixels\n    type: pixel\n{cue}");
+    render_song(rig, &cues, &[(fired_at, CUE_NOTE)], frames)
+}
+
+/// Renders a 150 BPM song holding `cues` (the YAML under `cues:`), firing each note at its time.
+fn render_song(rig: &str, cues: &str, notes: &[(Duration, u8)], frames: u32) -> Vec<RecordedFrame> {
     let mut show = Show::load(Path::new(&format!("{FIXTURES}/shows/{rig}"))).unwrap();
-    let song = format!(
-        "program: 1\nbpm: 150\ncues:\n  {CUE_NOTE}:\n    name: pixels\n    type: pixel\n{cue}"
-    );
+    let song = format!("program: 1\nbpm: 150\ncues:\n{cues}");
     show.songs = vec![Song::parse("pixels", &song, &show).unwrap()];
     let event = |at, message: &[u8]| MidiEvent {
         at,
         message: message.to_vec(),
     };
-    let mut midi = Events(VecDeque::from([
-        event(Duration::ZERO, &[0xC1, 1]),
-        event(fired_at, &[0x91, CUE_NOTE, 127]),
-    ]));
+    let mut midi = Events(
+        std::iter::once(event(Duration::ZERO, &[0xC1, 1]))
+            .chain(
+                notes
+                    .iter()
+                    .map(|&(at, note)| event(at, &[0x91, note, 127])),
+            )
+            .collect(),
+    );
     let mut sink = FakeDmx::default();
     run(
         &mut FakeClock::default(),
@@ -74,7 +83,7 @@ fn render(rig: &str, cue: &str, fired_at: Duration, frames: u32) -> Vec<Recorded
 
 fn matrix_cue(shape: &str, effect: &str) -> String {
     format!(
-        "    shape: {shape}\n    effect: {effect}\n    seed: 7\n    params: {{ color: \"#ff0000\", width: 0.5, speed: 0.25 beats }}\n"
+        "    shape: {shape}\n    effect: {effect}\n    seed: 7\n    params: {{ color: \"#ff0000\", width: 0.25, speed: 0.25 beats }}\n"
     )
 }
 
@@ -127,13 +136,7 @@ fn on_a_grid_every_case_lights_and_only_static_holds_still() {
             let holds_still = frames
                 .windows(2)
                 .all(|pair| pair[0].values == pair[1].values);
-            // One grid is a single turn of one-by-one, so travelling can't move it.
-            let travels_one_turn = shape == "one-by-one" && matches!(effect, "move" | "chase");
-            assert_eq!(
-                holds_still,
-                effect == "static" || travels_one_turn,
-                "{case}"
-            );
+            assert_eq!(holds_still, effect == "static", "{case}");
         }
     }
 }
@@ -172,6 +175,70 @@ fn a_gradient_lands_on_each_pixels_channels_in_wiring_and_colour_order() {
     // Pixel 171 is the 11th of row 11 from the top, which runs from the right as row 1 does.
     assert_eq!(frame.artnet[&2][0..3], bgr(5.0), "pixel 171");
     assert_eq!(frame.artnet.len(), 2);
+}
+
+/// The bottom row of the 8×8 grid, wired from the bottom left: whether each column is lit red.
+fn lit_columns(frame: &RecordedFrame) -> Vec<usize> {
+    (0..8)
+        .filter(|column| frame.values[column * 3 + 1] > 0)
+        .collect()
+}
+
+#[test]
+fn split_mirrors_one_bar_per_half_about_the_centre() {
+    let frames = render(
+        "pixel-grid-8x8",
+        &matrix_cue("split", "static"),
+        Duration::ZERO,
+        1,
+    );
+    assert_eq!(
+        lit_columns(&frames[0]),
+        [1, 2, 5, 6],
+        "a quarter of the canvas, mid-way in each half"
+    );
+
+    let cue = "    shape: split\n    effect: move\n    params: { color: \"#ff0000\", width: 0.25, speed: 800ms }\n";
+    let frames = render("pixel-grid-8x8", cue, Duration::ZERO, 32);
+    assert_eq!(lit_columns(&frames[0]), [3, 4], "together at the centre");
+    assert_eq!(
+        lit_columns(&frames[24]),
+        [0, 1, 6, 7],
+        "apart towards the edges"
+    );
+}
+
+#[test]
+fn one_by_one_steps_through_a_grid_column_by_column() {
+    let frames = render(
+        "pixel-grid-8x8",
+        &matrix_cue("one-by-one", "chase"),
+        Duration::ZERO,
+        4,
+    );
+
+    let columns: Vec<Vec<usize>> = frames.iter().map(lit_columns).collect();
+    assert_eq!(columns, [[1], [3], [5], [7]]);
+}
+
+/// Plan §5: legacy < cues < pixel < master, whatever order the notes come in.
+#[test]
+fn a_pixel_cue_draws_above_a_scene_fired_after_it() {
+    let cues = "  60: { name: red-pixels, type: pixel, params: { color: \"#ff0000\" } }\n  61: { name: blue-scene, type: scene, values: { all-wash: { color: \"#0000ff\" } } }\n";
+    let frames = render_song(
+        "four-washes",
+        cues,
+        &[(Duration::ZERO, 60), (Duration::from_millis(100), 61)],
+        8,
+    );
+    let wash_1 = |frame: &RecordedFrame| frame.values[0..4].to_vec();
+
+    assert_eq!(wash_1(&frames[2]), [255, 0, 0, 0], "the pixel cue alone");
+    assert_eq!(
+        wash_1(&frames[6]),
+        [255, 0, 0, 0],
+        "the scene fired later stays under it"
+    );
 }
 
 #[test]

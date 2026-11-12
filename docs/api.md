@@ -155,7 +155,7 @@ The effect is worked out in RGB at each pixel's canvas position, then converted 
 | --- | --- | --- |
 | `color` | Palette name or `#rrggbb`: the lit colour | white |
 | `background` | Palette name or `#rrggbb`: where the shape isn't lit | black |
-| `width` | Above 0, up to 1, of the canvas: a bar's or ring's thickness, a chase's step | 1 |
+| `width` | Above 0, up to 1, of the canvas: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
 | `speed` | Duration of one cycle, any unit; beats and bars follow the tempo | `1 bar` |
 | `direction` | `left-to-right` (as seen from the audience: stage right to stage left), `right-to-left`, `bottom-to-top` (floor up), `top-to-bottom` | `left-to-right` |
 | `phase` | Offset in cycles: shifts a moving effect in time, a static shape along its travel | 0 |
@@ -168,9 +168,9 @@ Shapes, each with a position along its travel from 0 to 1:
 | `bar` | A band `width` wide across the direction, centred on the position |
 | `sweep` | Everything from the start edge up to the position: a wipe |
 | `circle` | A ring `width` thick around the canvas centre, at the position as a fraction of the distance to the corners: growing for `left-to-right` and `bottom-to-top`, shrinking for the other two |
-| `split` | Two bands mirrored about the centre line across the direction: moving apart for `left-to-right` and `bottom-to-top`, together for the other two |
+| `split` | The canvas split into halves mirrored about the centre line across the direction, with a bar `width` wide in each: the two bars travel from the centre out to the edges for `left-to-right` and `bottom-to-top`, from the edges in for the other two |
 | `gradient` | A ramp from `background` to `color` along the direction, scrolled by the position |
-| `one-by-one` | One fixture or grid at a time, in order of where its pixels sit along the direction |
+| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down |
 
 Effects, each repeating once per `speed`, counted from the note:
 
@@ -204,9 +204,9 @@ What the MIDI does (plan §5). Output depends only on the show and the MIDI rece
 
 Fades run from the note's timestamp, not from the next frame.
 
-**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`. When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
+**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`. When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top, except that pixel cues always draw above the others.
 
-Layers, lowest first: legacy notes, the safe look after panic, cues, then the master dimmer. Pixel cues stack with the other cues in firing order. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no profiled fixture uses (legacy-only, and pixel grids, on every Art-Net universe too). Other channels, such as a shutter, keep their value.
+Layers, lowest first (plan §5): legacy notes, the safe look after panic, scene, swell and pattern cues, pixel cues, then the master dimmer. Within the cue and pixel layers, a cue fired later draws over earlier ones. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no profiled fixture uses (legacy-only, and pixel grids, on every Art-Net universe too). Other channels, such as a shutter, keep their value.
 
 ## Looks
 
@@ -316,6 +316,9 @@ Server to client only, one JSON object per text message. Every message has a `ty
       "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"]
     }
   ],
+  "grids": [
+    { "name": "back-grid", "pixels": [{ "x": 0.21875, "y": 0.525 }, "…"] }
+  ],
   "groups": { "all-wash": ["wash-1", "wash-2", "wash-3", "wash-4"] }
 }
 ```
@@ -323,7 +326,8 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `protocol` is bumped only by a breaking change to this stream.
 - `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
-- `pixels` are canvas positions, in pixel order.
+- `pixels` are canvas positions, in pixel order; for a grid, in wiring order.
+- `grids`: the rig's [pixel grids](#rigyaml), apart from `fixtures` since they have no profile, mode or single address.
 
 ### `frame`: the output, after each rendered frame
 
@@ -342,7 +346,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 
 - `at_ms`: engine time when the frame was output, in milliseconds.
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
-- `pixels`: per fixture, the colour each pixel shows, in the same order as the `rig` message. It is computed from `dmx` (white added to R, G and B, then the dimmer channel applied), so the preview always matches the output.
+- `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `song`: the selected song's name, or `null`.
 - `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off.
 - `master`: the master dimmer, 0–1.

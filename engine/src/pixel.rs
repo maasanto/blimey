@@ -5,6 +5,7 @@
 //! count cycles of their `speed` from the note, and sparkle draws from a hash of the cue's seed,
 //! the pixel's position and the cycle, never from running state.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -41,12 +42,14 @@ pub enum Shape {
     /// A ring `width` thick around the canvas centre: outward for left-to-right and
     /// bottom-to-top, inward for right-to-left and top-to-bottom.
     Circle,
-    /// Two bands mirrored about the centre line: apart for left-to-right and bottom-to-top,
+    /// The canvas split into halves mirrored about the centre line, a bar `width` wide in each:
+    /// moving apart, from the centre to the edges, for left-to-right and bottom-to-top, and
     /// together for right-to-left and top-to-bottom.
     Split,
     /// A ramp from the background colour to `color` along the direction.
     Gradient,
-    /// One fixture or grid at a time, in order along the direction.
+    /// One cell at a time, in order along the direction: each fixture, and each line of a grid
+    /// across the direction.
     OneByOne,
 }
 
@@ -276,8 +279,10 @@ struct LayerFrame<'scene> {
     /// The pulse curve's level now; 1 for other effects.
     level: f64,
     seed: u64,
-    /// For one-by-one: each fixture's then each grid's turn, from 0, in order along the travel.
-    turns: Vec<usize>,
+    /// Units below this are fixtures; from it on, grids.
+    fixture_count: usize,
+    /// For one-by-one: each cell's turn, from 0, in order along the travel.
+    turns: BTreeMap<Cell, usize>,
 }
 
 impl Layer {
@@ -295,7 +300,7 @@ impl Layer {
             Effect::Static => (REST_POSITION + self.phase).rem_euclid(1.0),
             Effect::Move => within,
             Effect::Chase => {
-                let steps = (1.0 / self.width).round().max(1.0);
+                let steps = (1.0 / self.travel_width()).round().max(1.0);
                 ((within * steps).floor() + 0.5) / steps
             }
             Effect::Pulse | Effect::Sparkle => REST_POSITION,
@@ -310,36 +315,62 @@ impl Layer {
             cycles,
             level,
             seed,
+            fixture_count: rig.fixtures.len(),
             turns: self.turns(rig),
         }
     }
 
-    /// Orders fixtures then grids by where their pixels sit, on average, along the travel.
-    fn turns(&self, rig: &Rig) -> Vec<usize> {
+    /// `width` as a fraction of the shape's travel. A split's bars travel half the canvas, from
+    /// the centre to an edge, so each is `width` of the canvas wide.
+    fn travel_width(&self) -> f64 {
+        match self.shape {
+            Shape::Split => (2.0 * self.width).min(1.0),
+            _ => self.width,
+        }
+    }
+
+    /// For one-by-one: the turn of each cell, ordered by where its pixels sit, on average,
+    /// along the travel.
+    fn turns(&self, rig: &Rig) -> BTreeMap<Cell, usize> {
         if self.shape != Shape::OneByOne {
-            return Vec::new();
+            return BTreeMap::new();
         }
-        let mean = |positions: Vec<f64>| positions.iter().sum::<f64>() / positions.len() as f64;
-        let travel = |x: f32, y: f32| travel(self.direction, x, y);
-        let centres: Vec<f64> = rig
-            .fixtures
-            .iter()
-            .map(|fixture| mean(fixture.pixels.iter().map(|p| travel(p.x, p.y)).collect()))
-            .chain(
-                rig.grids
-                    .iter()
-                    .map(|grid| mean(grid.pixels.iter().map(|p| travel(p.x, p.y)).collect())),
-            )
+        let mut cells: BTreeMap<Cell, (f64, f64)> = BTreeMap::new();
+        let mut add = |cell: Cell, travel: f64| {
+            let (sum, count) = cells.entry(cell).or_default();
+            *sum += travel;
+            *count += 1.0;
+        };
+        for (unit, fixture) in rig.fixtures.iter().enumerate() {
+            for pixel in &fixture.pixels {
+                add((unit, 0), travel(self.direction, pixel.x, pixel.y));
+            }
+        }
+        for (index, grid) in rig.grids.iter().enumerate() {
+            for pixel in &grid.pixels {
+                let travel = travel(self.direction, pixel.x, pixel.y);
+                add((rig.fixtures.len() + index, travel.to_bits()), travel);
+            }
+        }
+        let mut order: Vec<(Cell, f64)> = cells
+            .into_iter()
+            .map(|(cell, (sum, count))| (cell, sum / count))
             .collect();
-        let mut order: Vec<usize> = (0..centres.len()).collect();
-        order.sort_by(|a, b| centres[*a].total_cmp(&centres[*b]));
-        let mut turns = vec![0; centres.len()];
-        for (turn, unit) in order.into_iter().enumerate() {
-            turns[unit] = turn;
-        }
-        turns
+        order.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+        order
+            .into_iter()
+            .enumerate()
+            .map(|(turn, (cell, _))| (cell, turn))
+            .collect()
     }
 }
+
+/// What one-by-one lights at a time: a fixture, `(fixture, 0)`, or one line of a grid across
+/// the direction (a column for left-to-right, a row for bottom-to-top), `(unit, its travel as
+/// bits)`. Lines, not single pixels: a 16×16 grid steps through 16 lines that the eye follows
+/// across the stage, where 256 single pixels would be too small and too many to read, and a
+/// column still steps pixel by pixel.
+type Cell = (usize, u64);
 
 impl LayerFrame<'_> {
     /// How lit the pixel at (`x`, `y`) of fixture or grid `unit` is, 0–1.
@@ -347,14 +378,14 @@ impl LayerFrame<'_> {
         let Layer {
             shape,
             effect,
-            width,
             direction,
             ..
         } = *self.layer;
         let position = self.position;
         let reversed = matches!(direction, Direction::RightToLeft | Direction::TopToBottom);
         let reverse = |u: f64| if reversed { 1.0 - u } else { u };
-        let band = |u: f64| f64::from(u8::from((u - position).abs() <= width / 2.0));
+        let half_width = self.layer.travel_width() / 2.0;
+        let band = |u: f64| f64::from(u8::from((u - position).abs() <= half_width));
         let shape_level = match shape {
             Shape::Bar => band(travel(direction, x, y)),
             Shape::Sweep => f64::from(u8::from(travel(direction, x, y) <= position)),
@@ -371,9 +402,13 @@ impl LayerFrame<'_> {
             }
             Shape::Gradient => (travel(direction, x, y) - position + 0.5).rem_euclid(1.0),
             Shape::OneByOne => {
-                let count = self.turns.len() as f64;
-                let lit_turn = (position * count).floor();
-                f64::from(u8::from(self.turns[unit] as f64 == lit_turn))
+                let cell = if unit < self.fixture_count {
+                    (unit, 0)
+                } else {
+                    (unit, travel(direction, x, y).to_bits())
+                };
+                let lit_turn = (position * self.turns.len() as f64).floor();
+                f64::from(u8::from(self.turns[&cell] as f64 == lit_turn))
             }
         };
         let flash = match effect {

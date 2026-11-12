@@ -37,7 +37,7 @@ pub(crate) struct Playback {
     clock: Option<ClockFollower>,
     /// Whether panic put the safe look up; it stays until the next song select.
     safe_look: bool,
-    /// Lowest first: a cue fired later draws over the earlier ones.
+    /// In firing order; `layered` gives the drawing order.
     cues: Vec<ActiveCue>,
     master: f32,
     live_parameters: [f32; LIVE_PARAMETERS],
@@ -254,7 +254,7 @@ impl Playback {
                     .is_none_or(|release| faded_out(cue, release) < 1.0)
             })
         });
-        for active in &self.cues {
+        for active in self.layered(song) {
             let cue = &song.cues[&active.note];
             let opacity = match &active.released {
                 None => cue.opacity(clock, active.started, at),
@@ -284,9 +284,10 @@ impl Playback {
         let song = self.song(show);
         Status {
             song: song.map(|song| song.name.clone()),
-            cues: self
-                .cues
-                .iter()
+            cues: song
+                .map(|song| self.layered(song))
+                .unwrap_or_default()
+                .into_iter()
                 .filter_map(|active| {
                     let cue = song?.cues.get(&active.note)?;
                     Some(CueStatus {
@@ -300,6 +301,14 @@ impl Playback {
             master: self.master,
             live_parameters: self.live_parameters,
         }
+    }
+
+    /// Active cues, lowest layer first (plan §5): scene, swell and pattern cues, then pixel
+    /// cues, each in the order they were fired.
+    fn layered(&self, song: &Song) -> Vec<&ActiveCue> {
+        let mut cues: Vec<&ActiveCue> = self.cues.iter().collect();
+        cues.sort_by_key(|active| matches!(song.cues.get(&active.note), Some(Cue::Pixel(_))));
+        cues
     }
 }
 
