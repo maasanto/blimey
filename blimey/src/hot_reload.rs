@@ -99,9 +99,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn saving_a_song_updates_the_look_and_a_broken_save_keeps_the_previous_show() {
-        let dir = std::env::temp_dir().join(format!("blimey-hot-reload-{}", std::process::id()));
+    fn outputs(edit: &[&str]) -> crate::Outputs {
+        use clap::Parser;
+        let args = ["blimey", "run", SHOW, "--artnet"].iter().chain(edit);
+        match crate::Command::parse_from(args) {
+            crate::Command::Run { outputs, .. } => outputs,
+            _ => unreachable!("parsed as `run`"),
+        }
+    }
+
+    /// `dimmer-par`'s red, green and blue over six frames of a song showing red, saved blue at
+    /// 50 ms, then saved broken at 100 ms.
+    fn colours_while_editing(outputs: &crate::Outputs, test: &str) -> Vec<[u8; 3]> {
+        let dir = std::env::temp_dir().join(format!("blimey-{test}-{}", std::process::id()));
         fs::create_dir_all(dir.join("fixtures")).unwrap();
         fs::create_dir_all(dir.join("songs")).unwrap();
         for file in [
@@ -134,24 +144,34 @@ mod tests {
         blimey_engine::run(
             &mut FakeClock::default(),
             &mut midi,
-            HotReload::load(&dir).unwrap(),
+            outputs.shows(&dir).unwrap(),
             &Look::default(),
             &mut sink,
             6,
         )
         .unwrap();
 
-        let colours: Vec<&[u8]> = sink
-            .frames
+        fs::remove_dir_all(dir).unwrap();
+        sink.frames
             .iter()
-            .map(|frame| &frame.values[1..4])
-            .collect();
-        let (red, blue) = ([255, 0, 0].as_slice(), [0, 0, 255].as_slice());
+            .map(|frame| frame.values[1..4].try_into().unwrap())
+            .collect()
+    }
+
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+
+    #[test]
+    fn in_edit_mode_saving_a_song_updates_the_look_and_a_broken_save_keeps_the_previous_show() {
         assert_eq!(
-            colours,
-            [red, red, red, blue, blue, blue],
+            colours_while_editing(&outputs(&["--edit"]), "edit-mode"),
+            [RED, RED, RED, BLUE, BLUE, BLUE],
             "the save at 50 ms shows from the next frame; the broken one at 100 ms changes nothing"
         );
-        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn in_show_mode_saving_a_song_changes_nothing() {
+        assert_eq!(colours_while_editing(&outputs(&[]), "show-mode"), [RED; 6]);
     }
 }
