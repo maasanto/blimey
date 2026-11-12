@@ -8,5 +8,6 @@ publish.workspace = true
 jsonschema = { version = "0.61.2", default-features = false }
 midly = "0.5"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: a look's entries apply in file order, so show files keep their key order as JSON.
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"

@@ -12,7 +12,7 @@ const LEGACY_MAP_FILE: &str = "legacy-map.yaml";
 pub(crate) const RIG_FILE: &str = "rig.yaml";
 const PALETTES_FILE: &str = "palettes.yaml";
 pub(crate) const PROFILES_DIR: &str = "fixtures";
-const SONGS_DIR: &str = "songs";
+pub(crate) const SONGS_DIR: &str = "songs";
 
 /// A show folder (plan §6), loaded and validated.
 #[derive(Debug, Default)]

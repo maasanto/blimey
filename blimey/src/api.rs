@@ -69,7 +69,7 @@ async fn write_show_file(
     }
     // Hot reload picks the file up on the next frame, and the stream then sends the new rig.
     match show_file::write(&api.show_dir, &file, content) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => error_response(&error),
     }
 }
