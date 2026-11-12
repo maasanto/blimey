@@ -7,7 +7,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_yaml_ng::Mapping;
 
+use crate::clock_follower::{ClockFollower, Moment};
 use crate::duration::Length;
+use crate::envelope::Envelope;
 use crate::look::{self, Look, LookSettings};
 use crate::rig::Rig;
 use crate::{Frame, Show};
@@ -22,12 +24,21 @@ pub(crate) enum CueEntry {
         release: Option<Length>,
         values: Mapping,
     },
+    Swell {
+        name: String,
+        target: Mapping,
+        duration: Length,
+        curve: Option<Envelope>,
+        release: Option<Length>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cue {
     /// A fixed look: fades in from note-on, holds, fades out from note-off.
     Scene(Scene),
+    /// A look reached along a curve over a duration from note-on, then held until note-off.
+    Swell(Swell),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +47,16 @@ pub struct Scene {
     pub fade_in: Length,
     pub release: Length,
     pub look: Look,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Swell {
+    pub name: String,
+    pub duration: Length,
+    /// How far the target look shows over `duration`: 0 is the layers below, 1 the target.
+    pub curve: Envelope,
+    pub release: Length,
+    pub target: Look,
 }
 
 const INSTANT: Length = Length::Time(Duration::ZERO);
@@ -52,6 +73,19 @@ impl CueEntry {
                 look: resolve_look(show, &values)?,
                 name,
                 fade_in: fade_in.unwrap_or(INSTANT),
+                release: release.unwrap_or(INSTANT),
+            })),
+            CueEntry::Swell {
+                name,
+                target,
+                duration,
+                curve,
+                release,
+            } => Ok(Cue::Swell(Swell {
+                target: resolve_look(show, &target)?,
+                name,
+                duration,
+                curve: curve.unwrap_or(Envelope::RampUp),
                 release: release.unwrap_or(INSTANT),
             })),
         }
@@ -78,41 +112,38 @@ impl Cue {
     pub fn name(&self) -> &str {
         match self {
             Cue::Scene(scene) => &scene.name,
+            Cue::Swell(swell) => &swell.name,
         }
     }
 
-    /// How far the cue has faded in, 0–1, `elapsed` after its note-on.
-    pub fn opacity(&self, elapsed: Duration) -> f32 {
-        match self {
-            Cue::Scene(scene) => ramp(elapsed, scene.fade_in.duration()),
-        }
+    /// How much of the cue shows over the layers below, 0–1, at `at` after its note-on at `started`.
+    pub fn opacity(&self, clock: &ClockFollower, started: Moment, at: Duration) -> f32 {
+        let opacity = match self {
+            Cue::Scene(scene) => clock.progress(scene.fade_in, started, at),
+            Cue::Swell(swell) => swell
+                .curve
+                .level(clock.progress(swell.duration, started, at)),
+        };
+        opacity as f32
     }
 
     /// How long the cue takes to fade out after its note-off.
-    pub fn release(&self) -> Duration {
+    pub fn release(&self) -> Length {
         match self {
-            Cue::Scene(scene) => scene.release.duration(),
+            Cue::Scene(scene) => scene.release,
+            Cue::Swell(swell) => swell.release,
         }
     }
 
     /// Draws the cue at full opacity over `frame`, its dimmers scaled by `intensity` (0–1).
     pub fn draw(&self, rig: &Rig, intensity: f32, frame: &mut Frame) {
-        match self {
-            Cue::Scene(scene) => {
-                let mut look = scene.look.clone();
-                for fixture in look.fixtures.values_mut() {
-                    fixture.dimmer *= intensity;
-                }
-                look::render(rig, &look, frame);
-            }
+        let mut look = match self {
+            Cue::Scene(scene) => scene.look.clone(),
+            Cue::Swell(swell) => swell.target.clone(),
+        };
+        for fixture in look.fixtures.values_mut() {
+            fixture.dimmer *= intensity;
         }
+        look::render(rig, &look, frame);
     }
-}
-
-/// Progress through `span`, 0–1, `elapsed` into it. A zero span is complete at once.
-pub(crate) fn ramp(elapsed: Duration, span: Duration) -> f32 {
-    if span.is_zero() {
-        return 1.0;
-    }
-    (elapsed.as_secs_f32() / span.as_secs_f32()).min(1.0)
 }

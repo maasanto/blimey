@@ -4,10 +4,12 @@
 //! against real devices or, in tests, against a MIDI file, a fake clock and
 //! a recording sink.
 
+pub mod clock_follower;
 pub mod colour;
 pub mod cue;
 mod dump;
 pub mod duration;
+pub mod envelope;
 pub mod fixture;
 mod legacy;
 pub mod look;
@@ -156,6 +158,9 @@ pub fn run(
             playback.apply(show, &event);
         }
         let output = playback.render(show, look, deadline);
+        if let Some(line) = playback.log_line(deadline) {
+            eprintln!("blimey: {line}");
+        }
         sink.status(&playback.status(show));
         sink.send(clock.now(), &output)?;
     }

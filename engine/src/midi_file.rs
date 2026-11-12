@@ -71,6 +71,12 @@ impl MidiFile {
             if let TrackEventKind::Meta(MetaMessage::Tempo(tempo)) = kind {
                 (tempo_tick, tempo_micros) = (tick, micros);
                 micros_per_beat = u64::from(tempo.as_int());
+            } else if let TrackEventKind::Escape(message) = kind {
+                // SMF can only carry MIDI clock, Start, Stop and Song Position as escapes.
+                events.push_back(MidiEvent {
+                    at,
+                    message: message.to_vec(),
+                });
             } else if let Some(live) = kind.as_live_event() {
                 let mut message = Vec::new();
                 live.write_std(&mut message)?;

@@ -46,7 +46,7 @@ fn a_broken_song_names_its_file_and_line() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         format!(
-            "error: {}: cues: duration \"2 secs\" must be a number then ms or s, e.g. 500ms or 2s at line 3 column 3\n",
+            "error: {}: cues: duration \"2 secs\" must be a number then ms, s, beats or bars, e.g. 500ms, 2s, 0.5 beats or 4 bars at line 3 column 3\n",
             song.display()
         )
     );

@@ -11,6 +11,7 @@ use serde_yaml_ng::Mapping;
 
 use crate::Show;
 use crate::cue::{Cue, CueEntry, resolve_look};
+use crate::duration::TimeSignature;
 use crate::look::Look;
 
 const MIDI_DATA_MAX: u8 = 127;
@@ -20,6 +21,7 @@ const MIDI_DATA_MAX: u8 = 127;
 struct SongFile {
     program: u8,
     bpm: Option<f32>,
+    time_signature: Option<String>,
     #[serde(default)]
     safe_look: Mapping,
     #[serde(default)]
@@ -34,6 +36,8 @@ pub struct Song {
     pub program: u8,
     /// Tempo for beat durations when Reaper sends no MIDI clock.
     pub bpm: Option<f32>,
+    /// How many beats make a bar, for bar durations and bar positions.
+    pub time_signature: TimeSignature,
     /// What panic shows. An empty look leaves everything dark.
     pub safe_look: Look,
     /// Channel-2 note number → the cue it fires.
@@ -55,6 +59,12 @@ impl Song {
         if file.bpm.is_some_and(|bpm| bpm <= 0.0) {
             return Err(located("bpm", "bpm must be above 0".into()));
         }
+        let time_signature = file
+            .time_signature
+            .map(TimeSignature::try_from)
+            .transpose()
+            .map_err(|error| located("time_signature", error))?
+            .unwrap_or_default();
         let safe_look = resolve_look(show, &file.safe_look)
             .map_err(|error| located("safe_look", format!("safe_look: {error}")))?;
         let mut cues = BTreeMap::new();
@@ -69,6 +79,7 @@ impl Song {
             name: name.into(),
             program: file.program,
             bpm: file.bpm,
+            time_signature,
             safe_look,
             cues,
         })
@@ -131,6 +142,9 @@ pub(crate) fn load_songs(dir: &Path, show: &Show) -> io::Result<Vec<Song>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::duration::Length;
+    use crate::envelope::Envelope;
+    use std::time::Duration;
 
     fn show() -> Show {
         Show::load(Path::new(concat!(
@@ -157,12 +171,48 @@ mod tests {
         )
         .unwrap();
 
-        let Cue::Scene(scene) = &song.cues[&36];
+        let Cue::Scene(scene) = &song.cues[&36] else {
+            panic!("cue 36 is a scene");
+        };
         assert_eq!(scene.name, "verse");
-        assert_eq!(scene.fade_in.duration().as_millis(), 2000);
-        assert!(scene.release.duration().is_zero());
+        assert_eq!(scene.fade_in, Length::Time(Duration::from_secs(2)));
+        assert_eq!(scene.release, Length::Time(Duration::ZERO));
         assert_eq!(scene.look.fixtures.len(), 2);
         assert_eq!(scene.look.fixtures["rgb-par"].dimmer, 0.6);
+        assert_eq!(song.time_signature, TimeSignature::default());
+    }
+
+    #[test]
+    fn a_swell_reads_its_musical_duration_and_curve() {
+        let song = Song::parse(
+            "song",
+            "program: 3\nbpm: 92\ntime_signature: 6/8\ncues:\n  38:\n    name: chorus-swell\n    type: swell\n    target: { both: { dimmer: 100% } }\n    duration: 4 bars\n    curve: ease-in\n    release: 0.5 beats\n",
+            &show(),
+        )
+        .unwrap();
+
+        let Cue::Swell(swell) = &song.cues[&38] else {
+            panic!("cue 38 is a swell");
+        };
+        assert_eq!(swell.duration, Length::Bars(4.0));
+        assert_eq!(swell.curve, Envelope::EaseIn);
+        assert_eq!(swell.release, Length::Beats(0.5));
+        assert_eq!(swell.target.fixtures.len(), 2);
+        assert_eq!(song.time_signature.beats_per_bar(), 3.0);
+    }
+
+    #[test]
+    fn a_swell_needs_a_duration_and_well_ordered_points() {
+        assert_eq!(
+            error("program: 3\ncues:\n  38: { name: s, type: swell, target: {} }\n"),
+            "cues: missing field `duration` at line 3 column 3"
+        );
+        assert_eq!(
+            error(
+                "program: 3\ncues:\n  38:\n    name: s\n    type: swell\n    target: {}\n    duration: 1 bar\n    curve: { points: [[0.5, 1], [0.2, 0]] }\n"
+            ),
+            "cues: points: times must rise from one point to the next at line 3 column 3"
+        );
     }
 
     #[test]
@@ -191,15 +241,19 @@ mod tests {
             error(&format!(
                 "{SCENE}    fade_in: 2 seconds\n    values: {{}}\n"
             )),
-            "cues: duration \"2 seconds\" must be a number then ms or s, e.g. 500ms or 2s at line 3 column 3"
+            "cues: duration \"2 seconds\" must be a number then ms, s, beats or bars, e.g. 500ms, 2s, 0.5 beats or 4 bars at line 3 column 3"
         );
         assert_eq!(
             error("program: 3\ncues:\n  36:\n    name: verse\n    type: scen\n"),
-            "cues.36.type: unknown variant `scen`, expected `scene` at line 5 column 11"
+            "cues.36.type: unknown variant `scen`, expected `scene` or `swell` at line 5 column 11"
         );
         assert_eq!(
             error("program: 3\ntempo: 92\n"),
-            "unknown field `tempo`, expected one of `program`, `bpm`, `safe_look`, `cues` at line 2 column 1"
+            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `safe_look`, `cues` at line 2 column 1"
+        );
+        assert_eq!(
+            error("program: 3\ntime_signature: 4/3\n"),
+            "line 2: time signature \"4/3\" must be beats/note value with a power of two up to 32 below, e.g. 4/4 or 6/8"
         );
     }
 
