@@ -73,7 +73,7 @@ impl Song {
             if slot > MIDI_DATA_MAX {
                 return Err(in_cue("cue numbers are note numbers, 0-127".into()));
             }
-            cues.insert(slot, entry.resolve(show).map_err(in_cue)?);
+            cues.insert(slot, entry.resolve(show, time_signature).map_err(in_cue)?);
         }
         Ok(Song {
             name: name.into(),
@@ -245,7 +245,7 @@ mod tests {
         );
         assert_eq!(
             error("program: 3\ncues:\n  36:\n    name: verse\n    type: scen\n"),
-            "cues.36.type: unknown variant `scen`, expected `scene` or `swell` at line 5 column 11"
+            "cues.36.type: unknown variant `scen`, expected one of `scene`, `swell`, `pattern` at line 5 column 11"
         );
         assert_eq!(
             error("program: 3\ntempo: 92\n"),

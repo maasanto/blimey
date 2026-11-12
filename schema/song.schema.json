@@ -25,7 +25,40 @@
   "$defs": {
     "midi": { "type": "integer", "minimum": 0, "maximum": 127 },
     "cue": {
-      "oneOf": [{ "$ref": "#/$defs/scene" }, { "$ref": "#/$defs/swell" }]
+      "oneOf": [{ "$ref": "#/$defs/scene" }, { "$ref": "#/$defs/swell" }, { "$ref": "#/$defs/pattern" }]
+    },
+    "pattern": {
+      "description": "Envelope hits on the beats of a 1-4 bar loop. The loop starts on the bar line after note-on (at once if the note is within one MIDI clock tick after a bar line) and repeats until note-off, then fades out over release.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "length", "target", "hits"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "const": "pattern" },
+        "length": { "description": "1, 2, 3 or 4 bars.", "type": "string", "pattern": "^[1-4]\\s*bars?$" },
+        "target": {
+          "description": "Either fixture or group → dimmer: the level scales their intensity, dark between hits. Or fixture or group → look settings: the level is how much of that look shows.",
+          "anyOf": [
+            { "type": "object", "additionalProperties": { "const": "dimmer" } },
+            { "$ref": "#/$defs/values" }
+          ]
+        },
+        "hits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["at", "shape", "length", "level"],
+            "properties": {
+              "at": { "description": "Beat of the pattern, from 1, in quarter beats: 1, 2.5, 3.75. The engine checks it falls within the length.", "type": "number", "minimum": 1, "multipleOf": 0.25 },
+              "shape": { "$ref": "#/$defs/curve" },
+              "length": { "description": "In beats or bars, at most the pattern's length.", "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?\\s*(beats?|bars?)$" },
+              "level": { "description": "Peak level of the shape.", "type": "string", "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%$" }
+            }
+          }
+        },
+        "release": { "$ref": "#/$defs/duration" }
+      }
     },
     "swell": {
       "description": "A look reached along a curve over a duration from note-on, scaled by velocity, then held; fades out from note-off.",

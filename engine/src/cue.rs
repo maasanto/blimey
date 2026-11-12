@@ -8,9 +8,10 @@ use serde::Deserialize;
 use serde_yaml_ng::Mapping;
 
 use crate::clock_follower::{ClockFollower, Moment};
-use crate::duration::Length;
+use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{self, Look, LookSettings};
+use crate::pattern::{Pattern, PatternEntry, PatternTarget};
 use crate::rig::Rig;
 use crate::{Frame, Show};
 
@@ -31,6 +32,7 @@ pub(crate) enum CueEntry {
         curve: Option<Envelope>,
         release: Option<Length>,
     },
+    Pattern(PatternEntry),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +41,8 @@ pub enum Cue {
     Scene(Scene),
     /// A look reached along a curve over a duration from note-on, then held until note-off.
     Swell(Swell),
+    /// Envelope hits looping on the beat from the bar line after note-on until note-off.
+    Pattern(Pattern),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,10 +63,10 @@ pub struct Swell {
     pub target: Look,
 }
 
-const INSTANT: Length = Length::Time(Duration::ZERO);
+pub(crate) const INSTANT: Length = Length::Time(Duration::ZERO);
 
 impl CueEntry {
-    pub(crate) fn resolve(self, show: &Show) -> Result<Cue, String> {
+    pub(crate) fn resolve(self, show: &Show, time_signature: TimeSignature) -> Result<Cue, String> {
         match self {
             CueEntry::Scene {
                 name,
@@ -88,6 +92,7 @@ impl CueEntry {
                 curve: curve.unwrap_or(Envelope::RampUp),
                 release: release.unwrap_or(INSTANT),
             })),
+            CueEntry::Pattern(entry) => entry.resolve(show, time_signature).map(Cue::Pattern),
         }
     }
 }
@@ -113,16 +118,33 @@ impl Cue {
         match self {
             Cue::Scene(scene) => &scene.name,
             Cue::Swell(swell) => &swell.name,
+            Cue::Pattern(pattern) => &pattern.name,
         }
     }
 
-    /// How much of the cue shows over the layers below, 0–1, at `at` after its note-on at `started`.
+    /// The moment the cue counts from for its note-on at `at`: the note, or for a pattern the
+    /// bar line its loop starts on.
+    pub fn start(&self, clock: &ClockFollower, at: Duration) -> Moment {
+        match self {
+            Cue::Pattern(_) => Pattern::start(clock, at),
+            _ => clock.moment(at),
+        }
+    }
+
+    /// How much of the cue shows over the layers below, 0–1, at `at` after it started at
+    /// `started` (see `start`).
     pub fn opacity(&self, clock: &ClockFollower, started: Moment, at: Duration) -> f32 {
         let opacity = match self {
             Cue::Scene(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Swell(swell) => swell
                 .curve
                 .level(clock.progress(swell.duration, started, at)),
+            // A dimmer target draws its fixtures dark, so it shows the more, the lower the level.
+            Cue::Pattern(pattern) => match (&pattern.target, pattern.level(clock, started, at)) {
+                (_, None) => 0.0,
+                (PatternTarget::Dimmer(_), Some(level)) => 1.0 - level,
+                (PatternTarget::Look(_), Some(level)) => level,
+            },
         };
         opacity as f32
     }
@@ -132,14 +154,23 @@ impl Cue {
         match self {
             Cue::Scene(scene) => scene.release,
             Cue::Swell(swell) => swell.release,
+            Cue::Pattern(pattern) => pattern.release,
         }
     }
 
     /// Draws the cue at full opacity over `frame`, its dimmers scaled by `intensity` (0–1).
+    /// A pattern's dimmer target is its fixtures as below, darkened by `intensity`.
     pub fn draw(&self, rig: &Rig, intensity: f32, frame: &mut Frame) {
         let mut look = match self {
             Cue::Scene(scene) => scene.look.clone(),
             Cue::Swell(swell) => swell.target.clone(),
+            Cue::Pattern(pattern) => match &pattern.target {
+                PatternTarget::Look(look) => look.clone(),
+                PatternTarget::Dimmer(fixtures) => {
+                    look::scale_intensity(rig, fixtures, 1.0 - intensity, frame);
+                    return;
+                }
+            },
         };
         for fixture in look.fixtures.values_mut() {
             fixture.dimmer *= intensity;

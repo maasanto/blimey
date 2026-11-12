@@ -121,9 +121,9 @@ A pattern cue, as saved by the sequencer grid:
     length: 1 bar
     target: { all-wash: dimmer }
     hits:
-      - { at: 1,   shape: swell-up, length: 0.5 beats, level: 100% }
-      - { at: 2,   shape: sine,     length: 0.5 beats, level: 80% }
-      - { at: 3.5, shape: swell-up, length: 0.5 beats, level: 100% }
+      - { at: 1,   shape: ramp-up, length: 0.5 beats, level: 100% }
+      - { at: 2,   shape: sine,    length: 0.5 beats, level: 80% }
+      - { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 100% }
 ```
 
 - Durations accept `ms`, `s`, `beats`, `bars`.
@@ -165,7 +165,7 @@ The builder is version 1's main interface. Everything it makes is saved into the
 
 1. **Pixel scenes.** Pick a preset shape (bar, sweep, circle, split, gradient, fixtures one by one), an effect that animates it (static, move, pulse, chase, sparkle), colours from the palettes and a speed in beats. Up to 2 layers.
 2. **Swells.** An envelope with a shape (ramp up, ramp down, sine, hold, or custom points) and a length in beats or bars. Target: a group's dimmer or colour, or the intensity of a pixel scene.
-3. **Pattern sequencer.** A grid of 1 to 4 bars, resolution down to a quarter beat. Place hits on steps; each hit has its own shape, length and level. Example: swell-up on beat 1, sine on beat 2, swell-up on beat 3.5. The pattern loops until the cue is released and restarts on the bar when triggered.
+3. **Pattern sequencer.** A grid of 1 to 4 bars, resolution down to a quarter beat. Place hits on steps; each hit has its own shape, length and level. Example: ramp-up on beat 1, sine on beat 2, ramp-up on beat 3.5. The pattern loops until the cue is released and restarts on the bar when triggered.
 4. **Static looks.** Colour picker and dimmer per fixture or group, saved as a scene.
 5. **Cue assignment.** Name, note number, fade-in and release times, and an audition button that fires the cue without Reaper (with a built-in metronome tempo when Reaper isn't playing).
 

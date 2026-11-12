@@ -26,3 +26,13 @@ cues:
     target: { dimmer-par: { color: white } }
     duration: 4 bars
     release: 1 beat
+  42:
+    name: verse-pulse
+    type: pattern
+    length: 1 bar
+    target: { both: dimmer }
+    release: 1 beat
+    hits:
+      - { at: 1,   shape: ramp-up, length: 0.5 beats, level: 100% }
+      - { at: 2,   shape: sine,    length: 0.5 beats, level: 80% }
+      - { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 100% }

@@ -15,6 +15,7 @@ mod legacy;
 pub mod look;
 mod midi_file;
 pub mod ofl;
+pub mod pattern;
 mod playback;
 pub mod rig;
 mod show;

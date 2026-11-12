@@ -86,6 +86,16 @@ cues:
     duration: 4 bars
     curve: ease-in  # optional, default ramp-up
     release: 500ms  # optional, default 0
+  42:
+    name: verse-pulse
+    type: pattern
+    length: 1 bar                 # 1, 2, 3 or 4 bars
+    target: { all-wash: dimmer }  # or look settings: { all-wash: { color: amber } }
+    release: 1 beat               # optional, default 0
+    hits:                         # at: beat of the pattern from 1, in quarter beats
+      - { at: 1,   shape: ramp-up, length: 0.5 beats, level: 100% }
+      - { at: 2,   shape: sine,    length: 0.5 beats, level: 80% }
+      - { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 100% }
 ```
 
 - `safe_look`, `values` and `target` use the [look](#looks) keys.
@@ -93,6 +103,10 @@ cues:
 - Cue types:
   - `scene` holds a look: it fades in over `fade_in` from note-on and out over `release` from note-off.
   - `swell` reaches its `target` look along `curve` over `duration` from note-on, then holds where the curve ends until note-off, and fades out over `release`. Curves: `ramp-up`, `ramp-down`, `ease-in` (slow start), `sine` (up and back down), `hold` (the target at once), or custom points `{ points: [[0, 0], [0.5, 1], [1, 0.3]] }`: `[time, level]` pairs, both 0–1, times rising, joined by straight lines. The level is how much of the target shows over the layers below, as a scene's fade does.
+  - `pattern` plays `hits` in a loop of `length` bars until note-off, then fades out over `release` from where it was at note-off. Each hit plays a `shape` (any swell curve) scaled to `level` over its `length` (beats or bars, at most the pattern's length), from beat `at` of the pattern: 1 to the beats in `length`, in quarter beats. A hit running past the end of the loop carries on into the next pass, and where hits overlap the highest one wins.
+    - Start: the loop starts on the next bar line after note-on, so a note just before a bar line waits for it. A note up to one MIDI clock tick (1/24 beat) after a bar line starts it at once, in step with that bar line. That window absorbs MIDI jitter and a note placed on the bar but counted a tick late; it is 18–27 ms at 140–92 BPM, under one frame, so the first hit loses at most a frame of light. Bar lines follow Reaper's bar position from the MIDI clock, or count from the song select without one.
+    - `target: { all-wash: dimmer }` scales the intensity the layers below give those fixtures by the pattern's level (their dimmer channel, or their colour channels without one): dark between hits, so put a scene under it for colour. Velocity sets how deep it cuts: 127 goes dark between hits, 64 halfway. On release the fixtures fade back to the layers below.
+    - `target: { all-wash: { color: amber } }` takes look settings, as a swell's `target`: the level is how much of that look shows over the layers below. Every entry of one target is either `dimmer` or look settings.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
