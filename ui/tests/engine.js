@@ -1,0 +1,58 @@
+// Starts real engines for the UI tests: `blimey fire --listen` with no DMX device, so frames go
+// only to the stream. Each test gets a scratch copy of the four-washes show to write to.
+
+import { spawn } from 'node:child_process';
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import readline from 'node:readline';
+import { test as base } from '@playwright/test';
+
+const ROOT = path.resolve(import.meta.dirname, '../..');
+const BINARY = process.env.BLIMEY_BIN ?? path.join(ROOT, 'target/debug/blimey');
+
+/** wash-1 saturated red; wash-4 orange at 60% with its white channels in use; wash-2 and 3 dark. */
+const LOOK = [
+  '--set', 'wash-1', 'color=#ff0000',
+  '--set', 'wash-4', 'color=#ff8040', 'dimmer=60%', 'rgbw=white-rich',
+];
+
+function start(show, { listen = '127.0.0.1:0', edit = true } = {}) {
+  const args = ['fire', show, ...LOOK, '--listen', listen, ...(edit ? ['--edit'] : [])];
+  const child = spawn(BINARY, args, { stdio: ['ignore', 'pipe', 'inherit'] });
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  const address = new Promise((resolve, reject) => {
+    child.once('error', (error) => reject(new Error(`${BINARY}: ${error.message}; run \`cargo build\` first`)));
+    exited.then((code) => reject(new Error(`blimey exited with ${code} before listening`)));
+    readline.createInterface({ input: child.stdout }).on('line', (line) => {
+      const match = line.match(/^streaming on ws:\/\/(\S+)\/ws$/);
+      if (match) resolve(match[1]);
+    });
+  });
+  const stop = () => {
+    child.kill();
+    return exited;
+  };
+  return address.then((address) => ({ address, url: `http://${address}/`, stop }));
+}
+
+export const test = base.extend({
+  show: async ({}, use) => {
+    const show = mkdtempSync(path.join(tmpdir(), 'blimey-ui-'));
+    cpSync(path.join(ROOT, 'tests/fixtures/shows/four-washes'), show, { recursive: true });
+    await use(show);
+    rmSync(show, { recursive: true });
+  },
+  /** `startEngine(options)` runs an engine on the test's show; every one is stopped after the test. */
+  startEngine: async ({ show }, use) => {
+    const engines = [];
+    await use(async (options) => {
+      const engine = await start(show, options);
+      engines.push(engine);
+      return engine;
+    });
+    await Promise.all(engines.map((engine) => engine.stop()));
+  },
+});
+
+export { expect } from '@playwright/test';

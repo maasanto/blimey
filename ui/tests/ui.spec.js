@@ -1,0 +1,120 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { test, expect } from './engine.js';
+
+const hex = (levels) => '#' + levels.map((level) => Math.min(255, level).toString(16).padStart(2, '0')).join('');
+
+/** Stage-plan fill of every pixel, by fixture. */
+const previewColours = (page) =>
+  page.$$eval('[data-fixture]', (fixtures) =>
+    Object.fromEntries(
+      fixtures.map((fixture) => [
+        fixture.dataset.fixture,
+        [...fixture.querySelectorAll('circle')].map((circle) => circle.getAttribute('fill')),
+      ]),
+    ),
+  );
+
+const waitForFrames = (page) => expect(page.getByTestId('engine-time')).not.toHaveText('—');
+
+test('the stage plan shows the colours on the DMX output', async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+
+  await page.goto(`${url}#monitor`);
+  await waitForFrames(page);
+  // `fire` selects no song and takes no MIDI.
+  await expect(page.getByTestId('song')).toHaveText('None selected');
+  await expect(page.getByTestId('master')).toHaveText('100%');
+  await expect(page.getByTestId('cues')).toHaveText('None');
+  await expect(page.getByTestId('midi-log')).toContainText('No MIDI received');
+  const dmx = await page.$$eval('[data-channel]', (cells) => cells.map((cell) => Number(cell.textContent)));
+  const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
+  await page.getByRole('link', { name: 'Stage plan' }).click();
+  await expect(page.locator('[data-fixture] circle')).toHaveCount(16);
+  const preview = await previewColours(page);
+
+  // Wild Wash 16ch: per pixel red, green, blue, white; white shows as added to all three.
+  for (const { name, address } of rig.fixtures) {
+    const expected = [0, 1, 2, 3].map((pixel) => {
+      const [red, green, blue, white] = dmx.slice(address - 1 + 4 * pixel, address + 3 + 4 * pixel);
+      return hex([red + white, green + white, blue + white]);
+    });
+    expect(preview[name], name).toEqual(expected);
+  }
+  expect(preview['wash-1'][0]).toBe('#ff0000');
+  expect(preview['wash-2'][0]).toBe('#000000');
+  expect(dmx.slice(100, 104), 'wash-4 uses its white channel').toEqual([115, 38, 0, 38]);
+});
+
+test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine();
+  const rigFile = path.join(show, 'rig.yaml');
+  await page.goto(`${url}#stage`);
+  const plan = await page.getByRole('img', { name: 'Stage plan' }).boundingBox();
+  const pixel = page.locator('[data-fixture="wash-2"] circle').first();
+  const start = await pixel.boundingBox();
+  const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 0.1 * plan.width, from.y + 0.3 * plan.height, { steps: 5 });
+  await page.mouse.up();
+
+  const wash2Canvas = /- name: wash-2\n(?:.*\n){3}  canvas:\n    x: ([\d.]+)\n    y: ([\d.]+)\n/;
+  await expect.poll(() => readFileSync(rigFile, 'utf8')).toMatch(wash2Canvas);
+  const saved = readFileSync(rigFile, 'utf8');
+  const [, x, y] = saved.match(wash2Canvas).map(Number);
+  expect(x).toBeCloseTo(0.325 + 0.1, 2);
+  expect(y).toBeCloseTo(0.2 + 0.3, 2);
+  expect(saved, 'the header comment is kept').toMatch(/^# Test copy of the Fossile rig/);
+  expect(saved, 'other fixtures stay put').toContain('  canvas:\n    x: 0.55\n    y: 0.2\n');
+
+  // The engine sends the saved rig to the open page, and serves it again after a reload.
+  const firstPixelX = x + 0.125 / 8;
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    await expect.poll(async () => Number(await pixel.getAttribute('cx'))).toBeCloseTo(firstPixelX * 1600, 1);
+    await expect.poll(async () => Number(await pixel.getAttribute('cy'))).toBeCloseTo(y * 900, 1);
+  }
+});
+
+test('the page reconnects after an engine restart', async ({ page, startEngine }) => {
+  const first = await startEngine();
+  await page.goto(`${first.url}#monitor`);
+  await waitForFrames(page);
+  await expect(page.locator('header .connection')).toHaveText('Connected');
+
+  await first.stop();
+  await expect(page.getByRole('status')).toContainText('Reconnecting');
+
+  await startEngine({ listen: first.address });
+  await expect(page.locator('header .connection')).toHaveText('Connected');
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(page.getByText(/^[1-9]\d* \/ s$/)).toBeVisible();
+});
+
+test('the patch test button flashes a fixture through the engine', async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+  await page.goto(`${url}#patch`);
+  await expect(page.locator('header .mode')).toHaveText('edit mode');
+
+  await page.locator('[data-fixture="wash-2"]').getByRole('button', { name: 'Test' }).click();
+  await page.getByRole('link', { name: 'Stage plan' }).click();
+
+  const wash2 = page.locator('[data-fixture="wash-2"] circle').first();
+  await expect(wash2).toHaveAttribute('fill', '#ffffff');
+  await expect(wash2).toHaveAttribute('fill', '#000000');
+});
+
+test('show mode locks positions and fixture tests', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ edit: false });
+  const before = readFileSync(path.join(show, 'rig.yaml'), 'utf8');
+  await page.goto(`${url}#patch`);
+
+  await expect(page.locator('header .mode')).toHaveText('show mode');
+  await expect(page.getByRole('button', { name: 'Test' }).first()).toBeDisabled();
+  const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
+  const refused = await page.request.put(`${url}api/show/rig.yaml`, { data: rig });
+  expect(refused.status()).toBe(403);
+  expect(readFileSync(path.join(show, 'rig.yaml'), 'utf8')).toBe(before);
+});
