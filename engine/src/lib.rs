@@ -5,10 +5,14 @@
 //! a recording sink.
 
 mod dump;
+mod legacy;
 mod midi_file;
+mod show;
 
 pub use dump::{first_difference, format_dump, parse_dump};
+pub use legacy::LegacyMap;
 pub use midi_file::MidiFile;
+pub use show::Show;
 
 use std::io;
 use std::thread;
@@ -44,6 +48,8 @@ pub trait Clock {
     fn sleep_until(&mut self, deadline: Duration);
 }
 
+/// Copies share the same start, so a MIDI input thread can stamp events on the render loop's timeline.
+#[derive(Clone, Copy)]
 pub struct MonotonicClock {
     start: Instant,
 }
@@ -109,25 +115,36 @@ impl DmxSink for FakeDmx {
 pub fn run(
     clock: &mut impl Clock,
     midi: &mut impl MidiSource,
+    show: &Show,
     sink: &mut impl DmxSink,
     frame_count: u32,
 ) -> io::Result<()> {
+    // The lowest layer; later layers render on top of it.
+    let mut legacy_levels = [0; DMX_CHANNELS];
     for index in 0..frame_count {
         let deadline = FRAME_PERIOD * index;
         clock.sleep_until(deadline);
-        // ponytail: no layer reacts to MIDI yet, so events are drained unread; C1 adds the legacy layer.
-        while midi.poll(deadline).is_some() {}
-        sink.send(clock.now(), &[0; DMX_CHANNELS])?;
+        while let Some(event) = midi.poll(deadline) {
+            show.legacy.apply(&event.message, &mut legacy_levels);
+        }
+        sink.send(clock.now(), &legacy_levels)?;
     }
     Ok(())
 }
 
 /// Renders a MIDI file offline: one frame per period, from 0 up to the end of the file.
-pub fn replay(mut midi: MidiFile) -> Vec<RecordedFrame> {
+pub fn replay(show: &Show, mut midi: MidiFile) -> Vec<RecordedFrame> {
     let periods = midi.duration().as_nanos() / FRAME_PERIOD.as_nanos();
     let frame_count = u32::try_from(periods + 1).expect("MIDI file longer than 3 years");
     let mut sink = FakeDmx::default();
-    run(&mut FakeClock::default(), &mut midi, &mut sink, frame_count).expect("FakeDmx never fails");
+    run(
+        &mut FakeClock::default(),
+        &mut midi,
+        show,
+        &mut sink,
+        frame_count,
+    )
+    .expect("FakeDmx never fails");
     sink.frames
 }
 
@@ -140,7 +157,7 @@ mod tests {
     fn replay_emits_frame_n_at_exactly_n_periods() {
         let midi = MidiFile::open(Path::new("../tests/fixtures/midi/tempo-change.mid")).unwrap();
 
-        let frames = replay(midi);
+        let frames = replay(&Show::default(), midi);
 
         assert_eq!(frames.len(), 71, "1.75 s file → frames 0 ms to 1750 ms");
         for (index, frame) in frames.iter().enumerate() {

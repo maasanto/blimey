@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # midir links against ALSA on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       # rustup installs the toolchain pinned in rust-toolchain.toml on first use.
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings

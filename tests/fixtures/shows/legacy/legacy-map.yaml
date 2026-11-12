@@ -1,0 +1,9 @@
+# Channel-1 notes → DMX channels (plan §5). Each note of a range drives one channel,
+# starting at `address`: note-on sets it to velocity × 2 (127 → 255), note-off to 0.
+ranges:
+  - first_note: 37   # washes
+    last_note: 52
+    address: 6       # notes 37-52 → channels 6-21
+  - first_note: 60   # front dimmers
+    last_note: 63
+    address: 1       # notes 60-63 → channels 1-4
