@@ -57,6 +57,11 @@ impl EmulatedEnttec {
         self.frames.lock().unwrap().clone()
     }
 
+    /// The frames received since the last call, forgotten by the device: for long runs.
+    pub fn take_received(&self) -> Vec<Frame> {
+        std::mem::take(&mut *self.frames.lock().unwrap())
+    }
+
     pub fn wait_for_frames(&self, count: usize, patience: Duration) -> Vec<Frame> {
         let deadline = Instant::now() + patience;
         while self.frames.lock().unwrap().len() < count && Instant::now() < deadline {

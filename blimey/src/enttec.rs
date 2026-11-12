@@ -1,7 +1,8 @@
 //! Enttec DMX USB Pro output, per Enttec's "DMX USB Pro Widget API Specification".
 
-#[cfg(test)]
-mod emulator;
+/// `blimey soak --emulated-enttec` drives it; the tests use the rest.
+#[allow(dead_code)]
+pub mod emulator;
 
 use std::io::{self, Write};
 use std::time::Duration;

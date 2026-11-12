@@ -4,7 +4,9 @@ mod enttec;
 mod event_log;
 mod hot_reload;
 mod midi_input;
+mod record;
 mod service;
+mod soak;
 mod state;
 mod stream;
 mod ui;
@@ -30,9 +32,11 @@ use serialport::SerialPortType;
 use crate::api::Mode;
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
+use crate::enttec::emulator::EmulatedEnttec;
 use crate::event_log::EventLog;
 use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
+use crate::soak::{Setlist, Soak};
 use crate::state::{Resumed, StateFile};
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
@@ -68,6 +72,44 @@ enum Command {
         /// (events.log). Default: ~/Library/Application Support/Blimey
         #[arg(long)]
         state_dir: Option<PathBuf>,
+    },
+    /// Record what arrives on a MIDI port, such as Reaper playing a song over the IAC bus, to a
+    /// Standard MIDI File for `blimey replay`, clock, Start and Stop included. Time 0 is the
+    /// first message. Stops on Ctrl-C.
+    Record {
+        out: PathBuf,
+        /// MIDI input to record: the first port whose name contains this text.
+        #[arg(long, default_value = "IAC")]
+        midi_port: String,
+        /// Also stop at the first MIDI Stop after a Start or Continue: when Reaper stops.
+        #[arg(long)]
+        until_stop: bool,
+        /// Also capture the Art-Net received on UDP 6454, such as EMU's output, to this frame
+        /// dump on the same timeline as the MIDI (docs/migration.md).
+        #[arg(long, value_name = "DUMP")]
+        artnet: Option<PathBuf>,
+        /// Art-Net universe to capture: the 15-bit port-address, from 0.
+        #[arg(long, default_value_t = 0, requires = "artnet")]
+        artnet_universe: u16,
+    },
+    /// Loop a setlist of recorded songs against its show for hours, then report dropped
+    /// frames, drift, frame-time jitter and memory, under claude-artifacts/soak/. Exits with
+    /// status 1 if a check fails.
+    Soak {
+        /// YAML file: `show: <folder>` and `songs: [<file.mid>, …]`, relative to the file.
+        setlist: PathBuf,
+        #[arg(long, default_value_t = 4.0)]
+        hours: f64,
+        /// Simulate on a fake clock as fast as the machine renders, with no outputs: 100 hours
+        /// of show in minutes.
+        #[arg(long, conflicts_with_all = ["emulated_enttec", "dmx_port", "listen", "artnet"])]
+        accelerated: bool,
+        /// Send DMX through the real driver to an emulated Enttec box on a pseudo terminal,
+        /// and count the frames it receives.
+        #[arg(long, conflicts_with = "dmx_port")]
+        emulated_enttec: bool,
+        #[command(flatten)]
+        outputs: Outputs,
     },
     /// List MIDI input ports and serial ports.
     Devices,
@@ -215,6 +257,28 @@ fn main() -> ExitCode {
             outputs,
             state_dir,
         } => run(&show_dir, &midi_port, &outputs, state_dir),
+        Command::Record {
+            out,
+            midi_port,
+            until_stop,
+            artnet,
+            artnet_universe,
+        } => record::record(
+            &out,
+            &record::Recording {
+                midi_port: &midi_port,
+                until_stop,
+                artnet: artnet.as_deref().map(|dump| (dump, artnet_universe)),
+            },
+        )
+        .map(|()| ExitCode::SUCCESS),
+        Command::Soak {
+            setlist,
+            hours,
+            accelerated,
+            emulated_enttec,
+            outputs,
+        } => soak(&setlist, hours, accelerated, emulated_enttec, &outputs),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
@@ -320,6 +384,39 @@ fn run(
         u32::MAX,
     )?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn soak(
+    setlist: &Path,
+    hours: f64,
+    accelerated: bool,
+    emulated_enttec: bool,
+    outputs: &Outputs,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let setlist = Setlist::load(setlist)?;
+    let mut shows = outputs.shows(&setlist.show_dir)?;
+    let device = emulated_enttec.then(EmulatedEnttec::plug_in);
+    let mut output = outputs.start(&setlist.show_dir, &shows.current().rig)?;
+    if let Some(device) = &device {
+        output.dmx = Some(EnttecPro::new(device.path()));
+    }
+    let soak = Soak {
+        setlist: &setlist,
+        hours,
+        accelerated,
+        output,
+        device: device.as_ref(),
+    };
+    let passed = if accelerated {
+        soak.run(&mut FakeClock::default(), shows)?
+    } else {
+        soak.run(&mut MonotonicClock::default(), shows)?
+    };
+    Ok(if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// Checks `run_args` as `blimey run` would, then installs the launch agent for them.
