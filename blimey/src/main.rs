@@ -284,10 +284,7 @@ fn run(
     outputs: &Outputs,
     state_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    if !outputs.any() {
-        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
-    }
-    let mut shows = outputs.shows(show_dir)?;
+    let mut shows = check_run(show_dir, outputs)?;
     let state_dir = state_dir.or_else(|| {
         state::default_dir()
             .map_err(|error| eprintln!("state: {error}; running without saved state or event log"))
@@ -317,16 +314,33 @@ fn run(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Checks `run_args` as `blimey run` would, then installs the launch agent for them.
+/// What `run` refuses to start without: somewhere to send frames, and a show that loads.
+/// Returns the show to play.
+fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+    if !outputs.any() {
+        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
+    }
+    Ok(outputs.shows(show_dir)?)
+}
+
+/// Checks `run_args` as `blimey run` would at start, so launchd never restarts an engine that
+/// exits at once, then installs the launch agent for them.
 fn install_service(run_args: &[String], dry_run: bool) -> Result<ExitCode, Box<dyn Error>> {
     let command = ["blimey", "run"]
         .into_iter()
         .chain(run_args.iter().map(String::as_str));
     let parsed = Command::try_parse_from(command).unwrap_or_else(|error| error.exit());
-    let Command::Run { state_dir, .. } = parsed else {
+    let Command::Run {
+        show_dir,
+        outputs,
+        state_dir,
+        ..
+    } = parsed
+    else {
         unreachable!("parsed as `run`");
     };
-    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
+    check_run(&show_dir, &outputs)?;
+    let state_dir = std::path::absolute(state_dir.map_or_else(state::default_dir, Ok)?)?;
     let plist = service::plist(
         &std::env::current_exe()?,
         run_args,
