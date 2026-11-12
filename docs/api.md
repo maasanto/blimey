@@ -163,7 +163,7 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 `run` keeps two files in its state folder, `~/Library/Application Support/Blimey/` unless `--state-dir` says otherwise. Nothing goes in the show folder. Both are diagnostics, written on a background thread: a state folder the engine can't create or write is reported on stderr, and the show runs without them.
 
-- `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
+- `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. The background thread saves a change a few milliseconds after the frame that shows it; a crash inside that window resumes the state from before the change. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
 - `events.log`: one JSON object per line, for post-gig diagnosis. Each line is written unbuffered as soon as the writer gets it, so a crash loses at most the lines still queued. Past 10 MB it rotates to `events.log.1`, up to `events.log.4`; if rotating fails, logging carries on in `events.log`.
 
 ```json
