@@ -71,7 +71,8 @@ impl EventLog {
         }));
     }
 
-    /// Never fails: a write error is reported once on stderr and the engine keeps going.
+    /// Never fails: an error is reported once until the next successful write, and the engine
+    /// keeps going. A failed rotation keeps logging to the current file.
     fn write(&mut self, mut line: Value) {
         let unix_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -79,21 +80,24 @@ impl EventLog {
         line["time_ms"] = json!(unix_time.as_millis() as u64);
         let mut text = line.to_string();
         text.push('\n');
-        let result = self.rotate_if_full().and_then(|()| {
-            self.file.write_all(text.as_bytes())?;
-            self.length += text.len() as u64;
-            Ok(())
-        });
-        match result {
-            Ok(()) => self.is_failure_reported = false,
-            Err(error) if !self.is_failure_reported => {
-                eprintln!(
-                    "log: cannot write to {}: {error}; still trying",
-                    self.path.display()
-                );
-                self.is_failure_reported = true;
+        if let Err(error) = self.rotate_if_full() {
+            // Retried after another ROTATE_AT_BYTES, not on every line.
+            self.length = 0;
+            self.report(format_args!("cannot rotate: {error}; still logging to it"));
+        }
+        match self.file.write_all(text.as_bytes()) {
+            Ok(()) => {
+                self.length += text.len() as u64;
+                self.is_failure_reported = false;
             }
-            Err(_) => {}
+            Err(error) => self.report(format_args!("cannot write: {error}; still trying")),
+        }
+    }
+
+    fn report(&mut self, problem: std::fmt::Arguments) {
+        if !self.is_failure_reported {
+            eprintln!("log: {}: {problem}", self.path.display());
+            self.is_failure_reported = true;
         }
     }
 
@@ -233,6 +237,30 @@ mod tests {
             ]
         );
         assert_eq!(lines(&dir.join(FILE_NAME)).len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_rotation_that_fails_keeps_logging_to_the_current_file() {
+        let dir = scratch_dir("rotate-fails");
+        let mut log = EventLog::open(&dir).unwrap();
+        // A file can't be renamed over a folder that has something in it.
+        fs::write(dir.join("events.log.3"), "").unwrap();
+        fs::create_dir_all(dir.join("events.log.4/in-the-way")).unwrap();
+        let event = |note| MidiEvent {
+            at: Duration::ZERO,
+            message: vec![0x91, note, 127],
+        };
+
+        log.length = ROTATE_AT_BYTES;
+        log.midi(&event(36));
+        log.midi(&event(37));
+
+        let notes: Vec<Value> = lines(&dir.join(FILE_NAME))
+            .iter()
+            .map(|line| line["message"][1].clone())
+            .collect();
+        assert_eq!(notes, [json!(36), json!(37)]);
         fs::remove_dir_all(dir).unwrap();
     }
 }

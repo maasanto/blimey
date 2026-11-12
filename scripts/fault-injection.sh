@@ -5,7 +5,8 @@
 #           song and master restored
 #   midi    drop the MIDI port and bring it back: the engine reconnects
 #   serial  unplug the emulated box and plug it back: output resumes within 1 s
-# Usage: scripts/fault-injection.sh [kill|midi|serial]   (no argument runs all three)
+#   state   start with a state folder it can't use: the show runs anyway
+# Usage: scripts/fault-injection.sh [kill|midi|serial|state]   (no argument runs them all)
 # macOS only. Changes nothing outside the system temp folder.
 set -eu
 cd "$(dirname "$0")/.."

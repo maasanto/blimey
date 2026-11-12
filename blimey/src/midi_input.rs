@@ -1,34 +1,24 @@
 //! Live MIDI input from a CoreMIDI port such as the IAC bus Reaper sends to.
 
 use std::error::Error;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::Duration;
 
 use blimey_engine::{Clock, MidiEvent, MidiSource, MonotonicClock};
 use midir::{MidiInputConnection, MidiInputPort};
 
 const CLIENT_NAME: &str = "blimey";
-/// How often the input checks that its port is still the one connected, in engine time.
+/// How often a background thread checks that the port is still the one connected.
 const PORT_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Follows the port by name: if it disappears, or comes back as a new port with the same
-/// name (a restarted virtual port, a replugged interface), the input reconnects to it.
+/// name (a restarted virtual port, a replugged interface), the input reconnects to it. Port
+/// checks and reconnects run on a background thread; the render loop only reads a channel.
 pub struct MidiInput {
-    port_name: String,
-    clock: MonotonicClock,
-    /// Lists ports; kept for the engine's life, as CoreMIDI clients are not meant to churn.
-    scanner: midir::MidiInput,
-    connection: Option<Connection>,
-    next_check: Duration,
-    is_missing_reported: bool,
+    events: Receiver<MidiEvent>,
     /// An event received after the deadline being polled, kept for the next frame.
     early: Option<MidiEvent>,
-}
-
-struct Connection {
-    port: MidiInputPort,
-    events: Receiver<MidiEvent>,
-    _connection: MidiInputConnection<()>,
 }
 
 impl MidiInput {
@@ -38,21 +28,70 @@ impl MidiInput {
     pub fn connect(port_name: &str, clock: MonotonicClock) -> Result<Self, Box<dyn Error>> {
         #[cfg(target_os = "macos")]
         follow_port_changes()?;
-        let mut input = Self {
+        let (sender, events) = mpsc::channel();
+        let mut watcher = PortWatcher {
             port_name: port_name.to_string(),
             clock,
+            sender,
             scanner: midir::MidiInput::new(CLIENT_NAME)?,
             connection: None,
-            next_check: Duration::ZERO,
             is_missing_reported: false,
-            early: None,
+            is_failure_reported: false,
         };
-        input.check_port()?;
-        Ok(input)
+        // Before the first frame, so MIDI sent as soon as the engine is up is not lost.
+        watcher.check();
+        thread::spawn(move || {
+            loop {
+                thread::sleep(PORT_CHECK_INTERVAL);
+                watcher.check();
+            }
+        });
+        Ok(Self {
+            events,
+            early: None,
+        })
+    }
+}
+
+impl MidiSource for MidiInput {
+    fn poll(&mut self, until: Duration) -> Option<MidiEvent> {
+        let event = self.early.take().or_else(|| self.events.try_recv().ok())?;
+        if event.at <= until {
+            Some(event)
+        } else {
+            self.early = Some(event);
+            None
+        }
+    }
+}
+
+struct PortWatcher {
+    port_name: String,
+    clock: MonotonicClock,
+    /// Every connection sends its events here, so the render loop keeps one receiver.
+    sender: Sender<MidiEvent>,
+    /// Lists ports; kept for the engine's life, as CoreMIDI clients are not meant to churn.
+    scanner: midir::MidiInput,
+    connection: Option<(MidiInputPort, MidiInputConnection<()>)>,
+    is_missing_reported: bool,
+    is_failure_reported: bool,
+}
+
+impl PortWatcher {
+    /// A failure is reported once, until a check succeeds again.
+    fn check(&mut self) {
+        match self.reconnect_if_needed() {
+            Ok(()) => self.is_failure_reported = false,
+            Err(error) if !self.is_failure_reported => {
+                eprintln!("midi: {error}; retrying every {PORT_CHECK_INTERVAL:?}");
+                self.is_failure_reported = true;
+            }
+            Err(_) => {}
+        }
     }
 
     /// Reconnects if the port the name matches is not the one connected.
-    fn check_port(&mut self) -> Result<(), Box<dyn Error>> {
+    fn reconnect_if_needed(&mut self) -> Result<(), Box<dyn Error>> {
         let ports = self.scanner.ports();
         let names: Vec<String> = ports
             .iter()
@@ -72,13 +111,12 @@ impl MidiInput {
         if self
             .connection
             .as_ref()
-            .is_some_and(|connection| connection.port == *port)
+            .is_some_and(|(connected, _)| connected == port)
         {
             return Ok(());
         }
         self.connection = None;
-        let (sender, events) = mpsc::channel();
-        let clock = self.clock;
+        let (sender, clock) = (self.sender.clone(), self.clock);
         let full_name = &names[index];
         let connection = midir::MidiInput::new(CLIENT_NAME)?
             .connect(
@@ -89,8 +127,7 @@ impl MidiInput {
                         at: clock.now(),
                         message: message.to_vec(),
                     };
-                    // Only fails once the engine has dropped the receiver, i.e. while shutting down
-                    // or reconnecting.
+                    // Only fails once the engine has dropped the receiver, i.e. while shutting down.
                     let _ = sender.send(event);
                 },
                 (),
@@ -98,33 +135,8 @@ impl MidiInput {
             .map_err(|error| format!("cannot connect to MIDI port {full_name:?}: {error}"))?;
         eprintln!("midi: listening on {full_name:?}");
         self.is_missing_reported = false;
-        self.connection = Some(Connection {
-            port: port.clone(),
-            events,
-            _connection: connection,
-        });
+        self.connection = Some((port.clone(), connection));
         Ok(())
-    }
-}
-
-impl MidiSource for MidiInput {
-    fn poll(&mut self, until: Duration) -> Option<MidiEvent> {
-        if until >= self.next_check {
-            self.next_check = until + PORT_CHECK_INTERVAL;
-            if let Err(error) = self.check_port() {
-                eprintln!("midi: {error}; retrying");
-            }
-        }
-        let event = self
-            .early
-            .take()
-            .or_else(|| self.connection.as_ref()?.events.try_recv().ok())?;
-        if event.at <= until {
-            Some(event)
-        } else {
-            self.early = Some(event);
-            None
-        }
     }
 }
 
@@ -135,13 +147,13 @@ impl MidiSource for MidiInput {
 #[cfg(target_os = "macos")]
 fn follow_port_changes() -> Result<(), Box<dyn Error>> {
     let (ready, created) = mpsc::channel();
-    std::thread::spawn(move || {
+    thread::spawn(move || {
         let client = midir::MidiInput::new(CLIENT_NAME);
         let _ = ready.send(client.as_ref().map(|_| ()).map_err(ToString::to_string));
         while client.is_ok() {
             core_foundation::runloop::CFRunLoop::run_current();
             // Only reached if the loop has nothing to wait on.
-            std::thread::sleep(PORT_CHECK_INTERVAL);
+            thread::sleep(PORT_CHECK_INTERVAL);
         }
     });
     created.recv()?.map_err(Into::into)
