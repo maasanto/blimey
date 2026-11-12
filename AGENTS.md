@@ -23,7 +23,7 @@ Strata is a headless DMX lighting engine driven by Reaper over MIDI, replacing E
 
 ## Workflow
 
-- One chunk = one branch (`c<N>-<slug>`, e.g. `c3-named-cues`) = one PR against `main`.
-- Branch from an up-to-date `main`. Squash before the first push; after that, review fixes are new commits, never force-push.
+- One chunk = one branch (`c<N>-<slug>`, e.g. `c3-named-cues`) = one PR against `develop`, the default branch. Never push to `main`.
+- Branch from an up-to-date `develop`. Squash before the first push; after that, review fixes are new commits, never force-push.
 - Keep the diff to the chunk's scope. Unrelated fixes get their own PR.
 - PR description: what the chunk delivers, how acceptance is tested, any regenerated references, then the chunk's human check from `docs/plan.md` as a checklist for Antoine (`- [ ] ...`, or "Human check: none").
