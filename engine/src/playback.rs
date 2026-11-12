@@ -12,7 +12,7 @@ use crate::fixture::Attribute;
 use crate::look::{self, Look};
 use crate::rig::Rig;
 use crate::song::Song;
-use crate::{DMX_CHANNELS, Frame, MidiEvent, Show, Universes};
+use crate::{ArtNetFrames, DMX_CHANNELS, Frame, MidiEvent, Show, Universe, Universes};
 
 /// Status bytes on channel 2 (cues, song select, master, live parameters).
 const CUE_NOTE_OFF: u8 = 0x81;
@@ -275,7 +275,14 @@ impl Playback {
                 None => cue.opacity(clock, active.started, at),
                 Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
             };
-            let mut lit = output.clone();
+            // Only pixel cues draw on Art-Net: the others get no copy of it to blend back.
+            let mut lit = Universes {
+                enttec: output.enttec,
+                artnet: match cue {
+                    Cue::Pixel(_) => output.artnet.clone(),
+                    _ => ArtNetFrames::new(),
+                },
+            };
             cue.draw(
                 &show.rig,
                 clock,
@@ -287,8 +294,8 @@ impl Playback {
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
             crossfade(&mut output.enttec, &lit.enttec, opacity);
-            for (universe, frame) in &mut output.artnet {
-                crossfade(frame, &lit.artnet[universe], opacity);
+            for (universe, lit) in &lit.artnet {
+                crossfade(output.frame_mut(Universe::ArtNet(*universe)), lit, opacity);
             }
         }
         apply_master(&show.rig, self.master, &mut output);

@@ -13,6 +13,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use blimey_engine::look::Look;
+use blimey_engine::rig::Rig;
 use blimey_engine::song::Song;
 use blimey_engine::{
     FakeClock, FakeDmx, MidiEvent, MidiSource, RecordedFrame, Show, first_difference, format_dump,
@@ -50,22 +51,34 @@ fn render(rig: &str, cue: &str, fired_at: Duration, frames: u32) -> Vec<Recorded
     render_song(rig, &cues, &[(fired_at, CUE_NOTE)], frames)
 }
 
-/// Renders a 150 BPM song holding `cues` (the YAML under `cues:`), firing each note at its time.
+/// Renders a 150 BPM song holding `cues` (the YAML under `cues:`) on the show folder `rig`,
+/// firing each channel-2 note at its time.
 fn render_song(rig: &str, cues: &str, notes: &[(Duration, u8)], frames: u32) -> Vec<RecordedFrame> {
-    let mut show = Show::load(Path::new(&format!("{FIXTURES}/shows/{rig}"))).unwrap();
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/{rig}"))).unwrap();
+    let messages: Vec<(Duration, Vec<u8>)> = notes
+        .iter()
+        .map(|&(at, note)| (at, vec![0x91, note, 127]))
+        .collect();
+    render_show(show, cues, &messages, frames)
+}
+
+/// Renders a 150 BPM song holding `cues` on `show`, selected at 0 ms, then `messages`.
+fn render_show(
+    mut show: Show,
+    cues: &str,
+    messages: &[(Duration, Vec<u8>)],
+    frames: u32,
+) -> Vec<RecordedFrame> {
     let song = format!("program: 1\nbpm: 150\ncues:\n{cues}");
     show.songs = vec![Song::parse("pixels", &song, &show).unwrap()];
-    let event = |at, message: &[u8]| MidiEvent {
-        at,
-        message: message.to_vec(),
-    };
+    let select = (Duration::ZERO, vec![0xC1, 1]);
     let mut midi = Events(
-        std::iter::once(event(Duration::ZERO, &[0xC1, 1]))
-            .chain(
-                notes
-                    .iter()
-                    .map(|&(at, note)| event(at, &[0x91, note, 127])),
-            )
+        std::iter::once(&select)
+            .chain(messages)
+            .map(|(at, message)| MidiEvent {
+                at: *at,
+                message: message.clone(),
+            })
             .collect(),
     );
     let mut sink = FakeDmx::default();
@@ -209,16 +222,87 @@ fn split_mirrors_one_bar_per_half_about_the_centre() {
 }
 
 #[test]
-fn one_by_one_steps_through_a_grid_column_by_column() {
-    let frames = render(
-        "pixel-grid-8x8",
-        &matrix_cue("one-by-one", "chase"),
-        Duration::ZERO,
-        4,
-    );
+fn one_by_one_chases_a_grid_column_by_column_whatever_the_width() {
+    // Default params but a cycle of 8 frames: width 1.
+    let cue = "    shape: one-by-one\n    effect: chase\n    params: { color: \"#ff0000\", speed: 200ms }\n";
+    let frames = render("pixel-grid-8x8", cue, Duration::ZERO, 8);
 
     let columns: Vec<Vec<usize>> = frames.iter().map(lit_columns).collect();
-    assert_eq!(columns, [[1], [3], [5], [7]]);
+    assert_eq!(columns, [[0], [1], [2], [3], [4], [5], [6], [7]]);
+}
+
+#[test]
+fn one_by_one_chases_the_washes_one_by_one_with_default_params() {
+    let cue = "    shape: one-by-one\n    effect: chase\n    params: { color: \"#ff0000\", speed: 100ms }\n";
+    let frames = render("four-washes", cue, Duration::ZERO, 4);
+    // Wash addresses in the test rig; red is each wash's first channel.
+    let lit_washes = |frame: &RecordedFrame| -> Vec<usize> {
+        [1, 17, 33, 101]
+            .into_iter()
+            .enumerate()
+            .filter(|(_, address)| frame.values[address - 1] > 0)
+            .map(|(wash, _)| wash + 1)
+            .collect()
+    };
+
+    let washes: Vec<Vec<usize>> = frames.iter().map(lit_washes).collect();
+    assert_eq!(washes, [[1], [2], [3], [4]]);
+}
+
+#[test]
+fn one_by_one_lights_grids_at_the_same_stage_position_together() {
+    // Two 2-column grids, one above the other, at the same position across the stage.
+    let grid = |name: &str, y: f32, address: u32| {
+        format!(
+            "  - {{ name: {name}, type: pixel-grid, columns: 2, rows: 1, colour_order: RGB, address: {address}, canvas: {{ x: 0, y: {y}, width: 1, height: 0.5 }} }}\n"
+        )
+    };
+    let rig = format!("fixtures:\n{}{}", grid("low", 0.0, 1), grid("high", 0.5, 7));
+    let show = Show {
+        rig: Rig::parse(&rig, Path::new(".")).unwrap(),
+        ..Show::default()
+    };
+    let cues = "  60: { name: chase, type: pixel, shape: one-by-one, effect: chase, params: { color: \"#ff0000\", speed: 50ms } }\n";
+
+    let frames = render_show(show, cues, &[(Duration::ZERO, vec![0x91, 60, 127])], 2);
+
+    // Red of low's left and right pixels, then high's.
+    let reds = |frame: &RecordedFrame| {
+        [
+            frame.values[0],
+            frame.values[3],
+            frame.values[6],
+            frame.values[9],
+        ]
+    };
+    assert_eq!(reds(&frames[0]), [255, 0, 255, 0], "both left columns");
+    assert_eq!(reds(&frames[1]), [0, 255, 0, 255], "both right columns");
+}
+
+/// Plan §5: a pixel cue overrides only the channels it touches.
+#[test]
+fn a_pixel_cue_leaves_fixtures_and_channels_it_does_not_touch_to_the_layers_below() {
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/pixel-layers"))).unwrap();
+    let cues = "  61: { name: haze, type: scene, values: { smoke-dimmer: { dimmer: 60% } } }\n  62: { name: red, type: pixel, params: { color: \"#ff0000\" } }\n";
+    let messages = [
+        (Duration::ZERO, vec![0x90, 60, 100]),
+        (Duration::ZERO, vec![0x91, 61, 127]),
+        (Duration::ZERO, vec![0x91, 62, 127]),
+    ];
+
+    let frames = render_show(show, cues, &messages, 1);
+
+    let values = &frames[0].values;
+    assert_eq!(
+        values[0], 153,
+        "the scene's dimmer on a fixture with no emitters"
+    );
+    assert_eq!(
+        values[1..4],
+        [255, 0, 0],
+        "the pixel cue on the par's emitters"
+    );
+    assert_eq!(values[4], 200, "legacy keeps the par's strobe channel");
 }
 
 /// Plan §5: legacy < cues < pixel < master, whatever order the notes come in.

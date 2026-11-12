@@ -1,0 +1,13 @@
+# A fixture with no emitters and one with a channel the engine doesn't drive, to check that a
+# pixel cue leaves what it doesn't touch to the layers below.
+fixtures:
+  - name: smoke-dimmer
+    profile: dimmer-only
+    mode: 1ch
+    address: 1
+    canvas: { x: 0.1, y: 0.5 }
+  - name: par
+    profile: rgb-strobe
+    mode: 4ch
+    address: 2
+    canvas: { x: 0.9, y: 0.5 }

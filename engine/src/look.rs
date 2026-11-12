@@ -140,7 +140,7 @@ pub fn render(rig: &Rig, look: &Look, frame: &mut Frame) {
 /// Draws one fixture over `frame`: every channel at its profile default, then `dimmer` and
 /// each pixel's colour. A fixture with a dimmer channel gets `dimmer` there; one without has
 /// its colour channels scaled by it.
-pub(crate) fn draw_fixture(
+fn draw_fixture(
     fixture: &Fixture,
     dimmer: f32,
     rgbw: RgbwMode,

@@ -5,17 +5,16 @@
 //! count cycles of their `speed` from the note, and sparkle draws from a hash of the cue's seed,
 //! the pixel's position and the cycle, never from running state.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
-use crate::colour::{Rgb, RgbwMode};
+use crate::colour::{Rgb, RgbwMode, to_dmx};
 use crate::duration::Length;
 use crate::envelope::Envelope;
-use crate::look::{colour, draw_fixture, draw_pixel};
-use crate::rig::Rig;
+use crate::look::{colour, draw_pixel};
+use crate::rig::{Fixture, Rig, line_key};
 use crate::{Show, Universes};
 
 /// Where the shape sits, 0–1 along its travel, for effects that don't move it.
@@ -23,6 +22,9 @@ const REST_POSITION: f64 = 0.5;
 /// A sparkle flash lasts this fraction of a cycle, fading linearly.
 // ponytail: fixed flash length; make it a param if the preview sheet asks for denser sparkle.
 const FLASH: f64 = 0.25;
+/// Frames often land exactly on a chase step, on the beat; time and beat arithmetic can put
+/// them a hair before it. This keeps them on the step they land on.
+const STEP_ROUNDING: f64 = 1e-9;
 /// Mixed into the cue's seed for layer 2, so its sparkle doesn't mirror layer 1's.
 const LAYER_2_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 const WHITE: Rgb = Rgb {
@@ -242,36 +244,65 @@ impl PixelScene {
             let seed = self.seed ^ LAYER_2_SEED;
             (*blend, layer.at(rig, clock, started, at, seed))
         });
-        let colour = |x: f32, y: f32, unit: usize| {
-            let below = layer.colour(x, y, unit);
+        let colour = |x: f32, y: f32, cell: Cell| {
+            let below = layer.colour(x, y, cell);
             match &layer_2 {
                 None => below,
-                Some((blend, above)) => blend.apply(below, above, x, y, unit),
+                Some((blend, above)) => blend.apply(below, above, x, y, cell),
             }
         };
-        for (unit, fixture) in rig.fixtures.iter().enumerate() {
-            draw_fixture(
-                fixture,
-                intensity,
-                self.rgbw,
-                |pixel| colour(pixel.x, pixel.y, unit),
-                &mut out.enttec,
-            );
-        }
-        for (index, grid) in rig.grids.iter().enumerate() {
-            let unit = rig.fixtures.len() + index;
-            for pixel in &grid.pixels {
-                let frame = out.frame_mut(pixel.universe);
-                let lit = colour(pixel.x, pixel.y, unit);
-                draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
+        // Plan §5: a pixel cue overrides only the channels it touches, its fixtures' emitters
+        // and dimmer. Fixtures without emitters, and other channels, keep the layers below.
+        for fixture in rig.fixtures.iter().filter(|fixture| has_emitters(fixture)) {
+            let start = fixture.address - 1;
+            let colour_scale = match fixture.dimmer {
+                Some(offset) => {
+                    out.enttec[start + offset] = to_dmx(intensity);
+                    1.0
+                }
+                None => intensity,
+            };
+            let centre = fixture.centre();
+            for pixel in &fixture.pixels {
+                let lit = colour(pixel.x, pixel.y, centre);
+                draw_pixel(
+                    pixel.channels,
+                    start,
+                    lit,
+                    self.rgbw,
+                    colour_scale,
+                    &mut out.enttec,
+                );
             }
+        }
+        for pixel in rig.grids.iter().flat_map(|grid| &grid.pixels) {
+            let lit = colour(pixel.x, pixel.y, (pixel.x, pixel.y));
+            let frame = out.frame_mut(pixel.universe);
+            draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
         }
     }
 }
 
+fn has_emitters(fixture: &Fixture) -> bool {
+    fixture.pixels.iter().any(|pixel| {
+        let channels = pixel.channels;
+        [channels.red, channels.green, channels.blue, channels.white]
+            .iter()
+            .any(Option::is_some)
+    })
+}
+
+/// Where one-by-one places a pixel: its fixture's centre, so a fixture lights as one, or for
+/// a grid the pixel itself, so a grid steps one line at a time across the direction (a
+/// column for left-to-right, a row for bottom-to-top). Lines, not single pixels: a 16×16 grid
+/// steps through 16 lines the eye follows across the stage, where 256 single pixels would be
+/// too small and too many to read; a column still steps pixel by pixel. Cells at the same
+/// position along the travel, in different grids or fixtures, light together.
+type Cell = (f32, f32);
+
 /// A layer at one moment: what every pixel needs that doesn't depend on the pixel.
-struct LayerFrame<'scene> {
-    layer: &'scene Layer,
+struct LayerFrame<'frame> {
+    layer: &'frame Layer,
     /// 0–1 along the travel.
     position: f64,
     /// Cycles since the note, phase included.
@@ -279,29 +310,35 @@ struct LayerFrame<'scene> {
     /// The pulse curve's level now; 1 for other effects.
     level: f64,
     seed: u64,
-    /// Units below this are fixtures; from it on, grids.
-    fixture_count: usize,
-    /// For one-by-one: each cell's turn, from 0, in order along the travel.
-    turns: BTreeMap<Cell, usize>,
+    /// For one-by-one: the rig's lines across the direction, ascending on the canvas.
+    lines: &'frame [i32],
 }
 
 impl Layer {
-    fn at(
-        &self,
-        rig: &Rig,
+    fn at<'frame>(
+        &'frame self,
+        rig: &'frame Rig,
         clock: &ClockFollower,
         started: Moment,
         at: Duration,
         seed: u64,
-    ) -> LayerFrame<'_> {
+    ) -> LayerFrame<'frame> {
+        let lines = match self.direction {
+            Direction::LeftToRight | Direction::RightToLeft => &rig.lines_x,
+            Direction::BottomToTop | Direction::TopToBottom => &rig.lines_y,
+        };
         let cycles = clock.cycles(self.speed, started, at) + self.phase;
         let within = cycles.rem_euclid(1.0);
         let position = match self.effect {
             Effect::Static => (REST_POSITION + self.phase).rem_euclid(1.0),
             Effect::Move => within,
             Effect::Chase => {
-                let steps = (1.0 / self.travel_width()).round().max(1.0);
-                ((within * steps).floor() + 0.5) / steps
+                // One-by-one steps a cell at a time, whatever the width.
+                let steps = match self.shape {
+                    Shape::OneByOne => lines.len().max(1) as f64,
+                    _ => (1.0 / self.travel_width()).round().max(1.0),
+                };
+                ((within * steps + STEP_ROUNDING).floor() + 0.5) / steps
             }
             Effect::Pulse | Effect::Sparkle => REST_POSITION,
         };
@@ -315,8 +352,7 @@ impl Layer {
             cycles,
             level,
             seed,
-            fixture_count: rig.fixtures.len(),
-            turns: self.turns(rig),
+            lines,
         }
     }
 
@@ -328,53 +364,27 @@ impl Layer {
             _ => self.width,
         }
     }
-
-    /// For one-by-one: the turn of each cell, ordered by where its pixels sit, on average,
-    /// along the travel.
-    fn turns(&self, rig: &Rig) -> BTreeMap<Cell, usize> {
-        if self.shape != Shape::OneByOne {
-            return BTreeMap::new();
-        }
-        let mut cells: BTreeMap<Cell, (f64, f64)> = BTreeMap::new();
-        let mut add = |cell: Cell, travel: f64| {
-            let (sum, count) = cells.entry(cell).or_default();
-            *sum += travel;
-            *count += 1.0;
-        };
-        for (unit, fixture) in rig.fixtures.iter().enumerate() {
-            for pixel in &fixture.pixels {
-                add((unit, 0), travel(self.direction, pixel.x, pixel.y));
-            }
-        }
-        for (index, grid) in rig.grids.iter().enumerate() {
-            for pixel in &grid.pixels {
-                let travel = travel(self.direction, pixel.x, pixel.y);
-                add((rig.fixtures.len() + index, travel.to_bits()), travel);
-            }
-        }
-        let mut order: Vec<(Cell, f64)> = cells
-            .into_iter()
-            .map(|(cell, (sum, count))| (cell, sum / count))
-            .collect();
-        order.sort_by(|(_, a), (_, b)| a.total_cmp(b));
-        order
-            .into_iter()
-            .enumerate()
-            .map(|(turn, (cell, _))| (cell, turn))
-            .collect()
-    }
 }
 
-/// What one-by-one lights at a time: a fixture, `(fixture, 0)`, or one line of a grid across
-/// the direction (a column for left-to-right, a row for bottom-to-top), `(unit, its travel as
-/// bits)`. Lines, not single pixels: a 16×16 grid steps through 16 lines that the eye follows
-/// across the stage, where 256 single pixels would be too small and too many to read, and a
-/// column still steps pixel by pixel.
-type Cell = (usize, u64);
-
 impl LayerFrame<'_> {
-    /// How lit the pixel at (`x`, `y`) of fixture or grid `unit` is, 0–1.
-    fn level(&self, x: f32, y: f32, unit: usize) -> f64 {
+    /// One-by-one's turn for `cell`, from 0, in order along the travel.
+    fn turn(&self, (x, y): Cell) -> usize {
+        let key = match self.layer.direction {
+            Direction::LeftToRight | Direction::RightToLeft => line_key(x),
+            Direction::BottomToTop | Direction::TopToBottom => line_key(y),
+        };
+        let from_start = self
+            .lines
+            .binary_search(&key)
+            .expect("the rig lists every fixture's and grid pixel's line");
+        match self.layer.direction {
+            Direction::LeftToRight | Direction::BottomToTop => from_start,
+            Direction::RightToLeft | Direction::TopToBottom => self.lines.len() - 1 - from_start,
+        }
+    }
+
+    /// How lit the pixel at (`x`, `y`) in one-by-one `cell` is, 0–1.
+    fn level(&self, x: f32, y: f32, cell: Cell) -> f64 {
         let Layer {
             shape,
             effect,
@@ -402,13 +412,8 @@ impl LayerFrame<'_> {
             }
             Shape::Gradient => (travel(direction, x, y) - position + 0.5).rem_euclid(1.0),
             Shape::OneByOne => {
-                let cell = if unit < self.fixture_count {
-                    (unit, 0)
-                } else {
-                    (unit, travel(direction, x, y).to_bits())
-                };
-                let lit_turn = (position * self.turns.len() as f64).floor();
-                f64::from(u8::from(self.turns[&cell] as f64 == lit_turn))
+                let lit_turn = (position * self.lines.len() as f64).floor();
+                f64::from(u8::from(self.turn(cell) as f64 == lit_turn))
             }
         };
         let flash = match effect {
@@ -430,26 +435,26 @@ impl LayerFrame<'_> {
         }
     }
 
-    fn colour(&self, x: f32, y: f32, unit: usize) -> Rgb {
+    fn colour(&self, x: f32, y: f32, cell: Cell) -> Rgb {
         mix(
             self.layer.background,
             self.layer.color,
-            self.level(x, y, unit) as f32,
+            self.level(x, y, cell) as f32,
         )
     }
 }
 
 impl Blend {
-    fn apply(self, below: Rgb, above: &LayerFrame, x: f32, y: f32, unit: usize) -> Rgb {
+    fn apply(self, below: Rgb, above: &LayerFrame, x: f32, y: f32, cell: Cell) -> Rgb {
         let combine = |combine: fn(f32, f32) -> f32, above: Rgb| Rgb {
             red: combine(below.red, above.red),
             green: combine(below.green, above.green),
             blue: combine(below.blue, above.blue),
         };
         match self {
-            Blend::Max => combine(f32::max, above.colour(x, y, unit)),
-            Blend::Add => combine(|a, b| (a + b).min(1.0), above.colour(x, y, unit)),
-            Blend::Mask => mix(Rgb::default(), below, above.level(x, y, unit) as f32),
+            Blend::Max => combine(f32::max, above.colour(x, y, cell)),
+            Blend::Add => combine(|a, b| (a + b).min(1.0), above.colour(x, y, cell)),
+            Blend::Mask => mix(Rgb::default(), below, above.level(x, y, cell) as f32),
         }
     }
 }

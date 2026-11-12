@@ -147,7 +147,7 @@ cues:
 
 ### Pixel cues
 
-The effect is worked out in RGB at each pixel's canvas position, then converted per fixture: RGBW pixels follow `rgbw` (`saturated` or `white-rich`, as in looks). Velocity is the cue's intensity: it goes on the dimmer channel of fixtures that have one, and scales the colour of the others. A frame depends only on the time and beats since the note, and on `seed`.
+The effect is worked out in RGB at each pixel's canvas position, then converted per fixture: RGBW pixels follow `rgbw` (`saturated` or `white-rich`, as in looks). Velocity is the cue's intensity: it goes on the dimmer channel of fixtures that have one, and scales the colour of the others. A pixel cue writes only what it drives: the colour emitters of fixtures and grids, and the dimmer channel of a fixture whose pixels it draws. Fixtures without colour emitters, and other channels such as a shutter or strobe, keep the layers below. A frame depends only on the time and beats since the note, and on `seed`.
 
 `params`, all optional:
 
@@ -170,7 +170,7 @@ Shapes, each with a position along its travel from 0 to 1:
 | `circle` | A ring `width` thick around the canvas centre, at the position as a fraction of the distance to the corners: growing for `left-to-right` and `bottom-to-top`, shrinking for the other two |
 | `split` | The canvas split into halves mirrored about the centre line across the direction, with a bar `width` wide in each: the two bars travel from the centre out to the edges for `left-to-right` and `bottom-to-top`, from the edges in for the other two |
 | `gradient` | A ramp from `background` to `color` along the direction, scrolled by the position |
-| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down |
+| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down. Cells at the same position along the direction, a fixture's at its centre, light together: two grids hung one above the other step left to right as one |
 
 Effects, each repeating once per `speed`, counted from the note:
 
@@ -178,7 +178,7 @@ Effects, each repeating once per `speed`, counted from the note:
 | --- | --- |
 | `static` | Holds the shape mid-travel; `phase` moves it |
 | `move` | Glides the shape along its travel |
-| `chase` | Steps the shape along its travel in 1 / `width` steps |
+| `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width` |
 | `pulse` | Holds the shape mid-travel, its level following `curve` |
 | `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. `seed` fixes the pattern |
 
