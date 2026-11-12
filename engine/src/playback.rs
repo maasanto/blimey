@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::cue::ramp;
+use crate::clock_follower::{ClockFollower, Moment};
+use crate::cue::Cue;
 use crate::fixture::Attribute;
 use crate::look::{self, Look};
 use crate::rig::Rig;
@@ -25,11 +26,15 @@ const MASTER_CONTROLLER: u8 = 7;
 const FIRST_LIVE_PARAMETER: u8 = 20;
 pub const LIVE_PARAMETERS: usize = 8;
 const MIDI_DATA_MAX: f32 = 127.0;
+/// Reaper's default tempo, for a song without `bpm` when no MIDI clock arrives.
+const DEFAULT_BPM: f32 = 120.0;
 
 pub(crate) struct Playback {
     legacy: Frame,
     /// Name of the selected song, if any.
     song: Option<String>,
+    /// Musical time for the selected song, started when it was selected.
+    clock: Option<ClockFollower>,
     /// Whether panic put the safe look up; it stays until the next song select.
     safe_look: bool,
     /// Lowest first: a cue fired later draws over the earlier ones.
@@ -40,14 +45,14 @@ pub(crate) struct Playback {
 
 struct ActiveCue {
     note: u8,
-    started: Duration,
+    started: Moment,
     /// Note-on velocity as 0–1.
     intensity: f32,
     released: Option<Release>,
 }
 
 struct Release {
-    at: Duration,
+    at: Moment,
     /// Opacity when released, which then fades to 0.
     opacity: f32,
 }
@@ -76,6 +81,7 @@ impl Default for Playback {
         Playback {
             legacy: [0; DMX_CHANNELS],
             song: None,
+            clock: None,
             safe_look: false,
             cues: Vec::new(),
             master: 1.0,
@@ -86,6 +92,9 @@ impl Default for Playback {
 
 impl Playback {
     pub fn apply(&mut self, show: &Show, event: &MidiEvent) {
+        if let Some(clock) = &mut self.clock {
+            clock.apply(event.at, &event.message);
+        }
         show.legacy.apply(&event.message, &mut self.legacy);
         match *event.message.as_slice() {
             [CUE_PROGRAM_CHANGE, program] => self.select_song(show, program),
@@ -114,44 +123,61 @@ impl Playback {
 
     /// Output only depends on MIDI since the song started: its cues start from nothing.
     fn select_song(&mut self, show: &Show, program: u8) {
-        self.song = show
-            .songs
-            .iter()
-            .find(|song| song.program == program)
-            .map(|song| song.name.clone());
+        let song = show.songs.iter().find(|song| song.program == program);
+        self.song = song.map(|song| song.name.clone());
+        self.clock = song.map(|song| {
+            let bpm = song.bpm.unwrap_or(DEFAULT_BPM);
+            ClockFollower::new(f64::from(bpm), song.time_signature)
+        });
         self.cues.clear();
         self.safe_look = false;
     }
 
     fn start(&mut self, show: &Show, note: u8, velocity: u8, at: Duration) {
+        let Some(clock) = &self.clock else {
+            return;
+        };
         if !self
             .song(show)
             .is_some_and(|song| song.cues.contains_key(&note))
         {
             return;
         }
+        let started = clock.moment(at);
         // A retriggered cue fades out under its new instance.
         self.release(show, note, at);
         self.cues.push(ActiveCue {
             note,
-            started: at,
+            started,
             intensity: f32::from(velocity) / MIDI_DATA_MAX,
             released: None,
         });
     }
 
     fn release(&mut self, show: &Show, note: u8, at: Duration) {
-        let Some(cue) = self.song(show).and_then(|song| song.cues.get(&note)) else {
+        let (Some(cue), Some(clock)) = (
+            self.song(show).and_then(|song| song.cues.get(&note)),
+            &self.clock,
+        ) else {
             return;
         };
         for active in &mut self.cues {
             if active.note == note && active.released.is_none() {
                 active.released = Some(Release {
-                    at,
-                    opacity: cue.opacity(at.saturating_sub(active.started)),
+                    at: clock.moment(at),
+                    opacity: cue.opacity(clock, active.started, at),
                 });
             }
         }
+    }
+
+    /// A line for the log when the selected song's tempo source changes (see `ClockFollower`).
+    pub fn log_line(&mut self, at: Duration) -> Option<String> {
+        let line = self.clock.as_mut()?.log_line(at)?;
+        Some(format!(
+            "{}: {line}",
+            self.song.as_deref().unwrap_or_default()
+        ))
     }
 
     /// Panic: clears legacy levels and cues and puts up the song's safe look.
@@ -166,28 +192,28 @@ impl Playback {
     pub fn render(&mut self, show: &Show, look: &Look, at: Duration) -> Frame {
         let mut frame = self.legacy;
         look::render(&show.rig, look, &mut frame);
-        let Some(song) = self.song(show) else {
+        let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
             apply_master(&show.rig, self.master, &mut frame);
             return frame;
         };
         if self.safe_look {
             look::render(&show.rig, &song.safe_look, &mut frame);
         }
+        let faded_out =
+            |cue: &Cue, release: &Release| clock.progress(cue.release(), release.at, at) as f32;
         self.cues.retain(|active| {
             song.cues.get(&active.note).is_some_and(|cue| {
                 active
                     .released
                     .as_ref()
-                    .is_none_or(|release| ramp(at.saturating_sub(release.at), cue.release()) < 1.0)
+                    .is_none_or(|release| faded_out(cue, release) < 1.0)
             })
         });
         for active in &self.cues {
             let cue = &song.cues[&active.note];
             let opacity = match &active.released {
-                None => cue.opacity(at.saturating_sub(active.started)),
-                Some(release) => {
-                    release.opacity * (1.0 - ramp(at.saturating_sub(release.at), cue.release()))
-                }
+                None => cue.opacity(clock, active.started, at),
+                Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
             };
             let mut lit = frame;
             cue.draw(&show.rig, active.intensity, &mut lit);
