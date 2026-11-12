@@ -1,5 +1,6 @@
 // Starts real engines for the UI tests: `blimey fire --listen` with no DMX device, so frames go
-// only to the stream. Each test gets a scratch copy of the four-washes show to write to.
+// only to the stream. Each test gets a scratch copy of a show to write to: four-washes unless it
+// sets the `showSource` option.
 
 import { spawn } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync } from 'node:fs';
@@ -17,8 +18,8 @@ const LOOK = [
   '--set', 'wash-4', 'color=#ff8040', 'dimmer=60%', 'rgbw=white-rich',
 ];
 
-function start(show, { listen = '127.0.0.1:0', edit = true } = {}) {
-  const args = ['fire', show, ...LOOK, '--listen', listen, ...(edit ? ['--edit'] : [])];
+function start(show, { listen = '127.0.0.1:0', edit = true, look = LOOK } = {}) {
+  const args = ['fire', show, ...look, '--listen', listen, ...(edit ? ['--edit'] : [])];
   const child = spawn(BINARY, args, { stdio: ['ignore', 'pipe', 'inherit'] });
   const exited = new Promise((resolve) => child.once('exit', resolve));
   const address = new Promise((resolve, reject) => {
@@ -36,10 +37,26 @@ function start(show, { listen = '127.0.0.1:0', edit = true } = {}) {
   return address.then((address) => ({ address, url: `http://${address}/`, stop }));
 }
 
+/** The DMX output of the next frame the engine at `address` streams. */
+export function nextDmx(address) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://${address}/ws`);
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type !== 'frame') return;
+      socket.close();
+      resolve(message.dmx);
+    };
+    socket.onerror = () => reject(new Error(`no stream at ws://${address}/ws`));
+  });
+}
+
 export const test = base.extend({
-  show: async ({}, use) => {
+  /** The show each test copies, from the repository root. */
+  showSource: ['tests/fixtures/shows/four-washes', { option: true }],
+  show: async ({ showSource }, use) => {
     const show = mkdtempSync(path.join(tmpdir(), 'blimey-ui-'));
-    cpSync(path.join(ROOT, 'tests/fixtures/shows/four-washes'), show, { recursive: true });
+    cpSync(path.join(ROOT, showSource), show, { recursive: true });
     await use(show);
     rmSync(show, { recursive: true });
   },
