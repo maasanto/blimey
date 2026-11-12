@@ -171,41 +171,53 @@ struct ArtNetMirror {
         value_parser = artnet::parse_node,
     )]
     artnet: Option<SocketAddrV4>,
-    /// Art-Net universe the mirror sends on: the 15-bit port-address, from 0.
+    /// Art-Net universe the mirror sends on: the 15-bit port-address, from 0. Defaults to 0,
+    /// unless a pixel grid uses 0: then the grid keeps it and the output isn't mirrored.
     #[arg(
         long,
-        default_value_t = 0,
         value_parser = clap::value_parser!(u16).range(..=i64::from(artnet::MAX_UNIVERSE)),
         requires = "artnet",
     )]
-    artnet_universe: u16,
+    artnet_universe: Option<u16>,
 }
+
+const DEFAULT_MIRROR_UNIVERSE: u16 = 0;
 
 impl ArtNetMirror {
     /// Opens the Art-Net output, which also carries `rig`'s pixel grids on Art-Net universes.
     // ponytail: checked against the rig at start only; a hot reload that adds grids isn't rechecked.
     fn start(&self, rig: &Rig) -> io::Result<Option<ArtNet>> {
-        let grid_universes: Vec<String> = rig
-            .artnet_frames()
-            .keys()
-            .map(|universe| universe.to_string())
-            .collect();
-        match self.artnet {
-            None if !grid_universes.is_empty() => eprintln!(
-                "blimey: pixel grids use Art-Net universes {} but --artnet is not set: they get no output",
-                grid_universes.join(", ")
-            ),
-            Some(_) if grid_universes.contains(&self.artnet_universe.to_string()) => {
-                return Err(io::Error::other(format!(
-                    "--artnet-universe {} is also a pixel grid's universe; mirror the Enttec frame on another one",
-                    self.artnet_universe
-                )));
+        let grid_universes = &rig.artnet_universes;
+        let Some(node) = self.artnet else {
+            if !grid_universes.is_empty() {
+                eprintln!(
+                    "blimey: pixel grids use Art-Net universes {grid_universes:?} but --artnet is not set: they get no output"
+                );
             }
-            _ => {}
+            return Ok(None);
+        };
+        let mirror = self
+            .mirror_universe(grid_universes)
+            .map_err(io::Error::other)?;
+        if mirror.is_none() {
+            eprintln!(
+                "blimey: not mirroring the output: a pixel grid uses Art-Net universe {DEFAULT_MIRROR_UNIVERSE}; pass --artnet-universe to mirror on another"
+            );
         }
-        self.artnet
-            .map(|node| ArtNet::new(node, self.artnet_universe))
-            .transpose()
+        ArtNet::new(node, mirror).map(Some)
+    }
+
+    /// Where the output is mirrored, given the universes the grids use: the one asked for,
+    /// or by default universe 0 unless a grid has it.
+    fn mirror_universe(&self, grid_universes: &[u16]) -> Result<Option<u16>, String> {
+        match self.artnet_universe {
+            Some(universe) if grid_universes.contains(&universe) => Err(format!(
+                "--artnet-universe {universe} is also a pixel grid's universe; mirror the Enttec frame on another one"
+            )),
+            Some(universe) => Ok(Some(universe)),
+            None if grid_universes.contains(&DEFAULT_MIRROR_UNIVERSE) => Ok(None),
+            None => Ok(Some(DEFAULT_MIRROR_UNIVERSE)),
+        }
     }
 }
 
@@ -477,6 +489,9 @@ impl DmxSink for LiveOutput {
     }
 
     fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        if let Some(stream) = &mut self.stream {
+            stream.send_artnet(universes);
+        }
         if let Some(artnet) = &mut self.artnet {
             artnet.send_artnet(universes);
         }
@@ -535,4 +550,45 @@ fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<d
         None => print!("{yaml}"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    const WALL_ON_ART_NET_3: &str = "fixtures:\n  - { name: wall, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, output: artnet, universe: 3, address: 1, canvas: { x: 0.5, y: 0.5 } }\n";
+
+    #[test]
+    fn the_live_stream_previews_grids_on_art_net() {
+        let rig = Rig::parse(WALL_ON_ART_NET_3, Path::new(".")).unwrap();
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let stream = StreamSink::start(address, &std::env::temp_dir(), &rig, Mode::Show).unwrap();
+        let mut output = LiveOutput {
+            dmx: None,
+            stream: Some(stream),
+            artnet: None,
+        };
+        let mut universe = [0; 512];
+        universe[0] = 255;
+
+        output.send_artnet(&ArtNetFrames::from([(3, universe)]));
+        output.send(Duration::ZERO, &[0; 512]).unwrap();
+
+        let frame = output.stream.unwrap().latest_frame();
+        assert_eq!(frame["pixels"]["wall"], serde_json::json!(["#ff0000"]));
+    }
+
+    #[test]
+    fn grids_keep_universe_0_unless_the_mirror_is_put_there_on_purpose() {
+        let mirror = |universe: Option<u16>| ArtNetMirror {
+            artnet: Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, artnet::PORT)),
+            artnet_universe: universe,
+        };
+
+        assert_eq!(mirror(None).mirror_universe(&[]), Ok(Some(0)));
+        assert_eq!(mirror(None).mirror_universe(&[0, 1]), Ok(None));
+        assert_eq!(mirror(Some(5)).mirror_universe(&[0, 1]), Ok(Some(5)));
+        assert!(mirror(Some(1)).mirror_universe(&[0, 1]).is_err());
+    }
 }

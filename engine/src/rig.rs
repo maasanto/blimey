@@ -232,6 +232,8 @@ pub struct Rig {
     pub fixtures: Vec<Fixture>,
     pub grids: Vec<PixelGrid>,
     pub groups: BTreeMap<String, Vec<String>>,
+    /// The Art-Net universes the grids use, ascending.
+    pub artnet_universes: Vec<u16>,
 }
 
 /// A pixel grid or column, driven only by pixel cues.
@@ -298,6 +300,16 @@ impl Rig {
                 }
             }
         }
+        let universes: BTreeSet<u16> = rig
+            .grids
+            .iter()
+            .flat_map(|grid| &grid.pixels)
+            .filter_map(|pixel| match pixel.universe {
+                Universe::ArtNet(port_address) => Some(port_address),
+                Universe::Enttec => None,
+            })
+            .collect();
+        rig.artnet_universes = universes.into_iter().collect();
         rig.validate()?;
         Ok(rig)
     }
@@ -366,13 +378,9 @@ impl Rig {
     /// A dark frame for every Art-Net universe the grids use, so each one goes out every
     /// frame, blackout included.
     pub fn artnet_frames(&self) -> ArtNetFrames {
-        self.grids
+        self.artnet_universes
             .iter()
-            .flat_map(|grid| &grid.pixels)
-            .filter_map(|pixel| match pixel.universe {
-                Universe::ArtNet(port_address) => Some((port_address, [0; DMX_CHANNELS])),
-                Universe::Enttec => None,
-            })
+            .map(|universe| (*universe, [0; DMX_CHANNELS]))
             .collect()
     }
 

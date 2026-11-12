@@ -103,6 +103,12 @@ impl StreamSink {
         })
     }
 
+    /// The latest `frame` message published.
+    #[cfg(test)]
+    pub fn latest_frame(&self) -> Value {
+        serde_json::from_str(&self.frames.borrow()).unwrap()
+    }
+
     /// Draws a fixture test started from the UI over `frame`, if one is running.
     pub fn apply_test_flash(&self, at: Duration, frame: &mut Frame) {
         self.test_flash.apply(&self.rig.borrow(), at, frame);
