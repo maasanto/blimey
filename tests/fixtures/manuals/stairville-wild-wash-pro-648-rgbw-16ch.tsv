@@ -1,0 +1,22 @@
+# Stairville Wild Wash Pro 648 RGBW, DMX mode 16Ch: the manufacturer's channel table, verbatim.
+# Source: Thomann user manual "Wild Wash Pro 648 RGBW", ID 467447, dated 20.01.2020,
+# section 7.14 "Functions in DMX mode 16Ch", pages 70-71.
+# https://im.static-thomann.de/pics/atg/atgdata/document/manual/467447_c_467447_en_online.pdf
+# Every channel takes 000…255. The mode has no master dimmer or strobe channel.
+# channel	function
+1	Intensity red, segment 1 (0 % to 100 %)
+2	Intensity green, segment 1 (0 % to 100 %)
+3	Intensity blue, segment 1 (0 % to 100 %)
+4	Intensity white, segment 1 (0 % to 100 %)
+5	Intensity red, segment 2 (0 % to 100 %)
+6	Intensity green, segment 2 (0 % to 100 %)
+7	Intensity blue, segment 2 (0 % to 100 %)
+8	Intensity white, segment 2 (0 % to 100 %)
+9	Intensity red, segment 3 (0 % to 100 %)
+10	Intensity green, segment 3 (0 % to 100 %)
+11	Intensity blue, segment 3 (0 % to 100 %)
+12	Intensity white, segment 3 (0 % to 100 %)
+13	Intensity red, segment 4 (0 % to 100 %)
+14	Intensity green, segment 4 (0 % to 100 %)
+15	Intensity blue, segment 4 (0 % to 100 %)
+16	Intensity white, segment 4 (0 % to 100 %)
