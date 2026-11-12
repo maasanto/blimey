@@ -26,3 +26,10 @@ cues:
     fade_in: 1s
     values:
       all-wash: { dimmer: 0% }
+  39:
+    name: chorus-swell
+    type: swell
+    target: { all-wash: { dimmer: 100% } }
+    duration: 4 bars
+    curve: ease-in
+    release: 500ms

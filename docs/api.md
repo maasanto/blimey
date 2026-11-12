@@ -67,7 +67,8 @@ The song's name is its file name (`songs/tell-me.yaml` is `tell-me`).
 
 ```yaml
 program: 3          # Program Change value on channel 2, 0-127, unique across songs
-bpm: 92             # optional: tempo for beat durations when no MIDI clock arrives
+bpm: 92             # optional: tempo for beats and bars when no MIDI clock arrives; default 120
+time_signature: 4/4 # optional: beats per bar over the note value; default 4/4
 safe_look:          # optional: what panic shows; without it panic goes dark
   all-wash: { color: warm-white, dimmer: 30% }
 cues:
@@ -78,11 +79,20 @@ cues:
     release: 500ms  # optional, default 0
     values:         # fixture or group → look settings, in order: a later entry wins
       all-wash: { color: deep-blue, dimmer: 60% }
+  38:
+    name: chorus-swell
+    type: swell
+    target: { all-wash: { dimmer: 100% } }  # look settings, like a scene's values
+    duration: 4 bars
+    curve: ease-in  # optional, default ramp-up
+    release: 500ms  # optional, default 0
 ```
 
-- `safe_look` and `values` use the [look](#looks) keys.
-- Durations are a number then `ms` or `s`: `500ms`, `1.5s`.
-- `type: scene` is the only cue type so far.
+- `safe_look`, `values` and `target` use the [look](#looks) keys.
+- Durations are a number then `ms`, `s`, `beat(s)` or `bar(s)`: `500ms`, `1.5s`, `0.5 beats`, `4 bars`. A beat is a quarter note, as in MIDI clock and Reaper's BPM, so a bar of 6/8 is 3 beats. Beats and bars follow the MIDI clock while they run, tempo changes included; without a clock they run at the song's `bpm`. `fade_in`, `release` and `duration` all accept every unit.
+- Cue types:
+  - `scene` holds a look: it fades in over `fade_in` from note-on and out over `release` from note-off.
+  - `swell` reaches its `target` look along `curve` over `duration` from note-on, then holds where the curve ends until note-off, and fades out over `release`. Curves: `ramp-up`, `ramp-down`, `ease-in` (slow start), `sine` (up and back down), `hold` (the target at once), or custom points `{ points: [[0, 0], [0.5, 1], [1, 0.3]] }`: `[time, level]` pairs, both 0–1, times rising, joined by straight lines. The level is how much of the target shows over the layers below, as a scene's fade does.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
@@ -98,8 +108,11 @@ What the MIDI does (plan §5). Output depends only on the show and the MIDI rece
 | Channel 2 CC 7 | Master dimmer, 0-127 → 0-100%. Starts at 100%. |
 | Channel 2 CC 20-27 | Live parameters 1-8, stored and streamed. Nothing uses them yet. |
 | Channel 16 note 127 | Panic: clears the legacy layer and every cue, then shows the song's `safe_look` until the next song select. Master and live parameters are kept. |
+| MIDI clock (24 per beat), Start, Stop, Continue, Song Position | Tempo and bar position for beat and bar durations. Each song select starts the song's musical time afresh. |
 
-Fades run from the note's timestamp, not from the next frame. A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
+Fades run from the note's timestamp, not from the next frame.
+
+**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`. When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
 
 Layers, lowest first: legacy notes, the safe look after panic, cues, then the master dimmer. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no fixture uses (legacy-only). Other channels, such as a shutter, keep their value.
 
