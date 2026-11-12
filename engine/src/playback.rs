@@ -41,6 +41,26 @@ pub(crate) struct Playback {
     cues: Vec<ActiveCue>,
     master: f32,
     live_parameters: [f32; LIVE_PARAMETERS],
+    /// Cues started or released since the last `take_cue_events`.
+    cue_events: Vec<CueEvent>,
+}
+
+/// A cue starting or being released, for the event log.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CueEvent {
+    /// Time of the MIDI event that caused it.
+    pub at: Duration,
+    pub action: CueAction,
+    pub song: String,
+    pub note: u8,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CueAction {
+    Start,
+    Release,
 }
 
 struct ActiveCue {
@@ -86,6 +106,7 @@ impl Default for Playback {
             cues: Vec::new(),
             master: 1.0,
             live_parameters: [0.0; LIVE_PARAMETERS],
+            cue_events: Vec::new(),
         }
     }
 }
@@ -152,6 +173,7 @@ impl Playback {
             intensity: f32::from(velocity) / MIDI_DATA_MAX,
             released: None,
         });
+        self.record_cue_event(show, CueAction::Start, note, at);
     }
 
     fn release(&mut self, show: &Show, note: u8, at: Duration) {
@@ -161,14 +183,37 @@ impl Playback {
         ) else {
             return;
         };
+        let mut is_released = false;
         for active in &mut self.cues {
             if active.note == note && active.released.is_none() {
                 active.released = Some(Release {
                     at: clock.moment(at),
                     opacity: cue.opacity(clock, active.started, at),
                 });
+                is_released = true;
             }
         }
+        if is_released {
+            self.record_cue_event(show, CueAction::Release, note, at);
+        }
+    }
+
+    fn record_cue_event(&mut self, show: &Show, action: CueAction, note: u8, at: Duration) {
+        let Some(song) = self.song(show) else {
+            return;
+        };
+        self.cue_events.push(CueEvent {
+            at,
+            action,
+            song: song.name.clone(),
+            note,
+            name: song.cues[&note].name().into(),
+        });
+    }
+
+    /// Cues started or released since the last call, in order.
+    pub fn take_cue_events(&mut self) -> Vec<CueEvent> {
+        std::mem::take(&mut self.cue_events)
     }
 
     /// A line for the log when the selected song's tempo source changes (see `ClockFollower`).

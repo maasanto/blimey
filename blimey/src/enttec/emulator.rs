@@ -1,5 +1,8 @@
 //! An emulated DMX USB Pro on a pseudo terminal (plan §15): it parses the Enttec protocol and
 //! records every DMX frame it receives, so the real driver is tested without the box.
+//!
+//! Self-contained, so the fault-injection tests (`tests/faults.rs`) include it too. It reads
+//! the protocol from the specification, not from the driver it tests.
 
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::symlink;
@@ -13,8 +16,9 @@ use std::{fs, process};
 use blimey_engine::{DMX_CHANNELS, Frame};
 use serialport::{SerialPort, TTYPort};
 
-use super::{END_OF_MESSAGE, SEND_DMX_LABEL, START_OF_MESSAGE};
-
+const START_OF_MESSAGE: u8 = 0x7E;
+const END_OF_MESSAGE: u8 = 0xE7;
+const SEND_DMX_LABEL: u8 = 6;
 const HEADER_LENGTH: usize = 4;
 const DMX_PAYLOAD_LENGTH: usize = DMX_CHANNELS + 1;
 
@@ -110,7 +114,7 @@ fn record_frames(master: &mut TTYPort, stop: &AtomicBool, frames: &Mutex<Vec<Fra
 
 /// Removes every complete packet from `received` and returns the DMX frames among them.
 /// Bytes before a start delimiter, and packets without the end delimiter, are skipped as noise.
-fn take_frames(received: &mut Vec<u8>) -> Vec<Frame> {
+pub fn take_frames(received: &mut Vec<u8>) -> Vec<Frame> {
     let mut frames = Vec::new();
     loop {
         let Some(start) = received.iter().position(|byte| *byte == START_OF_MESSAGE) else {
@@ -134,31 +138,5 @@ fn take_frames(received: &mut Vec<u8>) -> Vec<Frame> {
             frames.push(payload[1..].try_into().unwrap());
         }
         received.drain(..=HEADER_LENGTH + length);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::enttec::send_dmx_packet;
-
-    #[test]
-    fn parses_packets_split_across_reads_and_skips_noise() {
-        let mut first = [0; DMX_CHANNELS];
-        first[0] = 7;
-        let second = [255; DMX_CHANNELS];
-        let mut stream = vec![0x00, 0x13];
-        stream.extend(send_dmx_packet(&first));
-        stream.extend(send_dmx_packet(&second));
-        let (head, tail) = stream.split_at(300);
-
-        let mut received = head.to_vec();
-        let before_tail = take_frames(&mut received);
-        received.extend_from_slice(tail);
-        let after_tail = take_frames(&mut received);
-
-        assert!(before_tail.is_empty());
-        assert_eq!(after_tail, [first, second]);
-        assert!(received.is_empty());
     }
 }

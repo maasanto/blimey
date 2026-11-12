@@ -37,6 +37,9 @@ pub fn send_dmx_packet(frame: &Frame) -> Vec<u8> {
 }
 
 /// The box keeps outputting the last frame it got, so a frame missed while reconnecting holds the previous look.
+// ponytail: an engine restart also relies on the box holding its last frame; the bench session
+// measures it. If it goes dark instead, the fallback is plan §9's keeper: a tiny process that owns
+// this port and repeats the last frame it got from the engine over a local socket.
 pub struct EnttecPro {
     path: String,
     port: Option<Box<dyn SerialPort>>,
@@ -98,7 +101,7 @@ mod tests {
 
     use blimey_engine::{DMX_CHANNELS, FakeClock, MidiFile, Show, replay, run};
 
-    use super::emulator::EmulatedEnttec;
+    use super::emulator::{EmulatedEnttec, take_frames};
     use super::*;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
@@ -119,6 +122,26 @@ mod tests {
         assert_eq!(packet[4], 0, "DMX start code");
         assert_eq!(packet[5], 0xAB, "channel 1");
         assert_eq!(packet[517], 0xE7);
+    }
+
+    #[test]
+    fn emulator_parses_packets_split_across_reads_and_skips_noise() {
+        let mut first = [0; DMX_CHANNELS];
+        first[0] = 7;
+        let second = [255; DMX_CHANNELS];
+        let mut stream = vec![0x00, 0x13];
+        stream.extend(send_dmx_packet(&first));
+        stream.extend(send_dmx_packet(&second));
+        let (head, tail) = stream.split_at(300);
+
+        let mut received = head.to_vec();
+        let before_tail = take_frames(&mut received);
+        received.extend_from_slice(tail);
+        let after_tail = take_frames(&mut received);
+
+        assert!(before_tail.is_empty());
+        assert_eq!(after_tail, [first, second]);
+        assert!(received.is_empty());
     }
 
     #[test]
