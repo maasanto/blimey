@@ -108,9 +108,8 @@ mod tests {
         }
     }
 
-    /// `dimmer-par`'s red, green and blue over six frames of a song showing red, saved blue at
-    /// 50 ms, then saved broken at 100 ms.
-    fn colours_while_editing(outputs: &crate::Outputs, test: &str) -> Vec<[u8; 3]> {
+    /// A scratch copy of the cues show's rig, palettes and profiles, with no songs.
+    fn show_copy(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("blimey-{test}-{}", std::process::id()));
         fs::create_dir_all(dir.join("fixtures")).unwrap();
         fs::create_dir_all(dir.join("songs")).unwrap();
@@ -122,14 +121,61 @@ mod tests {
         ] {
             fs::copy(Path::new(SHOW).join(file), dir.join(file)).unwrap();
         }
-        let song_file = dir.join("songs/song.yaml");
-        fs::write(&song_file, song("red")).unwrap();
+        dir
+    }
+
+    /// Program 1 and note 36, at 0 ms.
+    fn fire_note_36() -> Vec<MidiEvent> {
         let event = |message: &[u8]| MidiEvent {
             at: Duration::ZERO,
             message: message.to_vec(),
         };
+        vec![event(&[0xC1, 1]), event(&[0x91, 36, 127])]
+    }
+
+    #[test]
+    fn an_edited_bpm_paces_a_running_beat_fade_from_the_next_frame() {
+        let dir = show_copy("hot-reload-bpm");
+        let song_file = dir.join("songs/song.yaml");
+        let song = |bpm| {
+            format!(
+                "program: 1\nbpm: {bpm}\ncues:\n  36:\n    name: fade\n    type: scene\n    fade_in: 1 beat\n    values:\n      rgb-par: {{ color: \"#ffffff\" }}\n"
+            )
+        };
+        fs::write(&song_file, song(60)).unwrap();
         let mut midi = EditWhilePlaying {
-            events: vec![event(&[0xC1, 1]), event(&[0x91, 36, 127])],
+            events: fire_note_36(),
+            edits: vec![(Duration::from_millis(475), song_file, song(120))],
+        };
+        let mut sink = FakeDmx::default();
+
+        blimey_engine::run(
+            &mut FakeClock::default(),
+            &mut midi,
+            HotReload::load(&dir).unwrap(),
+            &Look::default(),
+            &mut sink,
+            31,
+        )
+        .unwrap();
+
+        let red_at = |ms: usize| sink.frames[ms / 25].values[4];
+        assert_eq!(
+            [red_at(250), red_at(500), red_at(625), red_at(750)],
+            [64, 128, 191, 255],
+            "half a beat at 60 BPM, then the other half at 120 BPM from the reload at 500 ms"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `dimmer-par`'s red, green and blue over six frames of a song showing red, saved blue at
+    /// 50 ms, then saved broken at 100 ms.
+    fn colours_while_editing(outputs: &crate::Outputs, test: &str) -> Vec<[u8; 3]> {
+        let dir = show_copy(test);
+        let song_file = dir.join("songs/song.yaml");
+        fs::write(&song_file, song("red")).unwrap();
+        let mut midi = EditWhilePlaying {
+            events: fire_note_36(),
             edits: vec![
                 (Duration::from_millis(50), song_file.clone(), song("blue")),
                 (

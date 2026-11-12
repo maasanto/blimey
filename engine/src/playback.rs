@@ -234,10 +234,13 @@ impl Playback {
     pub fn render(&mut self, show: &Show, look: &Look, at: Duration) -> Frame {
         let mut frame = self.legacy;
         look::render(&show.rig, look, &mut frame);
-        let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
+        let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) else {
             apply_master(&show.rig, self.master, &mut frame);
             return frame;
         };
+        // The builder's metronome: an edited `bpm` takes over at once.
+        clock.set_song_bpm(at, f64::from(song.bpm.unwrap_or(DEFAULT_BPM)));
+        let clock = &*clock;
         if self.safe_look {
             look::render(&show.rig, &song.safe_look, &mut frame);
         }

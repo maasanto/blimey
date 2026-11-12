@@ -119,6 +119,25 @@ impl ClockFollower {
         self.time_signature
     }
 
+    /// Changes the tempo used without a clock, as when the song's `bpm` is edited. Musical time
+    /// carries on from where it is at `at`, at the new pace.
+    pub fn set_song_bpm(&mut self, at: Duration, bpm: f64) {
+        if bpm == self.song_bpm {
+            return;
+        }
+        if self.source(at) == TempoSource::SongBpm {
+            self.line = BeatLine {
+                at,
+                beats: self.beats(at),
+                per_second: bpm / 60.0,
+            };
+            // The song's BPM now runs from `at` rather than from the clock's last tick.
+            self.ticks.clear();
+        }
+        self.song_bpm = bpm;
+        self.reported_source = None;
+    }
+
     /// Applies one MIDI message received at `at`; anything but clock and transport messages is
     /// ignored. Apply messages in time order, before asking about any later time.
     pub fn apply(&mut self, at: Duration, message: &[u8]) {
@@ -342,6 +361,21 @@ mod tests {
     fn tick_arrival_ms(bpm: f64, index: u32) -> f64 {
         let jitter_ms = [0.0, 1.0, -1.0][index as usize % 3];
         f64::from(index) * 60_000.0 / bpm / TICKS_PER_BEAT + jitter_ms
+    }
+
+    #[test]
+    fn a_new_song_bpm_changes_the_pace_without_moving_musical_time() {
+        let mut follower = ClockFollower::new(60.0, TimeSignature::default());
+        let second = Duration::from_secs(1);
+
+        follower.set_song_bpm(second, 120.0);
+
+        assert_eq!(follower.beats(second), 1.0);
+        assert_eq!(follower.beats(2 * second), 3.0);
+        assert_eq!(
+            follower.log_line(second).as_deref(),
+            Some("no MIDI clock: using the song's 120 BPM")
+        );
     }
 
     #[test]
