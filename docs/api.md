@@ -198,7 +198,9 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 ## HTTP API
 
-Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, or a file changed since the save to undo), `422` (content refused) or `500`.
+Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, a song name that differs from another only by case, a cue changed since it was loaded, or a file changed since the save to undo), `422` (content refused, or a request body not in the shape documented) or `500`.
+
+**One write path.** Every endpoint that changes a show file, `PUT /api/show/<file>` and the song endpoints below alike, goes through the engine's one writer: it validates, writes atomically and keeps canonical formatting, as described for `PUT /api/show/<file>`. Each save can be undone.
 
 ### Show summary: `GET /api/show`
 
@@ -210,42 +212,53 @@ What the builder needs to offer choices: palette colours as `#rrggbb`, and the s
 
 ### Show files: `GET` and `PUT /api/show/<file>`
 
-The one path through which the UI, and later agents, change show files. `<file>` is a path in the show folder: `rig.yaml` or `songs/<name>.yaml`, a name of letters, digits, `-` and `_`. The body of both is the file's content as JSON, in the shape of its schema, keys in file order (a look's entries apply in order).
+Reads and replaces a whole show file. `<file>` is a path in the show folder: `rig.yaml` or `songs/<name>.yaml`, a name of letters, digits, `-` and `_`. The body of both is the file's content as JSON, in the shape of its schema, keys in file order (a look's entries apply in order).
 
 `PUT` replaces the file, or creates a song (`204` on success):
 
-1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader against the rest of the show on disk, the same checks as at start-up. Either refusal is a `422` naming the problem, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/other.yaml: program 3 already selects song "tell-me"`, and leaves the file untouched.
+1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader. A song is judged by loading the whole show as it would be with the new content in place, the same checks as at start-up, so a song broken on disk can be fixed through this endpoint. Either refusal is a `422` naming the problem and the file at fault, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/tell-me.yaml: program 3 already selects song "other"`, and leaves the file untouched. A new song whose name differs from an existing one only by case is refused with `409`: macOS would write it over the other.
 2. The file is written in canonical form. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form, so an edit changes only the lines it touches.
    - `rig.yaml`: block-style YAML with fields in a fixed order.
    - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.
 3. The write is atomic: a crash leaves the old file or the new one, never half of one.
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
-To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back. To set a song's metronome tempo, do the same with its `bpm`.
+To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
 
 ### Cues: `PUT` and `DELETE /api/songs/<song>/cues/<note>`
 
-`PUT` saves one cue on a channel-2 note of `songs/<song>.yaml`, through the same checks and canonical write as `PUT /api/show/<file>` (`204`):
+Each reads, edits and writes `songs/<song>.yaml` under one lock, so no other save lands in between, then writes it as `PUT /api/show/<file>` does.
+
+`PUT` saves one cue on a channel-2 note (`204`):
 
 ```json
-{ "cue": { "name": "verse-blue", "type": "scene", "fade_in": "2s", "values": { "all-wash": { "color": "deep-blue" } } }, "replaces": 37 }
+{ "cue": { "name": "verse-blue", "type": "scene", "fade_in": "2s", "values": { "all-wash": { "color": "deep-blue" } } },
+  "replaces": { "note": 37, "cue": { "name": "verse", "type": "scene", "values": {} } } }
 ```
 
 - `cue` is the cue as in the song file.
-- `replaces` is the note the cue had before, when editing one; the cue moves from it to `<note>`. Omit it, or send `null`, for a new cue.
-- A note that another cue already uses is refused with `409`: `songs/tell-me.yaml: note 36 already fires cue "verse-blue"; pick a free note, or edit that cue`. The engine never merges or overwrites a cue it wasn't asked to replace.
+- `replaces`, when editing a cue, is its note and the cue as it was loaded; the cue moves from that note to `<note>`. Omit it, or send `null`, for a new cue.
+- Refused, leaving the file untouched:
+  - a note that another cue already uses, with `409`: `songs/tell-me.yaml: note 36 already fires cue "verse-blue"; pick a free note, or edit that cue`. The engine never merges or overwrites a cue it wasn't asked to replace;
+  - a replaced cue that changed since it was loaded, with `409`, or is no longer there, with `404`, so a stale editor never overwrites someone else's change.
 
 `DELETE` removes the cue on `<note>` (`204`; `404` if there is none).
 
+### Metronome tempo: `PUT /api/songs/<song>/bpm`
+
+Sets the song's `bpm`, the tempo for beats and bars when no MIDI clock comes in, leaving the rest of the file as it is (`204`). The body is `{ "bpm": 92 }`. It goes under the same lock as the cue endpoints and takes effect from the next frame.
+
 ### Undo: `POST /api/undo`
 
-Undoes the last save made through the API since the engine started, whichever file it was: `PUT /api/show/<file>` or a cue `PUT` or `DELETE`. The previous content goes back byte for byte, comments and formatting included, after the same checks as a write; a file the save created is removed. Returns `{ "file": "songs/tell-me.yaml" }`.
+Undoes the last save made through the API since the engine started, whichever file it was: `PUT /api/show/<file>` or any song endpoint above. The previous content goes back byte for byte, comments and formatting included, after the same checks as a write; a file the save created is removed. Returns `{ "file": "songs/tell-me.yaml" }`.
 
-One level only: a second undo, or one before any save, is a `404`. If the file has changed since the save (by hand, say), undo is refused with `409` rather than lose that change.
+One level only: a second undo, or one before any save, is a `404`. If the file has changed since the save (by hand, say), undo is refused with `409` rather than lose that change. A refused undo can be tried again, once the file is put back as the save left it.
 
 ### Look preview: `PUT` and `DELETE /api/preview`
 
-`PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. It stays until replaced or cleared by `DELETE`, or until the engine stops. Nothing is saved.
+`PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. Nothing is saved.
+
+It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves no look on stage. `DELETE`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
 
 ### MIDI: `POST /api/midi`
 
@@ -255,7 +268,7 @@ Plays one MIDI message as if it came in from the MIDI port, to audition cues wit
 { "message": [145, 36, 127] }
 ```
 
-`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
+`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the look preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
 ### Fixture test: `POST /api/fixtures/<name>/test`
 

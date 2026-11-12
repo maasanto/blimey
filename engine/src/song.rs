@@ -98,10 +98,21 @@ fn line_of_key(yaml: &str, key: &str) -> Option<usize> {
 }
 
 /// Loads every `*.yaml` in `dir`, in file-name order. A missing folder means no songs.
-pub(crate) fn load_songs(dir: &Path, show: &Show) -> io::Result<Vec<Song>> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+/// `replaced`, `(name, yaml)`, stands in for `<name>.yaml`, whether or not it exists.
+pub(crate) fn load_songs(
+    dir: &Path,
+    show: &Show,
+    replaced: Option<(&str, &str)>,
+) -> io::Result<Vec<Song>> {
+    let mut paths: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "yaml")
+            })
+            .collect(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(error) => {
             return Err(io::Error::new(
                 error.kind(),
@@ -109,13 +120,12 @@ pub(crate) fn load_songs(dir: &Path, show: &Show) -> io::Result<Vec<Song>> {
             ));
         }
     };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "yaml")
-        })
-        .collect();
+    if let Some((name, _)) = replaced {
+        let path = dir.join(format!("{name}.yaml"));
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
     paths.sort();
     let mut songs: Vec<Song> = Vec::new();
     for path in paths {
@@ -125,8 +135,11 @@ pub(crate) fn load_songs(dir: &Path, show: &Show) -> io::Result<Vec<Song>> {
                 format!("{}: {error}", path.display()),
             )
         };
-        let yaml = fs::read_to_string(&path).map_err(|error| in_file(error.to_string()))?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        let yaml = match replaced {
+            Some((replaced_name, yaml)) if replaced_name == name => yaml.to_owned(),
+            _ => fs::read_to_string(&path).map_err(|error| in_file(error.to_string()))?,
+        };
         let song = Song::parse(&name, &yaml, show).map_err(in_file)?;
         if let Some(other) = songs.iter().find(|other| other.program == song.program) {
             return Err(in_file(format!(
@@ -274,7 +287,7 @@ mod tests {
         fs::write(dir.join("a.yaml"), "program: 3\n").unwrap();
         fs::write(dir.join("b.yaml"), "program: 3\n").unwrap();
 
-        let message = load_songs(&dir, &show()).unwrap_err().to_string();
+        let message = load_songs(&dir, &show(), None).unwrap_err().to_string();
 
         assert!(
             message.ends_with("b.yaml: program 3 already selects song \"a\""),

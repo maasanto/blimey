@@ -12,7 +12,6 @@ use serde_json::{Map, Value, json};
 use crate::Show;
 use crate::rig::{self, Rig};
 use crate::show::{PROFILES_DIR, RIG_FILE, SONGS_DIR};
-use crate::song::Song;
 
 const RIG_SCHEMA: &str = include_str!("../../schema/rig.schema.json");
 const SONG_SCHEMA: &str = include_str!("../../schema/song.schema.json");
@@ -68,12 +67,14 @@ impl Writable<'_> {
         }
     }
 
-    /// Turns schema-valid content into canonical YAML, refusing what the loader would refuse.
+    /// Turns schema-valid content into canonical YAML, refusing what the loader would refuse with
+    /// a message that names the file at fault.
     fn canonical(self, show_dir: &Path, content: Value) -> Result<String, String> {
         match self {
             Writable::Rig => {
-                let yaml = rig::canonical_yaml(content)?;
-                Rig::parse(&yaml, &show_dir.join(PROFILES_DIR))?;
+                let in_rig = |error: String| format!("{RIG_FILE}: {error}");
+                let yaml = rig::canonical_yaml(content).map_err(in_rig)?;
+                Rig::parse(&yaml, &show_dir.join(PROFILES_DIR)).map_err(in_rig)?;
                 Ok(yaml)
             }
             Writable::Song(name) => canonical_song(show_dir, name, content),
@@ -81,23 +82,38 @@ impl Writable<'_> {
     }
 }
 
-/// Checks a song against the rest of the show as it is on disk, the same checks as at load.
+/// Loads the show as it would be with this song written, the same checks as at load. Judging
+/// the show after the write lets a broken song on disk be fixed through it.
 fn canonical_song(show_dir: &Path, name: &str, content: Value) -> Result<String, String> {
     let schema: Value = serde_json::from_str(SONG_SCHEMA).expect("schema/ files are JSON");
     let yaml = to_yaml(&song_in_schema_order(content, &schema));
-    let show = Show::load(show_dir).map_err(|error| error.to_string())?;
-    let song = Song::parse(name, &yaml, &show)?;
-    if let Some(other) = show
-        .songs
-        .iter()
-        .find(|other| other.program == song.program && other.name != name)
-    {
-        return Err(format!(
-            "program {} already selects song {:?}",
-            song.program, other.name
-        ));
-    }
+    Show::load_with_song(show_dir, Some((name, &yaml))).map_err(|error| {
+        let show_folder = show_dir.join("").display().to_string();
+        error.to_string().replace(&show_folder, "")
+    })?;
     Ok(yaml)
+}
+
+/// Case-insensitive file systems, such as macOS's, would write `Tell-Me.yaml` over `tell-me.yaml`.
+fn refuse_case_twin(show_dir: &Path, file: &str, name: &str) -> io::Result<()> {
+    let twin = fs::read_dir(show_dir.join(SONGS_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name().into_string().ok()?;
+            Some(file_name.strip_suffix(".yaml")?.to_owned())
+        })
+        .find(|other| other != name && other.eq_ignore_ascii_case(name));
+    match twin {
+        Some(twin) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "{file}: the show already has song {twin:?}; song names must differ by more than case"
+            ),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Keys in the order the schema lists them, each cue's by its type's definition, and cues by
@@ -262,8 +278,10 @@ fn write_locked(show_dir: &Path, file: &str, content: Value) -> io::Result<Save>
 /// `content` as the canonical YAML to write, or why it is refused.
 fn checked(show_dir: &Path, file: &str, content: Value) -> io::Result<String> {
     let writable = writable(file)?;
-    let refused =
-        |error: String| io::Error::new(io::ErrorKind::InvalidData, format!("{file}: {error}"));
+    if let Writable::Song(name) = writable {
+        refuse_case_twin(show_dir, file, name)?;
+    }
+    let refused = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
     let schema = serde_json::from_str(writable.schema()).expect("schema/ files are JSON");
     let validator = jsonschema::validator_for(&schema).expect("schema/ files are JSON Schemas");
     let errors: Vec<String> = validator
@@ -271,22 +289,46 @@ fn checked(show_dir: &Path, file: &str, content: Value) -> io::Result<String> {
         .map(|error| format!("{}: {error}", error.instance_path()))
         .collect();
     if !errors.is_empty() {
-        return Err(refused(errors.join("; ")));
+        return Err(refused(format!("{file}: {}", errors.join("; "))));
     }
     writable.canonical(show_dir, content).map_err(refused)
 }
 
-/// Saves `cue` on `note` in `songs/<song>.yaml`, in place of the cue on `replaces` when editing
-/// one (renumbered or not), else as a new cue. A note another cue already uses is refused with
-/// `AlreadyExists`: two cues can't share a note.
+/// Saves `cue` on `note` in `songs/<song>.yaml`, as a new cue or, when editing one, in place of
+/// the cue `replaces` names: its note and the cue as the editor loaded it. That cue may move to
+/// another note.
+///
+/// Refused, leaving the file untouched: a note another cue already uses (`AlreadyExists`, two
+/// cues can't share a note); a replaced cue that changed since it was loaded (`ResourceBusy`) or
+/// is gone (`NotFound`), so a stale editor never overwrites someone else's change.
 pub fn save_cue(
     show_dir: &Path,
     song: &str,
     note: u8,
-    replaces: Option<u8>,
+    replaces: Option<(u8, Value)>,
     cue: Value,
 ) -> io::Result<Save> {
     edit_cues(show_dir, song, |file, cues| {
+        if let Some((replaced, loaded)) = &replaces {
+            match cues.get(&replaced.to_string()) {
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("{file}: no cue on note {replaced} any more; reload the song"),
+                    ));
+                }
+                Some(current) if current != loaded => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        format!(
+                            "{file}: cue {replaced} changed since it was loaded; reload the song and edit it again"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        let replaces = replaces.as_ref().map(|(replaced, _)| *replaced);
         if replaces != Some(note)
             && let Some(taken) = cues.get(&note.to_string())
         {
@@ -318,7 +360,36 @@ pub fn delete_cue(show_dir: &Path, song: &str, note: u8) -> io::Result<Save> {
     })
 }
 
+/// Sets the tempo of `songs/<song>.yaml` without a MIDI clock, leaving the rest of it as it is.
+pub fn set_bpm(show_dir: &Path, song: &str, bpm: serde_json::Number) -> io::Result<Save> {
+    edit_song(show_dir, song, |_, song| {
+        song.insert("bpm".into(), bpm.into());
+        Ok(())
+    })
+}
+
 fn edit_cues(
+    show_dir: &Path,
+    song: &str,
+    edit: impl FnOnce(&str, &mut Map<String, Value>) -> io::Result<()>,
+) -> io::Result<Save> {
+    edit_song(show_dir, song, |file, song| {
+        let cues = song
+            .entry("cues")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{file}: cues must be a mapping"),
+                )
+            })?;
+        edit(file, cues)
+    })
+}
+
+/// Reads, edits and writes a song under one lock, so no other write lands in between.
+fn edit_song(
     show_dir: &Path,
     song: &str,
     edit: impl FnOnce(&str, &mut Map<String, Value>) -> io::Result<()>,
@@ -326,17 +397,13 @@ fn edit_cues(
     let file = format!("{SONGS_DIR}/{song}.yaml");
     let _writing = writing();
     let mut content = read(show_dir, &file)?;
-    let cues = content
-        .as_object_mut()
-        .map(|song| song.entry("cues").or_insert_with(|| json!({})))
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{file}: the song and its cues must be mappings"),
-            )
-        })?;
-    edit(&file, cues)?;
+    let song = content.as_object_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{file}: a song must be a mapping"),
+        )
+    })?;
+    edit(&file, song)?;
     write_locked(show_dir, &file, content)
 }
 
@@ -356,8 +423,8 @@ impl Save {
 
     /// Puts back what the file held before this save, byte for byte, after the same checks as a
     /// write; removes it if the save created it. Refused with `ResourceBusy` if the file has
-    /// changed since, as undoing would lose that change.
-    pub fn undo(self, show_dir: &Path) -> io::Result<()> {
+    /// changed since, as undoing would lose that change. A refused undo can be tried again.
+    pub fn undo(&self, show_dir: &Path) -> io::Result<()> {
         let _writing = writing();
         let path = show_dir.join(&self.file);
         if existing(&path)?.as_deref() != Some(self.after.as_str()) {
@@ -369,17 +436,17 @@ impl Save {
                 ),
             ));
         }
-        let Some(before) = self.before else {
+        let Some(before) = &self.before else {
             return fs::remove_file(&path).map_err(|error| in_path(&path, error));
         };
-        let content = serde_yaml_ng::from_str(&before).map_err(|error| {
+        let content = serde_yaml_ng::from_str(before).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{}: {error}", self.file),
             )
         })?;
         checked(show_dir, &self.file, content)?;
-        write_atomically(&path, &before).map_err(|error| in_path(&path, error))
+        write_atomically(&path, before).map_err(|error| in_path(&path, error))
     }
 }
 
@@ -529,11 +596,12 @@ mod tests {
             error.to_string(),
             "songs/tell-me.yaml: note 36 already fires cue \"verse-blue\"; pick a free note, or edit that cue"
         );
-        let error = save_cue(&show, "tell-me", 36, Some(38), blackout.clone()).unwrap_err();
+        let from_38 = Some((38, blackout.clone()));
+        let error = save_cue(&show, "tell-me", 36, from_38.clone(), blackout.clone()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(show.join(TELL_ME)).unwrap(), before);
 
-        save_cue(&show, "tell-me", 48, Some(38), blackout).unwrap();
+        save_cue(&show, "tell-me", 48, from_38, blackout).unwrap();
         let cues = read(&show, TELL_ME).unwrap()["cues"].clone();
         let notes: Vec<&String> = cues.as_object().unwrap().keys().collect();
         assert_eq!(notes, ["36", "37", "39", "42", "48"]);
@@ -587,8 +655,118 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "songs/other.yaml: program 3 already selects song \"tell-me\""
+            "songs/tell-me.yaml: program 3 already selects song \"other\""
         );
+    }
+
+    #[test]
+    fn a_broken_song_on_disk_can_be_fixed_through_the_write_path() {
+        let show = fossile_copy("fix-broken");
+        let fixed = read(&show, TELL_ME).unwrap();
+        let broken = fs::read_to_string(show.join(TELL_ME))
+            .unwrap()
+            .replace("deep-blue", "teal");
+        fs::write(show.join(TELL_ME), broken).unwrap();
+
+        write(&show, TELL_ME, fixed).unwrap();
+
+        Show::load(&show).unwrap();
+    }
+
+    #[test]
+    fn a_song_name_differing_only_by_case_is_refused() {
+        let show = fossile_copy("song-case");
+        let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
+
+        let error = write(&show, "songs/Tell-Me.yaml", json!({ "program": 9 })).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            error.to_string(),
+            "songs/Tell-Me.yaml: the show already has song \"tell-me\"; song names must differ by more than case"
+        );
+        assert_eq!(fs::read_to_string(show.join(TELL_ME)).unwrap(), before);
+        assert!(
+            !fs::read_dir(show.join(SONGS_DIR))
+                .unwrap()
+                .any(|entry| entry.unwrap().file_name() == "Tell-Me.yaml")
+        );
+    }
+
+    #[test]
+    fn replacing_a_cue_that_changed_or_went_since_it_was_loaded_is_refused() {
+        let show = fossile_copy("stale-replaces");
+        let loaded = read(&show, TELL_ME).unwrap()["cues"]["37"].clone();
+        let mut edited = loaded.clone();
+        edited["name"] = "edited".into();
+        let mut changed_since = loaded.clone();
+        changed_since["release"] = "2s".into();
+        save_cue(
+            &show,
+            "tell-me",
+            37,
+            Some((37, loaded.clone())),
+            changed_since,
+        )
+        .unwrap();
+        let error = save_cue(
+            &show,
+            "tell-me",
+            37,
+            Some((37, loaded.clone())),
+            edited.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(
+            error.to_string(),
+            "songs/tell-me.yaml: cue 37 changed since it was loaded; reload the song and edit it again"
+        );
+
+        delete_cue(&show, "tell-me", 37).unwrap();
+        let error = save_cue(&show, "tell-me", 40, Some((37, loaded)), edited).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            error.to_string(),
+            "songs/tell-me.yaml: no cue on note 37 any more; reload the song"
+        );
+    }
+
+    #[test]
+    fn setting_the_bpm_changes_only_its_line() {
+        let show = fossile_copy("set-bpm");
+        let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
+
+        set_bpm(
+            &show,
+            "tell-me",
+            serde_json::Number::from_f64(120.5).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            changed_lines(&before, &fs::read_to_string(show.join(TELL_ME)).unwrap()),
+            [("bpm: 92".into(), "bpm: 120.5".into())]
+        );
+    }
+
+    #[test]
+    fn keys_read_back_as_names_except_note_numbers() {
+        use serde_yaml_ng::Value as Yaml;
+        let names = ["007", "true", "1e3", "0x1F", "-1", "+5"];
+        let mut keys = json!({ "36": 0, "0": 0 });
+        for name in names {
+            keys[name] = 0.into();
+        }
+
+        let yaml = to_yaml(&keys);
+
+        // How the loader sees them, as a look's targets are read.
+        let read: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(&yaml).unwrap();
+        let read_keys: Vec<&Yaml> = read.keys().collect();
+        let mut expected = vec![Yaml::from(36), Yaml::from(0)];
+        expected.extend(names.map(Yaml::from));
+        assert_eq!(read_keys, expected.iter().collect::<Vec<_>>(), "{yaml}");
     }
 
     #[test]

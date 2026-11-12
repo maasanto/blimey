@@ -14,7 +14,6 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
-use blimey_engine::look;
 use blimey_engine::rig::Rig;
 use blimey_engine::{DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status};
 use serde_json::{Value, json};
@@ -22,11 +21,11 @@ use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, watch};
 
-use crate::api::{self, Api, Mode, Preview, TestFlash};
+use crate::api::{self, Api, Mode, PREVIEW_LIFETIME, TEST_FLASH_LENGTH, TimedLook};
+use crate::ui;
 
 /// MIDI posted to the API, waiting for the render loop.
 type InjectedMidi = Arc<Mutex<Receiver<Vec<u8>>>>;
-use crate::ui;
 
 const PROTOCOL_VERSION: u32 = 1;
 /// MIDI messages a slow client may fall behind by before it skips some.
@@ -44,8 +43,8 @@ pub struct StreamSink {
     frames: watch::Sender<Arc<str>>,
     midi: broadcast::Sender<Arc<str>>,
     injected_midi: InjectedMidi,
-    preview: Preview,
-    test_flash: TestFlash,
+    preview: TimedLook,
+    test_flash: TimedLook,
     /// Serves the stream; dropping the sink stops it.
     _server: Runtime,
 }
@@ -73,8 +72,8 @@ impl StreamSink {
         let rig = Arc::new(watch::Sender::new(rig.clone()));
         let (frames, receiver) = watch::channel(Arc::from(""));
         let (midi, _) = broadcast::channel(MIDI_BACKLOG);
-        let test_flash = TestFlash::default();
-        let preview = Preview::default();
+        let test_flash = TimedLook::new(TEST_FLASH_LENGTH);
+        let preview = TimedLook::new(PREVIEW_LIFETIME);
         let (inject_midi, injected_midi) = mpsc::channel();
         let stream = Stream {
             rig: rig.clone(),
@@ -116,14 +115,7 @@ impl StreamSink {
     /// fixture test if one is running.
     pub fn apply_overlays(&self, at: Duration, frame: &mut Frame) {
         let rig = self.rig.borrow();
-        look::render(
-            &rig,
-            &self
-                .preview
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            frame,
-        );
+        self.preview.apply(&rig, at, frame);
         self.test_flash.apply(&rig, at, frame);
     }
 }
