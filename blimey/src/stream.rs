@@ -2,7 +2,7 @@
 //! `ws://<address>/ws`, the API under `/api` and the web UI at `/`.
 //! The contract is docs/api.md.
 
-use std::io;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -57,8 +57,12 @@ impl StreamSink {
         let server = Runtime::new()?;
         let listener = server.block_on(TcpListener::bind(address))?;
         let bound = listener.local_addr()?;
-        println!("streaming on ws://{bound}/ws");
-        println!("UI on http://{bound}/ in {} mode", mode.name());
+        // A closed stdout (a reader that went away, a detached service) must not kill the
+        // engine, so these banners ignore write errors instead of panicking like println!.
+        let mut stdout = io::stdout().lock();
+        let _ = writeln!(stdout, "streaming on ws://{bound}/ws");
+        let _ = writeln!(stdout, "UI on http://{bound}/ in {} mode", mode.name());
+        drop(stdout);
         let rig = Arc::new(watch::Sender::new(rig.clone()));
         let (frames, receiver) = watch::channel(Arc::from(""));
         let (midi, _) = broadcast::channel(MIDI_BACKLOG);
