@@ -12,6 +12,7 @@ One folder per show. Each file has a JSON Schema in `schema/`. The engine checks
 | `rig.yaml` | `schema/rig.schema.json` | Fixtures, DMX addresses, canvas positions, groups |
 | `palettes.yaml` | `schema/palettes.schema.json` | Named colours |
 | `fixtures/<profile>.yaml` | `schema/fixture.schema.json` | One fixture profile: channels per mode |
+| `songs/<name>.yaml` | `schema/song.schema.json` | One song: the program that selects it, its safe look and its cues |
 
 ### rig.yaml
 
@@ -60,6 +61,48 @@ modes:
 
 Profiles are generated from Open Fixture Library JSON with `blimey fixture import`; fix the OFL file and re-import rather than editing the YAML. The importer maps OFL `Intensity` to `dimmer` and `ColorIntensity` red/green/blue/white to the colour attributes; matrix `templateChannels` become one channel per pixel, numbered in `matrix.pixelKeys` order. Other channels keep their name and hold their OFL `defaultValue`.
 
+### songs/&lt;name&gt;.yaml
+
+The song's name is its file name (`songs/tell-me.yaml` is `tell-me`).
+
+```yaml
+program: 3          # Program Change value on channel 2, 0-127, unique across songs
+bpm: 92             # optional: tempo for beat durations when no MIDI clock arrives
+safe_look:          # optional: what panic shows; without it panic goes dark
+  all-wash: { color: warm-white, dimmer: 30% }
+cues:
+  36:               # channel-2 note number
+    name: verse-blue
+    type: scene
+    fade_in: 2s     # optional, default 0
+    release: 500ms  # optional, default 0
+    values:         # fixture or group → look settings, in order: a later entry wins
+      all-wash: { color: deep-blue, dimmer: 60% }
+```
+
+- `safe_look` and `values` use the [look](#looks) keys.
+- Durations are a number then `ms` or `s`: `500ms`, `1.5s`.
+- `type: scene` is the only cue type so far.
+
+The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
+
+## Playback
+
+What the MIDI does (plan §5). Output depends only on the show and the MIDI received since the last song select.
+
+| MIDI | Effect |
+| --- | --- |
+| Channel 2 Program Change | Selects the song with that `program` and drops every active cue. Another value selects no song. Before the first one, no song is selected and channel-2 notes do nothing. |
+| Channel 2 note-on | Starts the cue in that slot of the current song. Velocity scales its dimmers (127 = as written). A cue already running on that note fades out under the new one. |
+| Channel 2 note-off (or velocity 0) | Releases the cue: it fades out over its `release`. |
+| Channel 2 CC 7 | Master dimmer, 0-127 → 0-100%. Starts at 100%. |
+| Channel 2 CC 20-27 | Live parameters 1-8, stored and streamed. Nothing uses them yet. |
+| Channel 16 note 127 | Panic: clears the legacy layer and every cue, then shows the song's `safe_look` until the next song select. Master and live parameters are kept. |
+
+Fades run from the note's timestamp, not from the next frame. A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
+
+Layers, lowest first: legacy notes, the safe look after panic, cues, then the master dimmer. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no fixture uses (legacy-only). Other channels, such as a shutter, keep their value.
+
 ## Looks
 
 A look sets colour, dimmer and RGBW mode per fixture, by fixture or group name. Show files write it as `{ color: deep-blue, dimmer: 60% }`; the CLI as `color=deep-blue dimmer=60%`.
@@ -75,13 +118,23 @@ The look renders above the legacy layer (plan §5): every channel of a fixture i
 ## CLI
 
 ```sh
+blimey validate <show>                                              # load the show; print the first error with file and line
+blimey run <show> --dmx-port /dev/cu.usbserial-… [--midi-port IAC]  # live: MIDI in, DMX out, hot reload
 blimey fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
 blimey fire <show> --set … --dmx-port /dev/cu.usbserial-…           # hold it on the Enttec box
 blimey fire <show> --set … --listen 127.0.0.1:7340                  # hold it and stream it over WebSocket
+blimey fire <show> --set … --artnet [<ip>[:port]] [--artnet-universe <n>]   # hold it and mirror it over Art-Net
+blimey run <show> --dmx-port … --artnet [<ip>[:port]] [--artnet-universe <n>]
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 ```
 
-`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port` or `--listen` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With either or both, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
+`validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
+
+`run` is in edit mode: it reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
+
+`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
+
+`--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
 ## WebSocket stream: `GET /ws`
 
@@ -118,12 +171,20 @@ Server to client only, one JSON object per text message. Every message has a `ty
   "type": "frame",
   "at_ms": 1250,
   "dmx": [0, 10, 255, "… 512 values"],
-  "pixels": { "wash-1": ["#000aff", "#000aff", "#000aff", "#000aff"] }
+  "pixels": { "wash-1": ["#000aff", "#000aff", "#000aff", "#000aff"] },
+  "song": "tell-me",
+  "cues": [{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false }],
+  "master": 1.0,
+  "live_parameters": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
 ```
 
 - `at_ms`: engine time when the frame was output, in milliseconds.
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
 - `pixels`: per fixture, the colour each pixel shows, in the same order as the `rig` message. It is computed from `dmx` (white added to R, G and B, then the dimmer channel applied), so the preview always matches the output.
+- `song`: the selected song's name, or `null`.
+- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off.
+- `master`: the master dimmer, 0–1.
+- `live_parameters`: CC 20–27 on channel 2, as 0–1.
 
 The engine renders at 40 Hz. A slow client skips frames and always gets the latest one.

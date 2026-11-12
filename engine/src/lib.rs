@@ -5,18 +5,23 @@
 //! a recording sink.
 
 pub mod colour;
+pub mod cue;
 mod dump;
+pub mod duration;
 pub mod fixture;
 mod legacy;
 pub mod look;
 mod midi_file;
 pub mod ofl;
+mod playback;
 pub mod rig;
 mod show;
+pub mod song;
 
 pub use dump::{first_difference, format_dump, parse_dump};
 pub use legacy::LegacyMap;
 pub use midi_file::MidiFile;
+pub use playback::{CueStatus, Status};
 pub use show::Show;
 
 use std::io;
@@ -44,6 +49,21 @@ pub trait MidiSource {
 pub trait DmxSink {
     /// Outputs one frame. `at` is the clock time at which it was sent.
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()>;
+
+    /// The engine state behind the next frame sent. Sinks that only output DMX ignore it.
+    fn status(&mut self, _status: &Status) {}
+}
+
+/// Where the render loop gets the show for each frame.
+pub trait ShowSource {
+    fn current(&mut self) -> &Show;
+}
+
+/// A show that never changes.
+impl ShowSource for &Show {
+    fn current(&mut self) -> &Show {
+        self
+    }
 }
 
 pub trait Clock {
@@ -116,25 +136,27 @@ impl DmxSink for FakeDmx {
 
 /// Renders `frame_count` frames, frame N due at N × `FRAME_PERIOD` on `clock`.
 ///
-/// Layers, lowest first (plan §5): legacy notes, then `look` on the fixtures it sets.
-/// Deadlines are absolute, so a late frame never shifts the ones after it.
+/// Layers, lowest first (plan §5): legacy notes, `look` on the fixtures it sets, cues, then
+/// the master dimmer. Each frame renders at its deadline, so fades depend only on event
+/// timestamps. Deadlines are absolute, so a late frame never shifts the ones after it.
 pub fn run(
     clock: &mut impl Clock,
     midi: &mut impl MidiSource,
-    show: &Show,
+    mut shows: impl ShowSource,
     look: &look::Look,
     sink: &mut impl DmxSink,
     frame_count: u32,
 ) -> io::Result<()> {
-    let mut legacy_levels = [0; DMX_CHANNELS];
+    let mut playback = playback::Playback::default();
     for index in 0..frame_count {
         let deadline = FRAME_PERIOD * index;
         clock.sleep_until(deadline);
+        let show = shows.current();
         while let Some(event) = midi.poll(deadline) {
-            show.legacy.apply(&event.message, &mut legacy_levels);
+            playback.apply(show, &event);
         }
-        let mut output = legacy_levels;
-        look::render(&show.rig, look, &mut output);
+        let output = playback.render(show, look, deadline);
+        sink.status(&playback.status(show));
         sink.send(clock.now(), &output)?;
     }
     Ok(())
@@ -149,7 +171,6 @@ pub fn replay(show: &Show, mut midi: MidiFile) -> Vec<RecordedFrame> {
         &mut FakeClock::default(),
         &mut midi,
         show,
-        // ponytail: replays carry no look until C3's cues set one.
         &look::Look::default(),
         &mut sink,
         frame_count,

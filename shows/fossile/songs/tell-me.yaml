@@ -1,0 +1,28 @@
+# Example song from the plan (§6). Program and cue notes are placeholders until the Reaper
+# session is reprogrammed: Program Change 3 on channel 2 selects it, channel-2 notes fire cues.
+program: 3
+bpm: 92
+safe_look:
+  all-wash: { color: warm-white, dimmer: 30% }
+cues:
+  36:
+    name: verse-blue
+    type: scene
+    fade_in: 2s
+    release: 1s
+    values:
+      all-wash: { color: deep-blue, dimmer: 60% }
+  37:
+    name: chorus-amber
+    type: scene
+    fade_in: 500ms
+    release: 500ms
+    values:
+      all-wash: { color: amber }
+      outer-wash: { color: magenta }
+  38:
+    name: blackout
+    type: scene
+    fade_in: 1s
+    values:
+      all-wash: { dimmer: 0% }

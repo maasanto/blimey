@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blimey.local/schema/song.schema.json",
+  "title": "Blimey song (songs/<name>.yaml)",
+  "description": "One song: the channel-2 Program Change that selects it and the cues its channel-2 notes fire. The song's name is its file name. Fixture, group and colour names, and programs shared by two songs, are checked by the engine at load.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["program"],
+  "properties": {
+    "program": { "description": "Program Change value on channel 2, 0-127, unique across songs.", "$ref": "#/$defs/midi" },
+    "bpm": { "description": "Tempo for beat and bar durations when no MIDI clock arrives.", "type": "number", "exclusiveMinimum": 0 },
+    "safe_look": { "description": "What panic (channel 16, note 127) shows. Without it, panic goes dark.", "$ref": "#/$defs/values" },
+    "cues": {
+      "description": "Channel-2 note number → cue.",
+      "type": "object",
+      "propertyNames": { "pattern": "^([0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$" },
+      "additionalProperties": { "$ref": "#/$defs/cue" }
+    }
+  },
+  "$defs": {
+    "midi": { "type": "integer", "minimum": 0, "maximum": 127 },
+    "cue": {
+      "oneOf": [{ "$ref": "#/$defs/scene" }]
+    },
+    "scene": {
+      "description": "A fixed look. Fades in from note-on, scaled by velocity; fades out from note-off.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "values"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "const": "scene" },
+        "fade_in": { "$ref": "#/$defs/duration" },
+        "release": { "$ref": "#/$defs/duration" },
+        "values": { "$ref": "#/$defs/values" }
+      }
+    },
+    "duration": {
+      "description": "A number then a unit: 500ms, 2s. Defaults to 0 (instant).",
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?\\s*(ms|s)$"
+    },
+    "values": {
+      "description": "Fixture or group name → look settings, applied in order: a later entry wins on shared fixtures.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "color": { "description": "Palette name or #rrggbb.", "type": "string" },
+          "dimmer": { "type": "string", "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%$" },
+          "rgbw": { "enum": ["saturated", "white-rich"] }
+        }
+      }
+    }
+  }
+}
