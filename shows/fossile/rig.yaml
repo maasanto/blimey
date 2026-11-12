@@ -1,6 +1,7 @@
 # PLACEHOLDER ADDRESSES: the washes' real DMX start addresses and DMX mode are not confirmed
 # yet. Check them against the units' displays (menu A001-A512, mode 16Ch) before the bench
-# session. Canvas positions are a first guess too; C6's stage plan lets you drag them.
+# session. Canvas positions are a first guess too (a row on the truss); drag them in the UI's
+# front view.
 fixtures:
 - name: wash-1
   profile: stairville-wild-wash-pro-648-rgbw
@@ -8,7 +9,7 @@ fixtures:
   address: 1
   canvas:
     x: 0.1
-    y: 0.2
+    y: 0.8
     width: 0.125
 - name: wash-2
   profile: stairville-wild-wash-pro-648-rgbw
@@ -16,7 +17,7 @@ fixtures:
   address: 17
   canvas:
     x: 0.325
-    y: 0.2
+    y: 0.8
     width: 0.125
 - name: wash-3
   profile: stairville-wild-wash-pro-648-rgbw
@@ -24,7 +25,7 @@ fixtures:
   address: 33
   canvas:
     x: 0.55
-    y: 0.2
+    y: 0.8
     width: 0.125
 - name: wash-4
   profile: stairville-wild-wash-pro-648-rgbw
@@ -32,7 +33,7 @@ fixtures:
   address: 49
   canvas:
     x: 0.775
-    y: 0.2
+    y: 0.8
     width: 0.125
 groups:
   all-wash:
