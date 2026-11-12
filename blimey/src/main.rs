@@ -1,3 +1,4 @@
+mod artnet;
 mod enttec;
 mod midi_input;
 mod stream;
@@ -5,7 +6,7 @@ mod stream;
 use std::error::Error;
 use std::fs;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -16,9 +17,10 @@ use blimey_engine::{
     DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource, MonotonicClock, Show,
     first_difference, format_dump, parse_dump,
 };
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serialport::SerialPortType;
 
+use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
 use crate::midi_input::MidiInput;
 use crate::stream::StreamSink;
@@ -47,11 +49,13 @@ enum Command {
         /// Serial device of the Enttec box, e.g. /dev/cu.usbserial-EN123456 (see `blimey devices`).
         #[arg(long)]
         dmx_port: String,
+        #[command(flatten)]
+        artnet: ArtNetMirror,
     },
     /// List MIDI input ports and serial ports.
     Devices,
-    /// Set a look by fixture or group name. Prints it as a one-frame dump, or with --dmx-port
-    /// or --listen holds it live until stopped.
+    /// Set a look by fixture or group name. Prints it as a one-frame dump, or with --dmx-port,
+    /// --listen or --artnet holds it live until stopped.
     Fire {
         show_dir: PathBuf,
         /// A fixture or group, then its settings: `--set all-wash color=deep-blue dimmer=60%`.
@@ -66,10 +70,42 @@ enum Command {
         /// Port 0 picks a free port.
         #[arg(long)]
         listen: Option<SocketAddr>,
+        #[command(flatten)]
+        artnet: ArtNetMirror,
     },
     /// Manage fixture profiles.
     #[command(subcommand)]
     Fixture(FixtureCommand),
+}
+
+#[derive(Args)]
+struct ArtNetMirror {
+    /// Mirror the output over Art-Net to this node: an IPv4 address, port 6454 unless given.
+    /// `--artnet` alone sends to 127.0.0.1, e.g. for BlenderDMX (docs/blenderdmx.md).
+    #[arg(
+        long,
+        value_name = "ADDR",
+        num_args = 0..=1,
+        default_missing_value = "127.0.0.1",
+        value_parser = artnet::parse_node,
+    )]
+    artnet: Option<SocketAddrV4>,
+    /// Art-Net universe the mirror sends on: the 15-bit port-address, from 0.
+    #[arg(
+        long,
+        default_value_t = 0,
+        value_parser = clap::value_parser!(u16).range(..=i64::from(artnet::MAX_UNIVERSE)),
+        requires = "artnet",
+    )]
+    artnet_universe: u16,
+}
+
+impl ArtNetMirror {
+    fn start(&self) -> io::Result<Option<ArtNet>> {
+        self.artnet
+            .map(|node| ArtNet::new(node, self.artnet_universe))
+            .transpose()
+    }
 }
 
 #[derive(Subcommand)]
@@ -96,14 +132,16 @@ fn main() -> ExitCode {
             show_dir,
             midi_port,
             dmx_port,
-        } => run(&show_dir, &midi_port, dmx_port),
+            artnet,
+        } => run(&show_dir, &midi_port, dmx_port, &artnet),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
             set,
             dmx_port,
             listen,
-        } => fire(&show_dir, &set, dmx_port, listen),
+            artnet,
+        } => fire(&show_dir, &set, dmx_port, listen, &artnet),
         Command::Fixture(FixtureCommand::Import { ofl_json, out }) => {
             import_fixture(&ofl_json, out.as_deref())
         }
@@ -143,11 +181,20 @@ fn replay(
     Ok(ExitCode::SUCCESS)
 }
 
-fn run(show_dir: &Path, midi_port: &str, dmx_port: String) -> Result<ExitCode, Box<dyn Error>> {
+fn run(
+    show_dir: &Path,
+    midi_port: &str,
+    dmx_port: String,
+    artnet: &ArtNetMirror,
+) -> Result<ExitCode, Box<dyn Error>> {
     let show = Show::load(show_dir)?;
     let mut clock = MonotonicClock::default();
     let mut midi = MidiInput::connect(midi_port, clock)?;
-    let mut dmx = EnttecPro::new(dmx_port);
+    let mut output = LiveOutput {
+        dmx: Some(EnttecPro::new(dmx_port)),
+        stream: None,
+        artnet: artnet.start()?,
+    };
     eprintln!("blimey: running {}; Ctrl-C to stop", show_dir.display());
     // u32::MAX frames at 40 Hz is over three years: in practice, until the process is stopped.
     blimey_engine::run(
@@ -155,7 +202,7 @@ fn run(show_dir: &Path, midi_port: &str, dmx_port: String) -> Result<ExitCode, B
         &mut midi,
         &show,
         &Look::default(),
-        &mut dmx,
+        &mut output,
         u32::MAX,
     )?;
     Ok(ExitCode::SUCCESS)
@@ -188,6 +235,7 @@ fn fire(
     set_values: &[String],
     dmx_port: Option<String>,
     listen: Option<SocketAddr>,
+    artnet: &ArtNetMirror,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let show = Show::load(show_dir)?;
     let mut look = Look::default();
@@ -199,7 +247,7 @@ fn fire(
         look.set(&show, target, &settings)
             .map_err(|error| format!("--set {target}: {error}"))?;
     }
-    if dmx_port.is_none() && listen.is_none() {
+    if dmx_port.is_none() && listen.is_none() && artnet.artnet.is_none() {
         let mut sink = FakeDmx::default();
         blimey_engine::run(
             &mut FakeClock::default(),
@@ -217,6 +265,7 @@ fn fire(
         stream: listen
             .map(|address| StreamSink::start(address, &show.rig))
             .transpose()?,
+        artnet: artnet.start()?,
     };
     eprintln!("blimey: holding the look; Ctrl-C to stop");
     blimey_engine::run(
@@ -239,10 +288,11 @@ impl MidiSource for NoMidi {
     }
 }
 
-/// A live engine's outputs: the Enttec box, the WebSocket stream, or both.
+/// A live engine's outputs: any of the Enttec box, the WebSocket stream and the Art-Net mirror.
 struct LiveOutput {
     dmx: Option<EnttecPro>,
     stream: Option<StreamSink>,
+    artnet: Option<ArtNet>,
 }
 
 impl DmxSink for LiveOutput {
@@ -252,6 +302,9 @@ impl DmxSink for LiveOutput {
         }
         if let Some(stream) = &mut self.stream {
             stream.send(at, frame)?;
+        }
+        if let Some(artnet) = &mut self.artnet {
+            artnet.send(at, frame)?;
         }
         Ok(())
     }

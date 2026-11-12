@@ -78,10 +78,14 @@ The look renders above the legacy layer (plan §5): every channel of a fixture i
 blimey fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
 blimey fire <show> --set … --dmx-port /dev/cu.usbserial-…           # hold it on the Enttec box
 blimey fire <show> --set … --listen 127.0.0.1:7340                  # hold it and stream it over WebSocket
+blimey fire <show> --set … --artnet [<ip>[:port]] [--artnet-universe <n>]   # hold it and mirror it over Art-Net
+blimey run <show> --dmx-port … --artnet [<ip>[:port]] [--artnet-universe <n>]
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 ```
 
-`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port` or `--listen` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With either or both, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
+`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
+
+`--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
 ## WebSocket stream: `GET /ws`
 
