@@ -4,12 +4,18 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use midly::{Format, MetaMessage, Smf, Timing, TrackEventKind};
+use midly::live::LiveEvent;
+use midly::num::{u15, u28};
+use midly::{Format, Header, MetaMessage, Smf, Timing, TrackEvent, TrackEventKind};
 
 use crate::{MidiEvent, MidiSource};
 
 /// SMF default when a file sets no tempo: 120 BPM.
 const DEFAULT_MICROS_PER_BEAT: u64 = 500_000;
+/// Files `MidiFile::encode` writes run at the default 120 BPM with this resolution: one tick is
+/// 20 µs, and a 25 ms frame period is a whole number of ticks.
+const ENCODED_TICKS_PER_BEAT: u16 = 25_000;
+const ENCODED_TICK: Duration = Duration::from_micros(20);
 
 /// A Standard MIDI File played back as a `MidiSource`, with tick times resolved through its tempo map.
 pub struct MidiFile {
@@ -90,6 +96,52 @@ impl MidiFile {
     pub fn duration(&self) -> Duration {
         self.duration
     }
+
+    /// A format 0 Standard MIDI File holding `events`, which `parse` reads back as the same
+    /// messages. Times round up to the next 20 µs tick, so each event stays in the frame it was
+    /// due in. Channel messages are stored as MIDI events, anything else (clock, Start, Stop) as
+    /// SMF escapes.
+    pub fn encode(events: &[MidiEvent]) -> io::Result<Vec<u8>> {
+        let mut track = Vec::with_capacity(events.len() + 1);
+        let mut previous_tick = 0;
+        for event in events {
+            let tick = event.at.as_nanos().div_ceil(ENCODED_TICK.as_nanos());
+            let delta = tick
+                .checked_sub(previous_tick)
+                .ok_or_else(|| invalid(format!("event at {:?} is out of order", event.at)))?;
+            let delta = u32::try_from(delta)
+                .ok()
+                .and_then(u28::try_from)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "no MIDI for over 89 minutes before the event at {:?}",
+                        event.at
+                    ))
+                })?;
+            previous_tick = tick;
+            let kind = match LiveEvent::parse(&event.message) {
+                Ok(LiveEvent::Midi { channel, message }) => {
+                    TrackEventKind::Midi { channel, message }
+                }
+                _ => TrackEventKind::Escape(&event.message),
+            };
+            track.push(TrackEvent { delta, kind });
+        }
+        track.push(TrackEvent {
+            delta: u28::new(0),
+            kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+        });
+        let smf = Smf {
+            header: Header::new(
+                Format::SingleTrack,
+                Timing::Metrical(u15::new(ENCODED_TICKS_PER_BEAT)),
+            ),
+            tracks: vec![track],
+        };
+        let mut bytes = Vec::new();
+        smf.write_std(&mut bytes)?;
+        Ok(bytes)
+    }
 }
 
 impl MidiSource for MidiFile {
@@ -148,6 +200,38 @@ mod tests {
         assert_eq!(
             midi.poll(Duration::from_millis(500)),
             Some(event(500, &[0x80, 37, 0]))
+        );
+    }
+
+    #[test]
+    fn encode_round_trips_channel_and_clock_messages_on_a_20_us_grid() {
+        let micros = |micros, message: &[u8]| MidiEvent {
+            at: Duration::from_micros(micros),
+            message: message.to_vec(),
+        };
+        let recorded = [
+            micros(0, &[0xFA]),
+            micros(10, &[0xF8]),
+            micros(24_999, &[0xC1, 3]),
+            micros(25_000, &[0x91, 36, 100]),
+            micros(1_000_007, &[0x81, 36, 0]),
+            micros(1_000_007, &[0xFC]),
+        ];
+
+        let mut midi = MidiFile::parse(&MidiFile::encode(&recorded).unwrap()).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| midi.poll(Duration::MAX)).collect();
+
+        assert_eq!(
+            events,
+            [
+                micros(0, &[0xFA]),
+                micros(20, &[0xF8]),
+                micros(25_000, &[0xC1, 3]),
+                micros(25_000, &[0x91, 36, 100]),
+                micros(1_000_020, &[0x81, 36, 0]),
+                micros(1_000_020, &[0xFC]),
+            ],
+            "times round up to the tick, so 24.999 ms stays in the 25 ms frame"
         );
     }
 
