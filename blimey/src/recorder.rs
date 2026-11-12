@@ -264,10 +264,7 @@ mod tests {
                 2 => vec![0xB1, 7, value],
                 _ => vec![0xB1, 20, value],
             };
-            Some(MidiEvent {
-                at: until,
-                message,
-            })
+            Some(MidiEvent { at: until, message })
         }
     }
 
