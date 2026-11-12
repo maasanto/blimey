@@ -34,7 +34,7 @@ The engine refuses to load a rig where:
 - a fixture name appears twice, a group lists an unknown fixture, or a group shares a fixture's name,
 - the profile or mode doesn't exist.
 
-**Canvas.** The stage plan is a normalised 2D canvas, 0–1 on both axes: x from left to right as seen from the audience, y from upstage (0, top of the plan) to downstage (1). A fixture's pixels sit on one row at height `y`, spread evenly across `width` starting at `x`, in pixel order: pixel *i* of *n* is at `x + width × (i + 0.5) / n`. A single-pixel fixture can omit `width`.
+**Canvas.** Fixtures sit on a normalised 2D canvas, 0–1 on both axes, which is the stage as the audience sees it: a front view, not a plan from above. `x` runs from the left edge (0) to the right edge (1) as seen from the audience: x = 0 is stage right, x = 1 is stage left. `y` runs from the floor (0) up to the top of the stage picture (1). A fixture's pixels sit on one row at height `y`, spread evenly across `width` starting at `x`, in pixel order: pixel *i* of *n* is at `x + width × (i + 0.5) / n`. A single-pixel fixture can omit `width`.
 
 ### palettes.yaml
 

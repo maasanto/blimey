@@ -31,7 +31,8 @@ struct FixtureEntry {
     canvas: Canvas,
 }
 
-/// Where a fixture sits on the normalised 2D stage canvas (0–1 on both axes). Its pixels are
+/// Where a fixture sits on the normalised 2D stage canvas, a front view from the audience:
+/// `x` from the left edge (0, stage right) to the right (1, stage left), `y` from the floor (0) up (1). Its pixels are
 /// spread evenly across `width`, in pixel order, starting at `x`.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
