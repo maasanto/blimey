@@ -1,0 +1,4 @@
+# Notes 60-66 drive both fixtures' channels; note 70 drives channel 20, which no fixture uses.
+ranges:
+  - { first_note: 60, last_note: 66, address: 1 }
+  - { first_note: 70, last_note: 70, address: 20 }

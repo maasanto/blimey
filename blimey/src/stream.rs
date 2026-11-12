@@ -12,7 +12,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
 use blimey_engine::rig::Rig;
-use blimey_engine::{DmxSink, Frame};
+use blimey_engine::{DmxSink, Frame, Status};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -23,6 +23,8 @@ const PROTOCOL_VERSION: u32 = 1;
 /// A `DmxSink` that publishes each frame, with its pixel preview colours, to the stream.
 pub struct StreamSink {
     rig: Rig,
+    /// The engine state behind the next frame.
+    status: Status,
     frames: watch::Sender<Arc<str>>,
     /// Serves the stream; dropping the sink stops it.
     _server: Runtime,
@@ -49,6 +51,7 @@ impl StreamSink {
         });
         Ok(StreamSink {
             rig: rig.clone(),
+            status: Status::default(),
             frames,
             _server: server,
         })
@@ -57,9 +60,13 @@ impl StreamSink {
 
 impl DmxSink for StreamSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
-        self.frames
-            .send_replace(frame_message(&self.rig, at, frame).to_string().into());
+        let message = frame_message(&self.rig, at, frame, &self.status);
+        self.frames.send_replace(message.to_string().into());
         Ok(())
+    }
+
+    fn status(&mut self, status: &Status) {
+        self.status = status.clone();
     }
 }
 
@@ -116,7 +123,7 @@ fn rig_message(rig: &Rig) -> Value {
     })
 }
 
-fn frame_message(rig: &Rig, at: Duration, frame: &Frame) -> Value {
+fn frame_message(rig: &Rig, at: Duration, frame: &Frame, status: &Status) -> Value {
     let pixels: serde_json::Map<String, Value> = rig
         .pixel_colours(frame)
         .into_iter()
@@ -130,5 +137,42 @@ fn frame_message(rig: &Rig, at: Duration, frame: &Frame) -> Value {
         "at_ms": at.as_millis() as u64,
         "dmx": frame.as_slice(),
         "pixels": pixels,
+        "song": status.song,
+        "cues": status.cues,
+        "master": status.master,
+        "live_parameters": status.live_parameters,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blimey_engine::CueStatus;
+
+    #[test]
+    fn frames_carry_the_song_active_cues_master_and_live_parameters() {
+        let mut live_parameters = [0.0; 8];
+        live_parameters[2] = 0.5;
+        let status = Status {
+            song: Some("tell-me".into()),
+            cues: vec![CueStatus {
+                note: 36,
+                name: "verse-blue".into(),
+                intensity: 1.0,
+                released: false,
+            }],
+            master: 0.25,
+            live_parameters,
+        };
+
+        let message = frame_message(&Rig::default(), Duration::ZERO, &[0; 512], &status);
+
+        assert_eq!(message["song"], "tell-me");
+        assert_eq!(
+            message["cues"],
+            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false }])
+        );
+        assert_eq!(message["master"], 0.25);
+        assert_eq!(message["live_parameters"][2], 0.5);
+    }
 }

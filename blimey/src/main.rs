@@ -1,5 +1,6 @@
 mod artnet;
 mod enttec;
+mod hot_reload;
 mod midi_input;
 mod stream;
 
@@ -15,13 +16,14 @@ use blimey_engine::look::{Look, LookSettings};
 use blimey_engine::ofl::import_ofl;
 use blimey_engine::{
     DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource, MonotonicClock, Show,
-    first_difference, format_dump, parse_dump,
+    Status, first_difference, format_dump, parse_dump,
 };
 use clap::{Args, Parser, Subcommand};
 use serialport::SerialPortType;
 
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
+use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
 use crate::stream::StreamSink;
 
@@ -40,7 +42,11 @@ enum Command {
         #[arg(long)]
         compare: Option<PathBuf>,
     },
+    /// Check a show folder: every file parses and refers to fixtures, groups and colours that
+    /// exist. Errors name the file and line.
+    Validate { show_dir: PathBuf },
     /// Run a show live: MIDI in from a port such as the IAC bus, DMX out to an Enttec DMX USB Pro.
+    /// Saving a show file reloads it; a file that fails to load leaves the running show as is.
     Run {
         show_dir: PathBuf,
         /// MIDI input to listen on: the first port whose name contains this text.
@@ -128,6 +134,7 @@ fn main() -> ExitCode {
             out,
             compare,
         } => replay(&show_dir, &midi, out.as_deref(), compare.as_deref()),
+        Command::Validate { show_dir } => validate(&show_dir),
         Command::Run {
             show_dir,
             midi_port,
@@ -181,13 +188,24 @@ fn replay(
     Ok(ExitCode::SUCCESS)
 }
 
+fn validate(show_dir: &Path) -> Result<ExitCode, Box<dyn Error>> {
+    let show = Show::load(show_dir)?;
+    println!(
+        "{}: ok, {} fixtures, {} songs",
+        show_dir.display(),
+        show.rig.fixtures.len(),
+        show.songs.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run(
     show_dir: &Path,
     midi_port: &str,
     dmx_port: String,
     artnet: &ArtNetMirror,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    let show = Show::load(show_dir)?;
+    let show = HotReload::load(show_dir)?;
     let mut clock = MonotonicClock::default();
     let mut midi = MidiInput::connect(midi_port, clock)?;
     let mut output = LiveOutput {
@@ -200,7 +218,7 @@ fn run(
     blimey_engine::run(
         &mut clock,
         &mut midi,
-        &show,
+        show,
         &Look::default(),
         &mut output,
         u32::MAX,
@@ -307,6 +325,12 @@ impl DmxSink for LiveOutput {
             artnet.send(at, frame)?;
         }
         Ok(())
+    }
+
+    fn status(&mut self, status: &Status) {
+        if let Some(stream) = &mut self.stream {
+            stream.status(status);
+        }
     }
 }
 

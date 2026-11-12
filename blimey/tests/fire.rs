@@ -125,4 +125,7 @@ async fn streams_the_rig_then_frames_with_output_and_preview_colours() {
     );
     assert_eq!(second["pixels"]["wash-1"][3], "#ff0000");
     assert_eq!(second["pixels"]["wash-2"][0], "#000000");
+    assert_eq!(second["song"], Value::Null, "fire selects no song");
+    assert_eq!(second["cues"], serde_json::json!([]));
+    assert_eq!(second["master"], 1.0);
 }
