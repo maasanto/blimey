@@ -6,8 +6,8 @@ mod emulator;
 use std::io::{self, Write};
 use std::time::Duration;
 
+use blimey_engine::{DmxSink, Frame};
 use serialport::SerialPort;
-use strata_engine::{DmxSink, Frame};
 
 const START_OF_MESSAGE: u8 = 0x7E;
 const END_OF_MESSAGE: u8 = 0xE7;
@@ -66,7 +66,7 @@ impl EnttecPro {
                 }
                 Err(error) if !self.is_missing_reported => {
                     eprintln!(
-                        "enttec: cannot open {}: {error}; retrying every frame (check the USB cable, or run `strata devices`)",
+                        "enttec: cannot open {}: {error}; retrying every frame (check the USB cable, or run `blimey devices`)",
                         self.path
                     );
                     self.is_missing_reported = true;
@@ -96,7 +96,7 @@ impl DmxSink for EnttecPro {
 mod tests {
     use std::path::Path;
 
-    use strata_engine::{DMX_CHANNELS, FakeClock, MidiFile, Show, replay, run};
+    use blimey_engine::{DMX_CHANNELS, FakeClock, MidiFile, Show, replay, run};
 
     use super::emulator::EmulatedEnttec;
     use super::*;

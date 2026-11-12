@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
 
 fn replay_empty_show(extra_args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_strata"))
+    Command::new(env!("CARGO_BIN_EXE_blimey"))
         .arg("replay")
         .arg(format!("{FIXTURES}/shows/empty"))
         .arg("--midi")
@@ -46,7 +46,7 @@ fn out_writes_the_reference_byte_for_byte() {
 
 #[test]
 fn legacy_song_matches_its_reference() {
-    let output = Command::new(env!("CARGO_BIN_EXE_strata"))
+    let output = Command::new(env!("CARGO_BIN_EXE_blimey"))
         .arg("replay")
         .arg(format!("{FIXTURES}/shows/legacy"))
         .arg("--midi")
@@ -66,7 +66,7 @@ fn legacy_song_matches_its_reference() {
 #[test]
 fn compare_fails_on_the_first_differing_channel() {
     let reference = format!("{}/lit-channel.dump", env!("CARGO_TARGET_TMPDIR"));
-    fs::write(&reference, "# strata frame dump v1\n0\n25 7=128\n").unwrap();
+    fs::write(&reference, "# blimey frame dump v1\n0\n25 7=128\n").unwrap();
 
     let output = replay_empty_show(&["--compare", &reference]);
 

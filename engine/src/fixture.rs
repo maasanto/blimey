@@ -1,5 +1,5 @@
 //! Fixture profiles: for each DMX mode, what every channel drives. Stored as YAML in a show's
-//! `fixtures/` folder, usually produced by `strata fixture import` from Open Fixture Library JSON.
+//! `fixtures/` folder, usually produced by `blimey fixture import` from Open Fixture Library JSON.
 
 use std::fs;
 use std::path::Path;

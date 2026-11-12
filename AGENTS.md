@@ -1,11 +1,11 @@
-# Strata — agent guide
+# Blimey — agent guide
 
-Strata is a headless DMX lighting engine driven by Reaper over MIDI, replacing ENTTEC EMU for Fossile's show. The spec is [docs/plan.md](docs/plan.md); section 14 defines the work packages (C0–C13) and section 15 the validation strategy. Read both before starting a chunk.
+Blimey is a headless DMX lighting engine driven by Reaper over MIDI, replacing ENTTEC EMU for Fossile's show. The spec is [docs/plan.md](docs/plan.md); section 14 defines the work packages (C0–C13) and section 15 the validation strategy. Read both before starting a chunk.
 
 ## Repo layout
 
 - `engine/` — Rust library, all logic
-- `strata/` — Rust binary: CLI, HTTP/WebSocket, device drivers
+- `blimey/` — Rust binary: CLI, HTTP/WebSocket, device drivers
 - `ui/` — Svelte + Vite, built to static files embedded in the binary
 - `schema/` — JSON Schema for show files
 - `shows/fossile/` — the real show

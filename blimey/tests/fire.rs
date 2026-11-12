@@ -8,12 +8,12 @@ use tokio_tungstenite::connect_async;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
 
-fn strata() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_strata"))
+fn blimey() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_blimey"))
 }
 
 fn fire(show: &str, args: &[&str]) -> Output {
-    strata()
+    blimey()
         .arg("fire")
         .arg(format!("{FIXTURES}/shows/{show}"))
         .args(args)
@@ -77,7 +77,7 @@ impl Drop for Running {
 
 #[tokio::test]
 async fn streams_the_rig_then_frames_with_output_and_preview_colours() {
-    let child = strata()
+    let child = blimey()
         .arg("fire")
         .arg(format!("{FIXTURES}/shows/four-washes"))
         .args([

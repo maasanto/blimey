@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://strata.local/schema/legacy-map.schema.json",
+  "$id": "https://blimey.local/schema/legacy-map.schema.json",
   "title": "legacy-map.yaml",
   "description": "Legacy raw notes (plan §5): each channel-1 note in a range drives one DMX channel. Note-on sets it to velocity × 2, with velocity 127 giving 255; note-off or a velocity-0 note-on sets it to 0. Optional: a show without this file has no legacy notes.",
   "type": "object",

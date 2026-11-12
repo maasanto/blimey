@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use strata_engine::fixture::{Attribute, FixtureProfile, Mode};
-use strata_engine::ofl::import_ofl;
+use blimey_engine::fixture::{Attribute, FixtureProfile, Mode};
+use blimey_engine::ofl::import_ofl;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
 const WILD_WASH_OFL: &str = "shows/fossile/fixtures/stairville-wild-wash-pro-648-rgbw.ofl.json";
@@ -67,7 +67,7 @@ fn wild_wash_16ch_profile_matches_the_manufacturer_table() {
         let profile = FixtureProfile::load(&Path::new(ROOT).join(profile_path)).unwrap();
         assert_eq!(
             profile, imported,
-            "{profile_path} is stale; re-run strata fixture import"
+            "{profile_path} is stale; re-run blimey fixture import"
         );
         assert_matches_manual(profile.mode("16ch").unwrap(), profile_path);
     }

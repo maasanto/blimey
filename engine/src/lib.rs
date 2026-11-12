@@ -1,4 +1,4 @@
-//! Strata engine: turns timestamped MIDI events into DMX frames at a fixed 40 Hz.
+//! Blimey engine: turns timestamped MIDI events into DMX frames at a fixed 40 Hz.
 //!
 //! Time, MIDI input and DMX output are all injected, so the same loop runs
 //! against real devices or, in tests, against a MIDI file, a fake clock and

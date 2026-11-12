@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://strata.local/schema/rig.schema.json",
-  "title": "Strata rig (rig.yaml)",
+  "$id": "https://blimey.local/schema/rig.schema.json",
+  "title": "Blimey rig (rig.yaml)",
   "description": "Fixtures, their DMX addresses and canvas positions, and named groups. Address overlaps, unknown profiles or modes and unknown group members are checked by the engine at load.",
   "type": "object",
   "additionalProperties": false,

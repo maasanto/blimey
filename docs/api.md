@@ -1,4 +1,4 @@
-# Strata API contract
+# Blimey API contract
 
 What the engine exposes to the web UI, the CLI and agents. UI chunks code against this file, not against engine internals. A chunk that changes an endpoint or a show-file field updates this file and `schema/` in the same PR.
 
@@ -58,7 +58,7 @@ modes:
         default: 255     # channels without an attribute hold this value (default 0)
 ```
 
-Profiles are generated from Open Fixture Library JSON with `strata fixture import`; fix the OFL file and re-import rather than editing the YAML. The importer maps OFL `Intensity` to `dimmer` and `ColorIntensity` red/green/blue/white to the colour attributes; matrix `templateChannels` become one channel per pixel, numbered in `matrix.pixelKeys` order. Other channels keep their name and hold their OFL `defaultValue`.
+Profiles are generated from Open Fixture Library JSON with `blimey fixture import`; fix the OFL file and re-import rather than editing the YAML. The importer maps OFL `Intensity` to `dimmer` and `ColorIntensity` red/green/blue/white to the colour attributes; matrix `templateChannels` become one channel per pixel, numbered in `matrix.pixelKeys` order. Other channels keep their name and hold their OFL `defaultValue`.
 
 ## Looks
 
@@ -75,13 +75,13 @@ The look renders above the legacy layer (plan §5): every channel of a fixture i
 ## CLI
 
 ```sh
-strata fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
-strata fire <show> --set … --dmx-port /dev/cu.usbserial-…           # hold it on the Enttec box
-strata fire <show> --set … --listen 127.0.0.1:7340                  # hold it and stream it over WebSocket
-strata fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
+blimey fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
+blimey fire <show> --set … --dmx-port /dev/cu.usbserial-…           # hold it on the Enttec box
+blimey fire <show> --set … --listen 127.0.0.1:7340                  # hold it and stream it over WebSocket
+blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 ```
 
-`fire` goes through the same render loop as `strata run`, with no MIDI input. Without `--dmx-port` or `--listen` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With either or both, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
+`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port` or `--listen` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With either or both, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
 
 ## WebSocket stream: `GET /ws`
 
