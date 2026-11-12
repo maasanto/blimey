@@ -38,10 +38,12 @@ impl MidiInput {
             is_missing_reported: false,
             is_failure_reported: false,
         };
+        // Before the first frame, so MIDI sent as soon as the engine is up is not lost.
+        watcher.check();
         thread::spawn(move || {
             loop {
-                watcher.check();
                 thread::sleep(PORT_CHECK_INTERVAL);
+                watcher.check();
             }
         });
         Ok(Self {
