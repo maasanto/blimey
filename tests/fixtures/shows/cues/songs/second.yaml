@@ -1,0 +1,8 @@
+program: 2
+cues:
+  36:
+    name: green-fade
+    type: scene
+    fade_in: 200ms
+    values:
+      rgb-par: { color: green }

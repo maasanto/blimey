@@ -1,0 +1,21 @@
+program: 1
+safe_look:
+  both: { color: white, dimmer: 20% }
+cues:
+  36:
+    name: red-fade
+    type: scene
+    fade_in: 1s
+    release: 500ms
+    values:
+      dimmer-par: { color: red }
+  37:
+    name: blue-snap
+    type: scene
+    values:
+      dimmer-par: { color: blue }
+  38:
+    name: both-green-half
+    type: scene
+    values:
+      both: { color: green, dimmer: 50% }

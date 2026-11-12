@@ -49,20 +49,25 @@ fn every_show_file_matches_its_schema() {
             "legacy-map.schema.json",
             &show.join("legacy-map.yaml"),
         ));
-        let Ok(profiles) = fs::read_dir(show.join("fixtures")) else {
-            continue;
-        };
-        for profile in profiles {
-            let path = profile.unwrap().path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "yaml")
-            {
-                checked += usize::from(check("fixture.schema.json", &path));
+        for (folder, schema) in [
+            ("fixtures", "fixture.schema.json"),
+            ("songs", "song.schema.json"),
+        ] {
+            let Ok(files) = fs::read_dir(show.join(folder)) else {
+                continue;
+            };
+            for file in files {
+                let path = file.unwrap().path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "yaml")
+                {
+                    checked += usize::from(check(schema, &path));
+                }
             }
         }
     }
-    assert!(checked >= 8, "only {checked} show files found");
+    assert!(checked >= 15, "only {checked} show files found");
 }
 
 #[test]
@@ -83,4 +88,5 @@ fn the_fossile_show_loads() {
     assert_eq!(show.rig.resolve("all-wash").unwrap().len(), 4);
     assert!(show.palettes.contains_key("deep-blue"));
     assert!(show.rig.fixtures.iter().all(|wash| wash.pixels.len() == 4));
+    assert!(show.songs.iter().any(|song| song.name == "tell-me"));
 }

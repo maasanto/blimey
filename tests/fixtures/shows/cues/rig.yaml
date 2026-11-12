@@ -1,0 +1,15 @@
+# Two small fixtures so cue dumps stay readable: DMX 1-4 has a dimmer channel, DMX 5-7 doesn't.
+fixtures:
+  - name: dimmer-par
+    profile: dimmer-par
+    mode: 4ch
+    address: 1
+    canvas: { x: 0.25, y: 0.5 }
+  - name: rgb-par
+    profile: rgb-par
+    mode: 3ch
+    address: 5
+    canvas: { x: 0.75, y: 0.5 }
+
+groups:
+  both: [dimmer-par, rgb-par]

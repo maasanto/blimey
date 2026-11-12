@@ -6,11 +6,13 @@ use std::path::Path;
 use crate::LegacyMap;
 use crate::colour::{Rgb, parse_palettes};
 use crate::rig::Rig;
+use crate::song::{Song, load_songs};
 
 const LEGACY_MAP_FILE: &str = "legacy-map.yaml";
 const RIG_FILE: &str = "rig.yaml";
 const PALETTES_FILE: &str = "palettes.yaml";
 const PROFILES_DIR: &str = "fixtures";
+const SONGS_DIR: &str = "songs";
 
 /// A show folder (plan §6), loaded and validated.
 #[derive(Debug, Default)]
@@ -21,6 +23,8 @@ pub struct Show {
     pub rig: Rig,
     /// Colour name → colour; empty when the show has no `palettes.yaml`.
     pub palettes: BTreeMap<String, Rgb>,
+    /// One per file in `songs/`, in file-name order.
+    pub songs: Vec<Song>,
 }
 
 impl Show {
@@ -34,7 +38,7 @@ impl Show {
                 ),
             ));
         }
-        Ok(Self {
+        let mut show = Self {
             legacy: load_optional(&dir.join(LEGACY_MAP_FILE), |yaml| {
                 LegacyMap::parse(yaml).map_err(|error| error.to_string())
             })?,
@@ -42,7 +46,10 @@ impl Show {
                 Rig::parse(yaml, &dir.join(PROFILES_DIR))
             })?,
             palettes: load_optional(&dir.join(PALETTES_FILE), parse_palettes)?,
-        })
+            songs: Vec::new(),
+        };
+        show.songs = load_songs(&dir.join(SONGS_DIR), &show)?;
+        Ok(show)
     }
 }
 

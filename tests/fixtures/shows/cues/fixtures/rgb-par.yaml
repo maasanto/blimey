@@ -1,0 +1,10 @@
+name: Test par without a dimmer channel
+modes:
+- name: 3ch
+  channels:
+  - name: Red
+    attribute: red
+  - name: Green
+    attribute: green
+  - name: Blue
+    attribute: blue
