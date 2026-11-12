@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://strata.local/schema/palettes.schema.json",
+  "title": "Strata palettes (palettes.yaml)",
+  "description": "Colour name → colour. Names are used in looks and cues, e.g. color: deep-blue.",
+  "type": "object",
+  "propertyNames": { "pattern": "^[^#=][^=]*$" },
+  "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["rgb"],
+    "properties": {
+      "rgb": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+      "lee": {
+        "description": "The gel this colour approximates, e.g. Lee 120 Deep Blue. For humans only.",
+        "type": "string"
+      }
+    }
+  }
+}

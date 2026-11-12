@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://strata.local/schema/rig.schema.json",
+  "title": "Strata rig (rig.yaml)",
+  "description": "Fixtures, their DMX addresses and canvas positions, and named groups. Address overlaps, unknown profiles or modes and unknown group members are checked by the engine at load.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fixtures"],
+  "properties": {
+    "fixtures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fixture" }
+    },
+    "groups": {
+      "description": "Group name → fixture names. A group name can't also be a fixture name.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "profile", "mode", "address", "canvas"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "pattern": "^[^=]+$" },
+        "profile": {
+          "description": "File name, without .yaml, of a profile in the show's fixtures/ folder.",
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": { "description": "A mode name from the profile, e.g. 16ch.", "type": "string" },
+        "address": {
+          "description": "1-based DMX start address.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "canvas": { "$ref": "#/$defs/canvas" }
+      }
+    },
+    "canvas": {
+      "description": "Position on the normalised stage canvas. Pixels are spread evenly across width, in pixel order, starting at x.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Named colours. RGB values only approximate the gels they name: tune them by eye on the
+# real washes, the gel reference is just a note for humans.
+amber: { rgb: "#ffa01e", lee: "Lee 020 Medium Amber" }
+congo-blue: { rgb: "#2a00ff", lee: "Lee 181 Congo Blue" }
+deep-blue: { rgb: "#0028ff", lee: "Lee 120 Deep Blue" }
+magenta: { rgb: "#ff0096", lee: "Lee 128 Bright Pink" }
+red: { rgb: "#ff0a00", lee: "Lee 106 Primary Red" }
+steel-blue: { rgb: "#b4d2ff", lee: "Lee 117 Steel Blue" }
+warm-white: { rgb: "#ffd2a0", lee: "Lee 204 Full CT Orange" }
+white: { rgb: "#ffffff" }

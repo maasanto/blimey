@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://strata.local/schema/legacy-map.schema.json",
+  "title": "legacy-map.yaml",
+  "description": "Legacy raw notes (plan §5): each channel-1 note in a range drives one DMX channel. Note-on sets it to velocity × 2, with velocity 127 giving 255; note-off or a velocity-0 note-on sets it to 0. Optional: a show without this file has no legacy notes.",
+  "type": "object",
+  "required": ["ranges"],
+  "additionalProperties": false,
+  "properties": {
+    "ranges": {
+      "type": "array",
+      "description": "Note ranges must not overlap. The engine also rejects ranges running past channel 512.",
+      "items": {
+        "type": "object",
+        "required": ["first_note", "last_note", "address"],
+        "additionalProperties": false,
+        "properties": {
+          "first_note": { "type": "integer", "minimum": 0, "maximum": 127 },
+          "last_note": { "type": "integer", "minimum": 0, "maximum": 127, "description": "Inclusive; not below first_note." },
+          "address": { "type": "integer", "minimum": 1, "maximum": 512, "description": "DMX channel driven by first_note; the next notes drive the next channels." }
+        }
+      }
+    }
+  }
+}
