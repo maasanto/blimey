@@ -137,6 +137,7 @@ mod tests {
             &mut FakeClock::default(),
             &mut midi(),
             &show,
+            &Default::default(),
             &mut driver,
             frame_count,
         )

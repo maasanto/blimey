@@ -4,9 +4,14 @@
 //! against real devices or, in tests, against a MIDI file, a fake clock and
 //! a recording sink.
 
+pub mod colour;
 mod dump;
+pub mod fixture;
 mod legacy;
+pub mod look;
 mod midi_file;
+pub mod ofl;
+pub mod rig;
 mod show;
 
 pub use dump::{first_difference, format_dump, parse_dump};
@@ -111,15 +116,16 @@ impl DmxSink for FakeDmx {
 
 /// Renders `frame_count` frames, frame N due at N × `FRAME_PERIOD` on `clock`.
 ///
+/// Layers, lowest first (plan §5): legacy notes, then `look` on the fixtures it sets.
 /// Deadlines are absolute, so a late frame never shifts the ones after it.
 pub fn run(
     clock: &mut impl Clock,
     midi: &mut impl MidiSource,
     show: &Show,
+    look: &look::Look,
     sink: &mut impl DmxSink,
     frame_count: u32,
 ) -> io::Result<()> {
-    // The lowest layer; later layers render on top of it.
     let mut legacy_levels = [0; DMX_CHANNELS];
     for index in 0..frame_count {
         let deadline = FRAME_PERIOD * index;
@@ -127,7 +133,9 @@ pub fn run(
         while let Some(event) = midi.poll(deadline) {
             show.legacy.apply(&event.message, &mut legacy_levels);
         }
-        sink.send(clock.now(), &legacy_levels)?;
+        let mut output = legacy_levels;
+        look::render(&show.rig, look, &mut output);
+        sink.send(clock.now(), &output)?;
     }
     Ok(())
 }
@@ -141,6 +149,8 @@ pub fn replay(show: &Show, mut midi: MidiFile) -> Vec<RecordedFrame> {
         &mut FakeClock::default(),
         &mut midi,
         show,
+        // ponytail: replays carry no look until C3's cues set one.
+        &look::Look::default(),
         &mut sink,
         frame_count,
     )
@@ -164,6 +174,49 @@ mod tests {
             assert_eq!(frame.at, Duration::from_millis(25 * index as u64));
             assert_eq!(frame.values, [0; DMX_CHANNELS]);
         }
+    }
+
+    /// Delivers its events all at once, on the first poll.
+    struct Burst(Vec<MidiEvent>);
+
+    impl MidiSource for Burst {
+        fn poll(&mut self, _until: Duration) -> Option<MidiEvent> {
+            self.0.pop()
+        }
+    }
+
+    #[test]
+    fn look_overrides_legacy_only_on_the_fixtures_it_sets() {
+        let mut show = Show::load(Path::new("../tests/fixtures/shows/four-washes")).unwrap();
+        show.legacy = LegacyMap::parse(
+            "ranges:\n  - { first_note: 60, last_note: 60, address: 1 }\n  - { first_note: 61, last_note: 61, address: 17 }\n",
+        )
+        .unwrap();
+        let note_on = |note| MidiEvent {
+            at: Duration::ZERO,
+            message: vec![0x90, note, 100],
+        };
+        let mut look = look::Look::default();
+        let green = look::LookSettings::from_pairs(&["color=#00ff00".into()]).unwrap();
+        look.set(&show, "wash-1", &green).unwrap();
+        let mut sink = FakeDmx::default();
+
+        run(
+            &mut FakeClock::default(),
+            &mut Burst(vec![note_on(60), note_on(61)]),
+            &show,
+            &look,
+            &mut sink,
+            1,
+        )
+        .unwrap();
+
+        let frame = sink.frames[0].values;
+        assert_eq!(frame[0..2], [0, 255], "wash-1 is the look's green");
+        assert_eq!(
+            frame[16], 200,
+            "wash-2 is not in the look: legacy shows through"
+        );
     }
 
     #[test]

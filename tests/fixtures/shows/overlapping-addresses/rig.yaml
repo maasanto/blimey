@@ -1,0 +1,12 @@
+# wash-b starts inside wash-a's 16 channels: loading must fail.
+fixtures:
+  - name: wash-a
+    profile: stairville-wild-wash-pro-648-rgbw
+    mode: 16ch
+    address: 1
+    canvas: { x: 0.2, y: 0.5 }
+  - name: wash-b
+    profile: stairville-wild-wash-pro-648-rgbw
+    mode: 16ch
+    address: 16
+    canvas: { x: 0.6, y: 0.5 }

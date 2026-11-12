@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/OpenLightingProject/open-fixture-library/master/schemas/fixture.json",
+  "name": "Wild Wash Pro 648 RGBW",
+  "categories": ["Color Changer", "Strobe", "Blinder", "Pixel Bar"],
+  "meta": {
+    "authors": ["Strata"],
+    "createDate": "2026-11-12",
+    "lastModifyDate": "2026-11-12"
+  },
+  "comment": "Item number 467447. Only the 16Ch mode, checked against section 7.14 of the manual.",
+  "links": {
+    "manual": [
+      "https://im.static-thomann.de/pics/atg/atgdata/document/manual/467447_c_467447_en_online.pdf"
+    ]
+  },
+  "physical": {
+    "dimensions": [385, 255, 95],
+    "weight": 3.25,
+    "power": 150,
+    "DMXconnector": "3-pin and 5-pin",
+    "bulb": {
+      "type": "648× 4-in-1 RGBW SMD LED, 0.2 W"
+    },
+    "lens": {
+      "degreesMinMax": [75, 75]
+    }
+  },
+  "matrix": {
+    "pixelKeys": [[["1", "2", "3", "4"]]]
+  },
+  "templateChannels": {
+    "Red $pixelKey": {
+      "capability": { "type": "ColorIntensity", "color": "Red" }
+    },
+    "Green $pixelKey": {
+      "capability": { "type": "ColorIntensity", "color": "Green" }
+    },
+    "Blue $pixelKey": {
+      "capability": { "type": "ColorIntensity", "color": "Blue" }
+    },
+    "White $pixelKey": {
+      "capability": { "type": "ColorIntensity", "color": "White" }
+    }
+  },
+  "modes": [
+    {
+      "name": "16-channel",
+      "shortName": "16ch",
+      "channels": [
+        {
+          "insert": "matrixChannels",
+          "repeatFor": ["1", "2", "3", "4"],
+          "channelOrder": "perPixel",
+          "templateChannels": ["Red $pixelKey", "Green $pixelKey", "Blue $pixelKey", "White $pixelKey"]
+        }
+      ]
+    }
+  ]
+}
