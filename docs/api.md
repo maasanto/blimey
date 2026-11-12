@@ -133,9 +133,10 @@ The look renders above the legacy layer (plan §5): every channel of a fixture i
 ```sh
 blimey validate <show>                                              # load the show; print the first error with file and line
 blimey run <show> --dmx-port /dev/cu.usbserial-… [--midi-port IAC]  # live: MIDI in, DMX out, hot reload
+blimey run <show> --listen 127.0.0.1:7340 [--dmx-port …] [--edit]   # and the web UI
 blimey fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
 blimey fire <show> --set … --dmx-port /dev/cu.usbserial-…           # hold it on the Enttec box
-blimey fire <show> --set … --listen 127.0.0.1:7340                  # hold it and stream it over WebSocket
+blimey fire <show> --set … --listen 127.0.0.1:7340 [--edit]         # hold it and serve the web UI
 blimey fire <show> --set … --artnet [<ip>[:port]] [--artnet-universe <n>]   # hold it and mirror it over Art-Net
 blimey run <show> --dmx-port … --artnet [<ip>[:port]] [--artnet-universe <n>]
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
@@ -143,22 +144,48 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 `validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
 
-`run` is in edit mode: it reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
+`run` needs at least one of `--dmx-port`, `--listen` and `--artnet`. It reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
 
-`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed. `--listen` prints `streaming on ws://<address>/ws` once bound; port 0 picks a free port.
+`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed and reloads the show like `run`; the look keeps applying to the fixtures it names.
+
+`--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
+
+**Modes.** `--edit` (which needs `--listen`) starts the engine in edit mode: the UI may save show files and test fixtures. Without it the engine is in show mode, where the API refuses both with `403`. Hot reload is on in both modes for now. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
 `--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
+
+## HTTP API
+
+Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file or fixture), `403` (show mode), `422` (content refused) or `500`.
+
+### Show files: `GET` and `PUT /api/show/<file>`
+
+The one path through which the UI, and later agents, change show files. `<file>` is a path in the show folder; today only `rig.yaml`. The body of both is the file's content as JSON, in the shape of its schema.
+
+`PUT` replaces the file (`204` on success):
+
+1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader, the same checks as at start-up. Either refusal is a `422` naming the problem, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1`, and leaves the file untouched.
+2. The file is written in canonical form: block-style YAML with fields in a fixed order. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form.
+3. The write is atomic: a crash leaves the old file or the new one, never half of one.
+4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
+
+To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
+
+### Fixture test: `POST /api/fixtures/<name>/test`
+
+Lights the fixture full white for one second, above every other layer, on every output (`204`). Edit mode only.
 
 ## WebSocket stream: `GET /ws`
 
 Server to client only, one JSON object per text message. Every message has a `type`. Clients ignore types and fields they don't know, so later chunks can add them without breaking the UI.
 
-### `rig`: sent first, on connect
+### `rig`: sent first, on connect, and again whenever the rig the engine renders changes
 
 ```json
 {
   "type": "rig",
   "protocol": 1,
+  "mode": "edit",
   "fixtures": [
     {
       "name": "wash-1",
@@ -174,6 +201,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 ```
 
 - `protocol` is bumped only by a breaking change to this stream.
+- `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
 - `pixels` are canvas positions, in pixel order.
 
@@ -201,3 +229,14 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `live_parameters`: CC 20–27 on channel 2, as 0–1.
 
 The engine renders at 40 Hz. A slow client skips frames and always gets the latest one.
+
+### `midi`: each MIDI message the engine takes in
+
+```json
+{ "type": "midi", "at_ms": 1250, "message": [145, 36, 127] }
+```
+
+- `at_ms`: engine time the message arrived, on the same clock as `frame`.
+- `message`: the raw bytes, status byte first.
+
+Sent by `run` only, in arrival order, before the frame they affect. MIDI clock ticks (`F8`) and active sensing (`FE`) are left out; Start, Stop, Continue and Song Position are sent. A client more than 256 messages behind skips the oldest.
