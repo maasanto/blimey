@@ -4,10 +4,10 @@ use std::error::Error;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use blimey_engine::{Clock, MidiEvent, MidiSource, MonotonicClock};
 use midir::{MidiInputConnection, MidiInputPort};
-use strata_engine::{Clock, MidiEvent, MidiSource, MonotonicClock};
 
-const CLIENT_NAME: &str = "strata";
+const CLIENT_NAME: &str = "blimey";
 
 pub struct MidiInput {
     events: Receiver<MidiEvent>,

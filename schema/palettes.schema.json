@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://strata.local/schema/palettes.schema.json",
-  "title": "Strata palettes (palettes.yaml)",
+  "$id": "https://blimey.local/schema/palettes.schema.json",
+  "title": "Blimey palettes (palettes.yaml)",
   "description": "Colour name → colour. Names are used in looks and cues, e.g. color: deep-blue.",
   "type": "object",
   "propertyNames": { "pattern": "^[^#=][^=]*$" },

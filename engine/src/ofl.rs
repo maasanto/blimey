@@ -1,7 +1,7 @@
 //! Import of Open Fixture Library JSON (https://open-fixture-library.org, fixture schema)
 //! into a `FixtureProfile`.
 //!
-//! Only what Strata drives is interpreted: intensity and red/green/blue/white colour
+//! Only what Blimey drives is interpreted: intensity and red/green/blue/white colour
 //! intensity, per pixel for matrix fixtures. Every other channel is kept by name and held at
 //! its OFL default value.
 

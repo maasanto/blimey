@@ -3,7 +3,7 @@
 A frame dump is the recorded DMX output of a replay: one line per frame, plain text, so a change in output shows up as a readable `git diff`. Reference dumps live in `tests/fixtures/dumps/`.
 
 ```
-# strata frame dump v1
+# blimey frame dump v1
 0
 25
 50 6=254 7=128
@@ -19,8 +19,8 @@ A frame dump is the recorded DMX output of a replay: one line per frame, plain t
 ## Producing and checking dumps
 
 ```sh
-strata replay <show-dir> --midi <file.mid> --out <dump>        # write a dump
-strata replay <show-dir> --midi <file.mid> --compare <dump>    # check against a reference
+blimey replay <show-dir> --midi <file.mid> --out <dump>        # write a dump
+blimey replay <show-dir> --midi <file.mid> --compare <dump>    # check against a reference
 ```
 
 Without `--out` or `--compare` the dump goes to stdout. `--compare` exits with status 1 and names the first difference, for example:

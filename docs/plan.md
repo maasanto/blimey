@@ -2,13 +2,13 @@
 
 Nov 12, 2026 · @Antoine
 
-Working name: **Strata** (placeholder). A small, headless lighting engine driven by Reaper, replacing ENTTEC EMU for Fossile's show. Companion to the market survey doc.
+Name: **Blimey** (formerly the placeholder Strata). A small, headless lighting engine driven by Reaper, replacing ENTTEC EMU for Fossile's show. Companion to the market survey doc.
 
 **Scope and pace:** version 1 includes the full scene builder (pixel scenes, swells in musical time, pattern sequencer). With an agent writing the code, 8 weeks is feasible. What the agent can't speed up is time with the real lights: checking looks by eye, hardware tests on the M1, reprogramming songs, rehearsals. The plan limits rig time to one bench session and one rehearsal (section 15), validates everything else on the DMX output, and keeps a go/no-go rehearsal with EMU as the fallback.
 
 ## 1. Problems this must fix
 
-| Past problem | Requirement in Strata |
+| Past problem | Requirement in Blimey |
 | --- | --- |
 | MTD-1024 crashed mid-show | Engine survives 4 h soak; watchdog restart in about 1 s; lights hold last look meanwhile |
 | Show Buddy / EMU plugin-to-app link unreliable (M1 scene switching) | No plugin. Reaper sends MIDI to a macOS virtual port; the engine alone owns the DMX interface |
@@ -40,7 +40,7 @@ Moving heads, image/video mapping, audio-reactive effects, built-in 3D, a DAW pl
 Reaper (timeline, MIDI items)
    │  MIDI over IAC virtual port
    ▼
-Strata engine (one Rust process)
+Blimey engine (one Rust process)
    ├─ MIDI input thread
    ├─ render loop, fixed 40 Hz
    │    layers: legacy raw → cues/scenes → pixel effects → master dimmer
@@ -127,7 +127,7 @@ A pattern cue, as saved by the sequencer grid:
 ```
 
 - Durations accept `ms`, `s`, `beats`, `bars`.
-- A JSON Schema ships with the engine; `strata validate` checks a show before it is loaded.
+- A JSON Schema ships with the engine; `blimey validate` checks a show before it is loaded.
 - Hot reload in edit mode: save the file, the look updates.
 
 ## 7. Fixtures and pixel mapping
@@ -192,7 +192,7 @@ Not in v1: a shared template library beyond the built-in presets, more than 2 ef
 ## 10. Agent-friendly surface
 
 - Text show files with a published schema are the main interface.
-- CLI: `strata validate`, `strata render song.yaml --midi take.mid` (offline render to a frame dump or preview), `strata fire <cue>`.
+- CLI: `blimey validate`, `blimey render song.yaml --midi take.mid` (offline render to a frame dump or preview), `blimey fire <cue>`.
 - HTTP API mirrors the CLI. An MCP server wrapping it comes after the first gig.
 
 ## 11. Plan (8 weeks)
@@ -208,7 +208,7 @@ Not in v1: a shared template library beyond the built-in presets, more than 2 ef
 | 7 | Migrate the set; soak test; **go/no-go rehearsal** | Full set, twice, no intervention |
 | 8 | Buffer, fixes, gig | — |
 
-**Go/no-go rule:** if the week-7 rehearsal isn't clean, the gig runs on EMU and Strata's first gig moves to the next date. Decide this in advance, not on the day.
+**Go/no-go rule:** if the week-7 rehearsal isn't clean, the gig runs on EMU and Blimey's first gig moves to the next date. Decide this in advance, not on the day.
 
 **Cut order if late:** second effect layer → custom envelope points → Art-Net mirror → stage-plan dragging → pixel scene editor (pixel songs then stay on EMU for the first gig). Never cut: legacy notes, swells and sequencer, watchdog, soak test.
 
@@ -236,7 +236,7 @@ Fourteen vertical chunks. Each one delivers a behaviour end to end (input → en
 
 ### Ground rules for every chunk
 
-- **Repo layout:** `engine/` (Rust library: all logic), `strata/` (Rust binary: CLI, HTTP, device drivers), `ui/` (Svelte + Vite, built to static files and embedded in the binary), `schema/` (JSON Schema for show files), `shows/fossile/` (the real show), `tests/fixtures/` (MIDI files and reference frame dumps), `docs/` (API contract, decisions).
+- **Repo layout:** `engine/` (Rust library: all logic), `blimey/` (Rust binary: CLI, HTTP, device drivers), `ui/` (Svelte + Vite, built to static files and embedded in the binary), `schema/` (JSON Schema for show files), `shows/fossile/` (the real show), `tests/fixtures/` (MIDI files and reference frame dumps), `docs/` (API contract, decisions).
 - **No hardware in tests.** The engine takes an injectable clock, a MIDI event source and a DMX sink. Tests use a MIDI-file source and a `FakeDmx` sink that records frames. Real drivers (IAC, Enttec, Art-Net) sit behind the same traits.
 - **Replay tests are the acceptance format:** MIDI file + show folder in, frame dump out, compared to a stored reference. A chunk that changes output on purpose regenerates its references and says so in the PR.
 - **One chunk = one branch = one PR.** CI runs `cargo test`, `cargo clippy`, schema validation of `shows/`, and UI tests (Playwright against the engine with `FakeDmx`).
@@ -273,21 +273,21 @@ Fourteen vertical chunks. Each one delivers a behaviour end to end (input → en
 ### C1 — Legacy notes to real lights
 
 - **Goal:** today's sessions run unchanged with EMU closed.
-- **Build:** IAC (CoreMIDI) input via `midir`; `legacy-map.yaml` (channel-1 note ranges → DMX addresses, velocity × 2, note-off = 0); Enttec DMX USB Pro driver; `strata run <show>`; `strata devices` to list ports.
+- **Build:** IAC (CoreMIDI) input via `midir`; `legacy-map.yaml` (channel-1 note ranges → DMX addresses, velocity × 2, note-off = 0); Enttec DMX USB Pro driver; `blimey run <show>`; `blimey devices` to list ports.
 - **Acceptance:** replay of a recorded legacy MIDI file matches the reference dump; unit tests for the Enttec packet framing; driver reconnects after a simulated port loss.
 - **Human check:** none. Agents test the real driver against the emulated Enttec device and compare legacy songs with the EMU parity captures (section 15). Hold-last-look is measured in the bench session.
 
 ### C2 — Rig, fixtures, colour
 
 - **Goal:** address lights by name and colour, not by channel.
-- **Build:** `rig.yaml` (fixtures, modes, addresses, groups, canvas positions); Open Fixture Library JSON import (`strata fixture import`); fixture model with pixels; `palettes.yaml`; RGB → RGBW conversion (saturated and white-rich modes); `strata fire --set all-wash color=deep-blue dimmer=60%`; WebSocket stream of engine state and output values.
+- **Build:** `rig.yaml` (fixtures, modes, addresses, groups, canvas positions); Open Fixture Library JSON import (`blimey fixture import`); fixture model with pixels; `palettes.yaml`; RGB → RGBW conversion (saturated and white-rich modes); `blimey fire --set all-wash color=deep-blue dimmer=60%`; WebSocket stream of engine state and output values.
 - **Acceptance:** the WildWash profile maps each attribute to the right channel (table-driven test); colour conversion tests; setting a look by name yields the expected dump; overlapping addresses are rejected at load.
 - **Human check:** none. Agents check the profile against the manufacturer's channel table; one wash is confirmed in the bench session.
 
 ### C3 — Named cues and scenes
 
 - **Goal:** a note on channel 2 fires a named scene with fades.
-- **Build:** song files and JSON Schema; `strata validate`; Program Change song select (songs preloaded); note on/off → cue start/release; scene cue type with fade-in and release; layer priority (legacy < cues < pixel < master); CC 7 master dimmer; CC 20–27 live parameters; panic note and safe look; hot reload in edit mode.
+- **Build:** song files and JSON Schema; `blimey validate`; Program Change song select (songs preloaded); note on/off → cue start/release; scene cue type with fade-in and release; layer priority (legacy < cues < pixel < master); CC 7 master dimmer; CC 20–27 live parameters; panic note and safe look; hot reload in edit mode.
 - **Acceptance:** replay tests for fade timing (within one frame), priority between legacy and cue layers, song switch mid-stream, panic; invalid files produce clear errors with line numbers.
 - **Human check:** none. Covered by replay tests and an automated hot-reload test.
 
@@ -357,7 +357,7 @@ Fourteen vertical chunks. Each one delivers a behaviour end to end (input → en
 ### C13 — Migration tooling and soak runner
 
 - **Goal:** move the set over and prove it runs for hours.
-- **Build:** `strata record` (capture the MIDI of a Reaper run to a file for replay tests); `strata soak <setlist> --hours 4` (loops recorded songs, reports dropped frames, timing drift, memory); a per-song migration checklist in `docs/`; replay references for every song in `shows/fossile/`.
+- **Build:** `blimey record` (capture the MIDI of a Reaper run to a file for replay tests); `blimey soak <setlist> --hours 4` (loops recorded songs, reports dropped frames, timing drift, memory); a per-song migration checklist in `docs/`; replay references for every song in `shows/fossile/`.
 - **Acceptance:** soak run of 4 h on CI hardware with zero dropped frames and flat memory; every song in the show has a passing replay test.
 - **Human check:** record each song's MIDI from Reaper (laptop only); start the unattended soak on the M1; then the go/no-go rehearsal, the only session with the full rig.
 
@@ -379,7 +379,7 @@ Agents validate on the DMX output; the rig comes out twice. Every check below ru
 | Real Enttec driver | An emulated DMX USB Pro on a pseudo serial port that parses the Enttec protocol and records what it receives | Framing errors, reconnect bugs, frame rate drops, without the box |
 | Real MIDI path | A virtual CoreMIDI port on a macOS runner; a test player sends recorded songs in real time | Dropped or reordered events, latency and jitter (measured, p99 reported) |
 | Art-Net | Loopback receiver decoding the packets per universe | Packet format, universe mapping for grids |
-| Parity with EMU | Record EMU's Art-Net output while Reaper plays each existing song (laptop only), then compare with Strata's output for the same MIDI | Legacy songs behaving differently from today |
+| Parity with EMU | Record EMU's Art-Net output while Reaper plays each existing song (laptop only), then compare with Blimey's output for the same MIDI | Legacy songs behaving differently from today |
 | Fixture profiles | Channel table extracted from the manufacturer's manual, compared with the profile | Mis-tagged attributes like those seen in EMU |
 | Pixel grids | Synthetic grids of several sizes, wirings and colour orders; each pixel's address and colour asserted | Mapping errors, off-by-one, universe overflow |
 | Invariants (property tests) | Random shows and MIDI: values always 0–255, swells monotonic where they should be, no jump above a threshold between frames during fades, released cues reach zero, same input gives same output | Flicker, stuck channels, non-determinism |

@@ -1,5 +1,5 @@
 [package]
-name = "strata"
+name = "blimey"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
@@ -12,7 +12,7 @@ serde_json = "1"
 serde_yaml_ng = "0.10"
 # libudev only adds USB details to port listings on Linux; macOS uses IOKit regardless.
 serialport = { version = "4.10", default-features = false }
-strata-engine = { path = "../engine" }
+blimey-engine = { path = "../engine" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 
 [dev-dependencies]

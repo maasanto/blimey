@@ -10,8 +10,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{fs, process};
 
+use blimey_engine::{DMX_CHANNELS, Frame};
 use serialport::{SerialPort, TTYPort};
-use strata_engine::{DMX_CHANNELS, Frame};
 
 use super::{END_OF_MESSAGE, SEND_DMX_LABEL, START_OF_MESSAGE};
 
@@ -37,7 +37,7 @@ impl EmulatedEnttec {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mut device = Self {
-            link: std::env::temp_dir().join(format!("strata-enttec-{}-{id}", process::id())),
+            link: std::env::temp_dir().join(format!("blimey-enttec-{}-{id}", process::id())),
             frames: Arc::default(),
             connection: None,
         };

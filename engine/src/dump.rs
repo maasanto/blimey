@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::{DMX_CHANNELS, RecordedFrame};
 
-const HEADER: &str = "# strata frame dump v1";
+const HEADER: &str = "# blimey frame dump v1";
 
 pub fn format_dump(frames: &[RecordedFrame]) -> String {
     let mut dump = format!("{HEADER}\n");
@@ -99,7 +99,7 @@ mod tests {
 
         assert_eq!(
             format_dump(&frames),
-            "# strata frame dump v1\n0\n25 1=255 512=7\n"
+            "# blimey frame dump v1\n0\n25 1=255 512=7\n"
         );
     }
 
