@@ -26,7 +26,7 @@ pub mod song;
 pub use dump::{first_difference, format_dump, parse_dump};
 pub use legacy::LegacyMap;
 pub use midi_file::MidiFile;
-pub use playback::{CueStatus, Status};
+pub use playback::{CueAction, CueEvent, CueStatus, Status};
 pub use show::Show;
 
 use std::collections::BTreeMap;
@@ -93,6 +93,12 @@ pub trait DmxSink {
 
     /// The engine state behind the next frame sent. Sinks that only output DMX ignore it.
     fn status(&mut self, _status: &Status) {}
+
+    /// Each MIDI event the engine takes in, before it applies it. For the event log.
+    fn midi(&mut self, _event: &MidiEvent) {}
+
+    /// Each cue the engine starts or releases. For the event log.
+    fn cue(&mut self, _event: &CueEvent) {}
 }
 
 /// Where the render loop gets the show for each frame.
@@ -104,6 +110,19 @@ pub trait ShowSource {
 impl ShowSource for &Show {
     fn current(&mut self) -> &Show {
         self
+    }
+}
+
+/// A show that never changes.
+impl ShowSource for Show {
+    fn current(&mut self) -> &Show {
+        self
+    }
+}
+
+impl<S: ShowSource + ?Sized> ShowSource for Box<S> {
+    fn current(&mut self) -> &Show {
+        (**self).current()
     }
 }
 
@@ -206,7 +225,11 @@ pub fn run(
         clock.sleep_until(deadline);
         let show = shows.current();
         while let Some(event) = midi.poll(deadline) {
+            sink.midi(&event);
             playback.apply(show, &event);
+            for cue in playback.take_cue_events() {
+                sink.cue(&cue);
+            }
         }
         let output = playback.render(show, look, deadline);
         if let Some(line) = playback.log_line(deadline) {

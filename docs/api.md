@@ -231,20 +231,48 @@ blimey fire <show> --set … --dmx-port /dev/cu.usbserial-…           # hold i
 blimey fire <show> --set … --listen 127.0.0.1:7340 [--edit]         # hold it and serve the web UI
 blimey fire <show> --set … --artnet [<ip>[:port]] [--artnet-universe <n>]   # hold it and mirror it over Art-Net
 blimey run <show> --dmx-port … --artnet [<ip>[:port]] [--artnet-universe <n>]
+blimey run <show> … [--state-dir <folder>]                         # where state and event log live
+blimey service install [--dry-run] <run arguments>                  # keep `blimey run <run arguments>` going under launchd
+blimey service uninstall
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 ```
 
 `validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
 
-`run` needs at least one of `--dmx-port`, `--listen` and `--artnet`. It reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
+`run` needs at least one of `--dmx-port`, `--listen` and `--artnet`. In edit mode it reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
 
-`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed and reloads the show like `run`; the look keeps applying to the fixtures it names.
+`run` survives losing its devices: a MIDI port that is missing at start, disappears or comes back as a new port with the same name is reconnected within about half a second, and an Enttec box that is unplugged is reopened on every frame until it is back. Both are reported on stderr.
+
+`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed, reloading the show in edit mode; the look keeps applying to the fixtures it names.
 
 `--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
 
-**Modes.** `--edit` (which needs `--listen`) starts the engine in edit mode: the UI may save show files and test fixtures. Without it the engine is in show mode, where the API refuses both with `403`. Hot reload is on in both modes for now. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
+**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses edits and fixture tests with `403`. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may save show files and test fixtures. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
 `--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. The same node also gets every Art-Net universe the rig's pixel grids use, one packet each per frame, blackout included. Without `--artnet`, a rig with Art-Net grids starts with a warning that they get no output; an `--artnet-universe` that is also a grid's universe is refused. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
+
+## State, event log and service
+
+`run` keeps two files in its state folder, `~/Library/Application Support/Blimey/` unless `--state-dir` says otherwise. Nothing goes in the show folder.
+
+- `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
+- `events.log`: one JSON object per line, for post-gig diagnosis. Each line is written as it happens, unbuffered, so a crash loses nothing logged before it. Past 10 MB it rotates to `events.log.1`, up to `events.log.4`.
+
+```json
+{"master":0.5,"mode":"show","show":"shows/fossile","song":"tell-me","time_ms":1794470400000,"type":"start"}
+{"at_ms":1250,"message":[145,36,127],"time_ms":1794470401250,"type":"midi"}
+{"action":"start","at_ms":1250,"name":"verse-blue","note":36,"song":"tell-me","time_ms":1794470401250,"type":"cue"}
+{"action":"release","at_ms":4000,"name":"verse-blue","note":36,"song":"tell-me","time_ms":1794470404000,"type":"cue"}
+```
+
+- `start`: the engine started, with the song and master it resumed.
+- `midi`: every MIDI message taken in, as in the stream's `midi` message, clock ticks and active sensing left out. The resumed song and master follow `start` as `midi` lines at `at_ms` 0.
+- `cue`: a cue started (note-on) or released (note-off, or a retrigger fading out the previous instance). Panic and song select drop cues without a `release` line.
+- `at_ms` is engine time, as in the stream; `time_ms` is wall-clock time, in milliseconds since 1970. `jq '.time_ms / 1000 | todate'` reads it.
+
+`blimey service install <run arguments>` checks the arguments as `run` would, then writes the launch agent `~/Library/LaunchAgents/app.blimey.engine.plist` and starts it. launchd starts the engine at login and restarts it within a second whenever it exits. Relative paths are taken from the folder the command ran in, and the engine's stdout and stderr go to `engine.log` in the state folder. Installing again replaces the agent; `--dry-run` prints the plist instead. `blimey service uninstall` stops and removes it.
+
+`scripts/fault-injection.sh [kill|midi|serial]` (macOS) checks recovery against the real binary, an emulated Enttec box on a pty and a virtual CoreMIDI port: killing the engine mid-song, dropping the MIDI port, unplugging the box.
 
 ## HTTP API
 

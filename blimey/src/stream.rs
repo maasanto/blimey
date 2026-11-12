@@ -166,16 +166,20 @@ impl<M> StreamedMidi<M> {
 impl<M: MidiSource> MidiSource for StreamedMidi<M> {
     fn poll(&mut self, until: Duration) -> Option<MidiEvent> {
         let event = self.midi.poll(until)?;
-        let is_ticking = matches!(
-            event.message.first(),
-            Some(&(MIDI_TIMING_CLOCK | MIDI_ACTIVE_SENSING))
-        );
-        if let Some(log) = self.log.as_ref().filter(|_| !is_ticking) {
+        if let Some(log) = self.log.as_ref().filter(|_| !is_ticking(&event.message)) {
             // Fails only when no client is connected.
             let _ = log.send(midi_message(&event).to_string().into());
         }
         Some(event)
     }
+}
+
+/// MIDI clock ticks and active sensing, which arrive dozens of times a second.
+pub fn is_ticking(message: &[u8]) -> bool {
+    matches!(
+        message.first(),
+        Some(&(MIDI_TIMING_CLOCK | MIDI_ACTIVE_SENSING))
+    )
 }
 
 #[derive(Clone)]

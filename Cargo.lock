@@ -226,6 +226,7 @@ dependencies = [
  "axum",
  "blimey-engine",
  "clap",
+ "core-foundation",
  "futures-util",
  "midir",
  "serde_json",

@@ -15,6 +15,10 @@ serialport = { version = "4.10", default-features = false }
 blimey-engine = { path = "../engine" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already in the tree through midir: runs the loop CoreMIDI updates its port list on.
+core-foundation = "0.10"
+
 [dev-dependencies]
 futures-util = "0.3"
 tokio-tungstenite = "0.29"

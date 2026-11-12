@@ -1,8 +1,11 @@
 mod api;
 mod artnet;
 mod enttec;
+mod event_log;
 mod hot_reload;
 mod midi_input;
+mod service;
+mod state;
 mod stream;
 mod ui;
 
@@ -18,7 +21,7 @@ use blimey_engine::look::{Look, LookSettings};
 use blimey_engine::ofl::import_ofl;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
-    ArtNetFrames, DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource,
+    ArtNetFrames, CueEvent, DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource,
     MonotonicClock, Show, ShowSource, Status, first_difference, format_dump, parse_dump,
 };
 use clap::{Args, Parser, Subcommand};
@@ -27,8 +30,10 @@ use serialport::SerialPortType;
 use crate::api::Mode;
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
+use crate::event_log::EventLog;
 use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
+use crate::state::{Resumed, StateFile};
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
 #[derive(Parser)]
@@ -50,8 +55,8 @@ enum Command {
     /// exist. Errors name the file and line.
     Validate { show_dir: PathBuf },
     /// Run a show live: MIDI in from a port such as the IAC bus, out to an Enttec DMX USB Pro,
-    /// the web UI or Art-Net. Saving a show file reloads it; a file that fails to load leaves
-    /// the running show as is.
+    /// the web UI or Art-Net. It resumes the last selected song and master level, and logs
+    /// every MIDI event and cue to the state folder.
     Run {
         show_dir: PathBuf,
         /// MIDI input to listen on: the first port whose name contains this text.
@@ -59,11 +64,15 @@ enum Command {
         midi_port: String,
         #[command(flatten)]
         outputs: Outputs,
+        /// Where to keep the saved song and master (state.json) and the event log
+        /// (events.log). Default: ~/Library/Application Support/Blimey
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
     /// List MIDI input ports and serial ports.
     Devices,
     /// Set a look by fixture or group name. Prints it as a one-frame dump, or with --dmx-port,
-    /// --listen or --artnet holds it live, reloading the show like `run`, until stopped.
+    /// --listen or --artnet holds it live until stopped, reloading the show with --edit.
     Fire {
         show_dir: PathBuf,
         /// A fixture or group, then its settings: `--set all-wash color=deep-blue dimmer=60%`.
@@ -77,6 +86,26 @@ enum Command {
     /// Manage fixture profiles.
     #[command(subcommand)]
     Fixture(FixtureCommand),
+    /// Keep `blimey run` going under launchd (macOS): started at login, restarted within a
+    /// second whenever it exits.
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install the launch agent for `blimey run <RUN_ARGS>` and start it; replaces a previous
+    /// install. Relative paths are taken from the current folder.
+    Install {
+        /// Print the launch agent's plist instead of installing it.
+        #[arg(long)]
+        dry_run: bool,
+        /// The arguments of `blimey run`, e.g. `shows/fossile --dmx-port /dev/cu.usbserial-EN123456`.
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        run_args: Vec<String>,
+    },
+    /// Stop the launch agent and remove it.
+    Uninstall,
 }
 
 /// Where a live engine sends its frames, and whether the web UI may edit.
@@ -90,9 +119,10 @@ struct Outputs {
     /// Port 0 picks a free port.
     #[arg(long)]
     listen: Option<SocketAddr>,
-    /// Let the web UI save show files and test fixtures. Without it the engine runs in show
-    /// mode: the UI is read-only.
-    #[arg(long, requires = "listen")]
+    /// Edit mode: reload the show whenever one of its files changes, and let the web UI save
+    /// show files and test fixtures. Without it the engine runs in show mode: the show is read
+    /// once at start and the UI is read-only.
+    #[arg(long)]
     edit: bool,
     #[command(flatten)]
     artnet: ArtNetMirror,
@@ -103,8 +133,20 @@ impl Outputs {
         self.dmx_port.is_some() || self.listen.is_some() || self.artnet.artnet.is_some()
     }
 
+    fn mode(&self) -> Mode {
+        if self.edit { Mode::Edit } else { Mode::Show }
+    }
+
+    /// The show the render loop plays: hot reloaded in edit mode, fixed in show mode.
+    fn shows(&self, show_dir: &Path) -> io::Result<Box<dyn ShowSource>> {
+        Ok(match self.mode() {
+            Mode::Edit => Box::new(HotReload::load(show_dir)?),
+            Mode::Show => Box::new(Show::load(show_dir)?),
+        })
+    }
+
     fn start(&self, show_dir: &Path, rig: &Rig) -> io::Result<LiveOutput> {
-        let mode = if self.edit { Mode::Edit } else { Mode::Show };
+        let mode = self.mode();
         Ok(LiveOutput {
             dmx: self.dmx_port.clone().map(EnttecPro::new),
             stream: self
@@ -191,7 +233,8 @@ fn main() -> ExitCode {
             show_dir,
             midi_port,
             outputs,
-        } => run(&show_dir, &midi_port, &outputs),
+            state_dir,
+        } => run(&show_dir, &midi_port, &outputs, state_dir),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
@@ -201,6 +244,12 @@ fn main() -> ExitCode {
         Command::Fixture(FixtureCommand::Import { ofl_json, out }) => {
             import_fixture(&ofl_json, out.as_deref())
         }
+        Command::Service(ServiceCommand::Install { dry_run, run_args }) => {
+            install_service(&run_args, dry_run)
+        }
+        Command::Service(ServiceCommand::Uninstall) => service::uninstall()
+            .map(|()| ExitCode::SUCCESS)
+            .map_err(Into::into),
     };
     result.unwrap_or_else(|error| {
         eprintln!("error: {error}");
@@ -248,25 +297,74 @@ fn validate(show_dir: &Path) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run(show_dir: &Path, midi_port: &str, outputs: &Outputs) -> Result<ExitCode, Box<dyn Error>> {
+fn run(
+    show_dir: &Path,
+    midi_port: &str,
+    outputs: &Outputs,
+    state_dir: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn Error>> {
     if !outputs.any() {
         return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
     }
-    let mut shows = HotReload::load(show_dir)?;
+    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
+    fs::create_dir_all(&state_dir).map_err(|error| format!("{}: {error}", state_dir.display()))?;
+    let mut shows = outputs.shows(show_dir)?;
+    let state = StateFile::open(&state_dir);
+    let resume = state.saved().resume_events(shows.current());
+    let mut log =
+        EventLog::open(&state_dir).map_err(|error| format!("{}: {error}", state_dir.display()))?;
+    let saved = state.saved();
+    log.start(
+        show_dir,
+        outputs.mode().name(),
+        saved.song.as_deref(),
+        saved.master,
+    );
     let mut clock = MonotonicClock::default();
     let midi = MidiInput::connect(midi_port, clock)?;
-    let mut output = outputs.start(show_dir, &shows.current().rig)?;
-    let mut midi = StreamedMidi::new(midi, output.stream.as_ref());
-    eprintln!("blimey: running {}; Ctrl-C to stop", show_dir.display());
+    let output = outputs.start(show_dir, &shows.current().rig)?;
+    let mut midi = StreamedMidi::new(Resumed::new(resume, midi), output.stream.as_ref());
+    let shows = StreamedShow::new(shows, output.stream.as_ref());
+    eprintln!(
+        "blimey: running {} in {} mode; Ctrl-C to stop",
+        show_dir.display(),
+        outputs.mode().name()
+    );
     // u32::MAX frames at 40 Hz is over three years: in practice, until the process is stopped.
     blimey_engine::run(
         &mut clock,
         &mut midi,
-        StreamedShow::new(shows, output.stream.as_ref()),
+        shows,
         &Look::default(),
-        &mut output,
+        &mut Recorded { output, log, state },
         u32::MAX,
     )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Checks `run_args` as `blimey run` would, then installs the launch agent for them.
+fn install_service(run_args: &[String], dry_run: bool) -> Result<ExitCode, Box<dyn Error>> {
+    let command = ["blimey", "run"]
+        .into_iter()
+        .chain(run_args.iter().map(String::as_str));
+    let parsed = Command::try_parse_from(command).unwrap_or_else(|error| error.exit());
+    let Command::Run { state_dir, .. } = parsed else {
+        unreachable!("parsed as `run`");
+    };
+    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
+    let plist = service::plist(
+        &std::env::current_exe()?,
+        run_args,
+        &std::env::current_dir()?,
+        &state_dir.join("engine.log"),
+    );
+    if dry_run {
+        print!("{plist}");
+    } else {
+        // launchd opens the log there before the engine could create the folder.
+        fs::create_dir_all(&state_dir)?;
+        service::install(&plist)?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -321,7 +419,7 @@ fn fire(
         return Ok(ExitCode::SUCCESS);
     }
     let mut output = outputs.start(show_dir, &show.rig)?;
-    let shows = StreamedShow::new(HotReload::load(show_dir)?, output.stream.as_ref());
+    let shows = StreamedShow::new(outputs.shows(show_dir)?, output.stream.as_ref());
     eprintln!("blimey: holding the look; Ctrl-C to stop");
     blimey_engine::run(
         &mut MonotonicClock::default(),
@@ -379,6 +477,37 @@ impl DmxSink for LiveOutput {
         if let Some(stream) = &mut self.stream {
             stream.status(status);
         }
+    }
+}
+
+/// `run`'s output: the live outputs, plus the event log and the state to resume after a
+/// restart.
+struct Recorded {
+    output: LiveOutput,
+    log: EventLog,
+    state: StateFile,
+}
+
+impl DmxSink for Recorded {
+    fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
+        self.output.send(at, frame)
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        self.output.send_artnet(universes);
+    }
+
+    fn status(&mut self, status: &Status) {
+        self.state.record(status);
+        self.output.status(status);
+    }
+
+    fn midi(&mut self, event: &MidiEvent) {
+        self.log.midi(event);
+    }
+
+    fn cue(&mut self, event: &CueEvent) {
+        self.log.cue(event);
     }
 }
 
