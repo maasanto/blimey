@@ -137,13 +137,10 @@ impl Playback {
         let Some(clock) = &self.clock else {
             return;
         };
-        if !self
-            .song(show)
-            .is_some_and(|song| song.cues.contains_key(&note))
-        {
+        let Some(cue) = self.song(show).and_then(|song| song.cues.get(&note)) else {
             return;
-        }
-        let started = clock.moment(at);
+        };
+        let started = cue.start(clock, at);
         // A retriggered cue fades out under its new instance.
         self.release(show, note, at);
         self.cues.push(ActiveCue {

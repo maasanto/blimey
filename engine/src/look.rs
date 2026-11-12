@@ -1,7 +1,7 @@
 //! Looks: colour and dimmer per fixture, set by fixture or group name and palette colour,
 //! rendered through the rig's profiles on top of the layers below.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
@@ -154,6 +154,33 @@ pub fn render(rig: &Rig, look: &Look, frame: &mut Frame) {
                     frame[start + offset] = to_dmx(level * colour_scale);
                 }
             }
+        }
+    }
+}
+
+/// Scales the intensity `frame` gives `fixtures` by `factor` (0–1), as a look's dimmer does:
+/// the dimmer channel of a fixture with one, the colour channels of one without.
+pub fn scale_intensity(rig: &Rig, fixtures: &BTreeSet<String>, factor: f32, frame: &mut Frame) {
+    for fixture in rig
+        .fixtures
+        .iter()
+        .filter(|fixture| fixtures.contains(&fixture.name))
+    {
+        let offsets: Vec<usize> = match fixture.dimmer {
+            Some(offset) => vec![offset],
+            None => fixture
+                .pixels
+                .iter()
+                .flat_map(|pixel| {
+                    let channels = pixel.channels;
+                    [channels.red, channels.green, channels.blue, channels.white]
+                })
+                .flatten()
+                .collect(),
+        };
+        for offset in offsets {
+            let value = &mut frame[fixture.address - 1 + offset];
+            *value = (f32::from(*value) * factor).round() as u8;
         }
     }
 }
