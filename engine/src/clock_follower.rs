@@ -131,8 +131,6 @@ impl ClockFollower {
                 beats: self.beats(at),
                 per_second: bpm / 60.0,
             };
-            // The song's BPM now runs from `at` rather than from the clock's last tick.
-            self.ticks.clear();
         }
         self.song_bpm = bpm;
         self.reported_source = None;
@@ -278,10 +276,11 @@ impl ClockFollower {
     }
 
     /// When the song's BPM takes over: once the clock times out, or at once if it never ticked.
+    /// A BPM edited after the timeout moves the line, and runs from there.
     fn song_bpm_from(&self) -> Duration {
-        self.ticks
-            .back()
-            .map_or(self.line.at, |latest| *latest + CLOCK_TIMEOUT)
+        self.ticks.back().map_or(self.line.at, |latest| {
+            (*latest + CLOCK_TIMEOUT).max(self.line.at)
+        })
     }
 
     pub fn bar_position(&self, at: Duration) -> BarPosition {
@@ -375,6 +374,24 @@ mod tests {
         assert_eq!(
             follower.log_line(second).as_deref(),
             Some("no MIDI clock: using the song's 120 BPM")
+        );
+    }
+
+    #[test]
+    fn a_bpm_edited_during_a_clock_dropout_still_catches_up_with_the_clock() {
+        let mut follower = ClockFollower::new(120.0, TimeSignature::default());
+        // Two beats of clock at 120 BPM, then a dropout from 1 s to 2.5 s while Reaper plays on.
+        send_ticks(&mut follower, 120.0, 0, 49);
+
+        follower.set_song_bpm(millis(1500.0), 60.0);
+        // Musical time is a beat behind when the clock comes back; four beats to catch up.
+        let next_ms = send_ticks(&mut follower, 120.0, 120, 96);
+
+        let clock_beats = next_ms / 500.0;
+        let beats = follower.beats(millis(next_ms));
+        assert!(
+            (beats - clock_beats).abs() < 0.1,
+            "{beats} beats against the clock's {clock_beats}"
         );
     }
 
