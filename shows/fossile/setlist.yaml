@@ -1,0 +1,5 @@
+# The set, in order, for `blimey soak shows/fossile/setlist.yaml` (docs/migration.md).
+# Replace each synthetic recording with the real one as it is recorded.
+show: .
+songs:
+  - recordings/tell-me.synthetic.mid
