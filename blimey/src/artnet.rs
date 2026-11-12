@@ -36,6 +36,18 @@ pub fn art_dmx_packet(universe: u16, sequence: u8, channels: &[u8]) -> Vec<u8> {
     packet
 }
 
+/// The universe (15-bit port-address) and channels of an ArtDmx packet; `None` for any other
+/// packet.
+pub fn parse_art_dmx(packet: &[u8]) -> Option<(u16, &[u8])> {
+    let header = packet.get(..18)?;
+    if header[..8] != *b"Art-Net\0" || header[8..10] != ART_DMX_OPCODE.to_le_bytes() {
+        return None;
+    }
+    let universe = u16::from_le_bytes([header[14], header[15]]);
+    let length = usize::from(u16::from_be_bytes([header[16], header[17]])).min(DMX_CHANNELS);
+    Some((universe, packet.get(18..18 + length)?))
+}
+
 /// Accepts `127.0.0.1` (port 6454) or `2.0.0.10:6454`.
 pub fn parse_node(text: &str) -> Result<SocketAddrV4, String> {
     text.parse()
@@ -136,6 +148,17 @@ mod tests {
 
         assert_eq!(odd[16..], [0, 4, 9, 8, 7, 0]);
         assert_eq!(empty[16..], [0, 2, 0, 0]);
+    }
+
+    #[test]
+    fn parse_reads_back_what_the_packet_carries_and_skips_other_opcodes() {
+        let packet = art_dmx_packet(0x0123, 9, &[1, 2, 3]);
+        let mut poll = packet.clone();
+        poll[8..10].copy_from_slice(&0x2000u16.to_le_bytes());
+
+        assert_eq!(parse_art_dmx(&packet), Some((0x0123, &[1, 2, 3, 0][..])));
+        assert_eq!(parse_art_dmx(&poll), None, "ArtPoll is not DMX");
+        assert_eq!(parse_art_dmx(&packet[..19]), None, "cut short");
     }
 
     #[test]
