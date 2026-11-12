@@ -1,0 +1,8 @@
+/target/
+node_modules/
+/ui/dist/
+/ui/test-results/
+/ui/playwright-report/
+.DS_Store
+.claude/
+.lavish/
