@@ -52,9 +52,13 @@ test('a look built in the builder plays the same from note 36 after a restart', 
       BLACKOUT,
   );
 
-  // Audition fires and releases it through the engine.
+  // Audition fires and releases it through the engine, the cue showing over a look edited since.
+  await page.getByLabel('wash-1 colour').fill('#0000ff');
+  await expect(pixel(page, 'wash-1')).toHaveAttribute('fill', '#0000ff');
   const row = page.locator('tr[data-note="36"]');
   await row.getByRole('button', { name: 'Audition' }).click();
+  await expect(pixel(page, 'wash-1'), 'the cue, not the look being edited').toHaveAttribute('fill', '#00ff00');
+  await expect(page.getByText('Off the output while a cue is auditioned.')).toBeVisible();
   await row.getByRole('button', { name: 'Release' }).click();
   await expect(row.getByRole('button', { name: 'Audition' })).toBeVisible();
 
@@ -111,13 +115,37 @@ test('undo restores the previous file byte for byte', async ({ page, show, start
   await page.getByRole('button', { name: 'Save cue' }).click();
   await expect(page.locator('tr[data-note="40"]')).toBeVisible();
   await expect(page.locator('tr[data-note="38"]'), 'renumbered, not copied').toHaveCount(0);
-  expect(readFileSync(songFile, 'utf8')).not.toBe(handWritten);
+  const saved = readFileSync(songFile, 'utf8');
+  expect(saved).not.toBe(handWritten);
 
+  // A hand edit since the save blocks the undo, which can be tried again once it is reverted.
+  writeFileSync(songFile, `${saved}# a note by hand\n`);
+  await page.getByRole('button', { name: 'Undo last save' }).click();
+  await expect(page.getByRole('alert')).toContainText('songs/demo.yaml: changed since the save');
+  writeFileSync(songFile, saved);
   await page.getByRole('button', { name: 'Undo last save' }).click();
 
   await expect(page.getByText('Undid the last save of songs/demo.yaml.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(handWritten);
   await expect(page.locator('tr[data-note="38"]')).toBeVisible();
+});
+
+test('malformed request bodies are refused with 422', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+
+  for (const [path, method] of [
+    ['api/songs/demo/cues/40', 'put'],
+    ['api/songs/demo/bpm', 'put'],
+    ['api/midi', 'post'],
+    ['api/preview', 'put'],
+  ]) {
+    for (const data of [[1, 2], 7, { cue: 'x', replaces: 'y', bpm: 'fast', message: 'note' }]) {
+      const response = await page.request[method](`${url}${path}`, { data });
+      expect(response.status(), `${method} ${path} ${JSON.stringify(data)}`).toBe(422);
+      expect((await response.json()).error).toBeTruthy();
+    }
+  }
 });
 
 test('show mode locks the builder', async ({ page, show, startEngine }) => {
@@ -141,6 +169,7 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
   const refusals = [
     page.request.put(`${url}api/songs/demo/cues/40`, { data: { cue: { name: 'x', type: 'scene', values: {} } } }),
     page.request.delete(`${url}api/songs/demo/cues/38`),
+    page.request.put(`${url}api/songs/demo/bpm`, { data: { bpm: 90 } }),
     page.request.put(`${url}api/preview`, { data: { 'all-wash': { color: '#ffffff' } } }),
     page.request.post(`${url}api/midi`, { data: { message: [0x91, 38, 127] } }),
     page.request.post(`${url}api/undo`),

@@ -4,7 +4,12 @@
   let songName = $state('');
   /** The look being built, in order: a later entry wins on the fixtures they share. */
   let look = $state([]);
-  /** The cue being edited: as in the song file, with its note and the note it had when loaded. */
+  /** The look as it was when an audition took it off the output, until it is edited again. */
+  let pausedLook = $state(null);
+  /**
+   * The cue being edited, as in the song file, and its note. `replaces` is the cue as loaded,
+   * `{ note, cue }`, so the engine can refuse the save if the file changed since.
+   */
   let form = $state(newForm());
 
   function newForm() {
@@ -22,6 +27,8 @@
   const PROGRAM_CHANGE = 0xc1;
   const FULL_VELOCITY = 127;
   const DEFAULT_BPM = 120;
+  /** Well inside the engine's 5 s preview lifetime (docs/api.md), so the look never flickers off. */
+  const PREVIEW_REFRESH_MS = 2000;
 
   let error = $state('');
   let notice = $state('');
@@ -35,6 +42,7 @@
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
   const values = $derived(Object.fromEntries($state.snapshot(look).map(({ target, settings }) => [target, settings])));
+  const isPaused = $derived(JSON.stringify(values) === pausedLook);
   const cues = $derived(Object.entries(song?.cues ?? {}).map(([note, cue]) => ({ note: Number(note), cue })));
 
   async function attempt(action) {
@@ -83,8 +91,15 @@
     previewing = false;
   }
 
+  // The engine drops a preview it hasn't heard of for a while, so a closed or crashed builder
+  // leaves no look on stage: keep this one alive while it is shown.
   $effect(() => {
-    if (editable) preview(values);
+    if (!editable || isPaused) return;
+    const current = values;
+    preview(current);
+    if (!Object.keys(current).length) return;
+    const heartbeat = setInterval(() => preview(current), PREVIEW_REFRESH_MS);
+    return () => clearInterval(heartbeat);
   });
 
   /** Takes the look off the output when the browser page goes; nobody is left to hear back. */
@@ -98,7 +113,7 @@
   }
 
   function edit({ note, cue }) {
-    form = { note, replaces: note, cue: $state.snapshot(cue) };
+    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: $state.snapshot(cue) };
     if (cue.type === 'scene') {
       look = Object.entries($state.snapshot(cue.values)).map(([target, settings]) => ({ target, settings }));
     }
@@ -109,21 +124,20 @@
     for (const optional of ['fade_in', 'release']) if (!cue[optional]) delete cue[optional];
     if (cue.type === 'scene') cue.values = values;
     await request('PUT', `/api/songs/${songName}/cues/${form.note}`, { cue, replaces: form.replaces });
-    form.replaces = form.note;
     notice = `Saved cue ${form.note} in ${songName}.`;
     await loadSong();
+    form.replaces = { note: form.note, cue: $state.snapshot(song.cues[form.note]) };
   }
 
   async function deleteCue(note) {
     await request('DELETE', `/api/songs/${songName}/cues/${note}`);
-    if (form.replaces === note) form = newForm();
+    if (form.replaces?.note === note) form = newForm();
     notice = `Deleted cue ${note}. Undo last save brings it back.`;
     await loadSong();
   }
 
   async function setTempo() {
-    const latest = await request('GET', songFile());
-    await request('PUT', songFile(), { ...latest, bpm: tempo });
+    await request('PUT', `/api/songs/${songName}/bpm`, { bpm: tempo });
     notice = `${songName} runs at ${tempo} BPM when no MIDI clock comes in.`;
     await loadSong();
   }
@@ -144,6 +158,8 @@
     if (engine.frame?.song !== songName) {
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
     }
+    // The engine takes the look off the output so the cue shows; editing the look brings it back.
+    if (Object.keys(values).length) pausedLook = JSON.stringify(values);
     await midi([NOTE_ON, note, FULL_VELOCITY]);
   }
 </script>
@@ -222,6 +238,9 @@
       {:else}
         <p class="hint">Add a fixture or group to start a look. It shows on the front view and the lights as you edit.</p>
       {/each}
+      {#if look.length && isPaused}
+        <p class="hint">Off the output while a cue is auditioned. Change the look to show it again.</p>
+      {/if}
       <div class="row">
         <select bind:value={adding} aria-label="Fixture or group to add">
           <option value="">Fixture or group…</option>
@@ -235,7 +254,7 @@
     </fieldset>
 
     <fieldset class="cue" disabled={!editable || !song}>
-      <legend>{form.replaces === null ? 'New cue' : `Cue ${form.replaces}`}</legend>
+      <legend>{form.replaces === null ? 'New cue' : `Cue ${form.replaces.note}`}</legend>
       <div class="row">
         <label>Note <input type="number" min="0" max="127" bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
@@ -272,7 +291,7 @@
     </thead>
     <tbody>
       {#each cues as { note, cue } (note)}
-        <tr data-note={note} aria-current={form.replaces === note || undefined}>
+        <tr data-note={note} aria-current={form.replaces?.note === note || undefined}>
           <td>{note}</td>
           <td>{cue.name}</td>
           <td>{cue.type}</td>
