@@ -45,6 +45,25 @@ fn out_writes_the_reference_byte_for_byte() {
 }
 
 #[test]
+fn legacy_song_matches_its_reference() {
+    let output = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .arg("replay")
+        .arg(format!("{FIXTURES}/shows/legacy"))
+        .arg("--midi")
+        .arg(format!("{FIXTURES}/midi/legacy-song.mid"))
+        .arg("--compare")
+        .arg(format!("{FIXTURES}/dumps/legacy-song.dump"))
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn compare_fails_on_the_first_differing_channel() {
     let reference = format!("{}/lit-channel.dump", env!("CARGO_TARGET_TMPDIR"));
     fs::write(&reference, "# strata frame dump v1\n0\n25 7=128\n").unwrap();
