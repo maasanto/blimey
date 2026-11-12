@@ -129,14 +129,23 @@
     display: grid;
     grid-template-columns: repeat(32, 1fr);
     gap: 2px;
+    padding-left: 3.5em;
     font: 11px/1 var(--mono);
   }
 
   .universe li {
+    position: relative;
     padding: 4px 0;
     text-align: center;
     background: rgb(255 190 80 / calc(var(--level) * 0.85));
     border-radius: 2px;
+  }
+
+  .universe li:nth-child(32n + 1)::before {
+    content: attr(data-channel);
+    position: absolute;
+    right: calc(100% + 0.6em);
+    color: var(--muted);
   }
 
   .universe li:nth-child(16n + 1) {

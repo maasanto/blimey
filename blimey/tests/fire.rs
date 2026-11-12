@@ -1,6 +1,9 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -73,6 +76,40 @@ impl Drop for Running {
     fn drop(&mut self) {
         let _ = self.0.kill();
     }
+}
+
+#[test]
+fn the_engine_keeps_serving_when_its_stdout_is_closed() {
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = blimey()
+        .arg("fire")
+        .arg(format!("{FIXTURES}/shows/four-washes"))
+        .args(["--set", "all-wash", "color=deep-blue"])
+        .args(["--listen", &format!("127.0.0.1:{port}")])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let mut engine = Running(child);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the engine never started serving"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(200));
+
+    assert!(
+        engine.0.try_wait().unwrap().is_none(),
+        "the engine died after printing its banner to a closed stdout"
+    );
 }
 
 #[tokio::test]
