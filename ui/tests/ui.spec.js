@@ -17,7 +17,7 @@ const previewColours = (page) =>
 
 const waitForFrames = (page) => expect(page.getByTestId('engine-time')).not.toHaveText('—');
 
-test('the stage plan shows the colours on the DMX output', async ({ page, startEngine }) => {
+test('the front view shows the colours on the DMX output', async ({ page, startEngine }) => {
   const { url } = await startEngine();
 
   await page.goto(`${url}#monitor`);
@@ -29,7 +29,7 @@ test('the stage plan shows the colours on the DMX output', async ({ page, startE
   await expect(page.getByTestId('midi-log')).toContainText('No MIDI received');
   const dmx = await page.$$eval('[data-channel]', (cells) => cells.map((cell) => Number(cell.textContent)));
   const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
-  await page.getByRole('link', { name: 'Stage plan' }).click();
+  await page.getByRole('link', { name: 'Front view' }).click();
   await expect(page.locator('[data-fixture] circle')).toHaveCount(16);
   const preview = await previewColours(page);
 
@@ -46,18 +46,21 @@ test('the stage plan shows the colours on the DMX output', async ({ page, startE
   expect(dmx.slice(100, 104), 'wash-4 uses its white channel').toEqual([115, 38, 0, 38]);
 });
 
+const centre = (box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
+
 test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine }) => {
   const { url } = await startEngine();
   const rigFile = path.join(show, 'rig.yaml');
-  await page.goto(`${url}#stage`);
-  const plan = await page.getByRole('img', { name: 'Stage plan' }).boundingBox();
+  await page.goto(`${url}#front`);
+  const stage = await page.getByRole('img', { name: 'Front view' }).locator('rect.stage').boundingBox();
   const pixel = page.locator('[data-fixture="wash-2"] circle').first();
-  const start = await pixel.boundingBox();
-  const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+  const neighbour = page.locator('[data-fixture="wash-1"] circle').first();
+  const from = centre(await pixel.boundingBox());
 
+  // Right by a tenth of the stage, and up by three tenths: y grows upwards.
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await page.mouse.move(from.x + 0.1 * plan.width, from.y + 0.3 * plan.height, { steps: 5 });
+  await page.mouse.move(from.x + 0.1 * stage.width, from.y - 0.3 * stage.height, { steps: 5 });
   await page.mouse.up();
 
   const wash2Canvas = /- name: wash-2\n(?:.*\n){3}  canvas:\n    x: ([\d.]+)\n    y: ([\d.]+)\n/;
@@ -74,8 +77,10 @@ test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine
   for (const reload of [false, true]) {
     if (reload) await page.reload();
     await expect.poll(async () => Number(await pixel.getAttribute('cx'))).toBeCloseTo(firstPixelX * 1600, 1);
-    await expect.poll(async () => Number(await pixel.getAttribute('cy'))).toBeCloseTo(y * 900, 1);
+    await expect.poll(async () => Number(await pixel.getAttribute('cy'))).toBeCloseTo((1 - y) * 900, 1);
   }
+  const [raised, below] = [centre(await pixel.boundingBox()), centre(await neighbour.boundingBox())];
+  expect(raised.y, 'wash-2 (y 0.5) is drawn above wash-1 (y 0.2)').toBeLessThan(below.y - 0.25 * stage.height);
 });
 
 test('the page reconnects after an engine restart', async ({ page, startEngine }) => {
@@ -99,7 +104,7 @@ test('the patch test button flashes a fixture through the engine', async ({ page
   await expect(page.locator('header .mode')).toHaveText('edit mode');
 
   await page.locator('[data-fixture="wash-2"]').getByRole('button', { name: 'Test' }).click();
-  await page.getByRole('link', { name: 'Stage plan' }).click();
+  await page.getByRole('link', { name: 'Front view' }).click();
 
   const wash2 = page.locator('[data-fixture="wash-2"] circle').first();
   await expect(wash2).toHaveAttribute('fill', '#ffffff');

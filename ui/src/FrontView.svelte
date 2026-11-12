@@ -1,9 +1,11 @@
 <script>
   import { engine, request } from './engine.svelte.js';
 
-  // The 0–1 canvas drawn at a 16:9 stage ratio.
+  // The 0–1 canvas (docs/api.md) drawn as the audience sees the stage, at a 16:9 ratio, with a
+  // margin so fixtures on an edge stay whole.
   const WIDTH = 1600;
   const HEIGHT = 900;
+  const MARGIN = 70;
   const PIXEL_RADIUS = 18;
   const GRID = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
 
@@ -20,21 +22,25 @@
 
   const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
   const round = (value) => Math.round(value * 1000) / 1000;
+  /** Screen position of a canvas point: y runs up from the floor, the screen's runs down. */
+  const screenX = (x) => x * WIDTH;
+  const screenY = (y) => (1 - y) * HEIGHT;
 
   function canvasPoint(event) {
-    const box = svg.getBoundingClientRect();
-    return { x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height };
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
+    return { x: point.x / WIDTH, y: 1 - point.y / HEIGHT };
   }
 
   function grab(event, fixture) {
     if (!editable || drag?.saving) return;
     error = '';
     const xs = fixture.pixels.map((pixel) => pixel.x);
+    const { y } = fixture.pixels[0];
     drag = {
       name: fixture.name,
       from: canvasPoint(event),
       // Keeps every pixel on the canvas.
-      limits: { left: -Math.min(...xs), right: 1 - Math.max(...xs), up: -fixture.pixels[0].y, down: 1 - fixture.pixels[0].y },
+      limits: { left: -Math.min(...xs), right: 1 - Math.max(...xs), down: -y, up: 1 - y },
       dx: 0,
       dy: 0,
       saving: false,
@@ -45,7 +51,7 @@
     if (!drag || drag.saving) return;
     const at = canvasPoint(event);
     drag.dx = clamp(at.x - drag.from.x, drag.limits.left, drag.limits.right);
-    drag.dy = clamp(at.y - drag.from.y, drag.limits.up, drag.limits.down);
+    drag.dy = clamp(at.y - drag.from.y, drag.limits.down, drag.limits.up);
   }
 
   async function drop() {
@@ -73,7 +79,7 @@
   }
 
   const offset = (fixture) =>
-    drag?.name === fixture.name ? `translate(${drag.dx * WIDTH} ${drag.dy * HEIGHT})` : undefined;
+    drag?.name === fixture.name ? `translate(${drag.dx * WIDTH} ${-drag.dy * HEIGHT})` : undefined;
 </script>
 
 <svelte:window onpointermove={move} onpointerup={drop} />
@@ -87,14 +93,23 @@
   {/if}
 </p>
 
-<svg bind:this={svg} viewBox="0 0 {WIDTH} {HEIGHT}" class:editable role="img" aria-label="Stage plan">
+<svg
+  bind:this={svg}
+  viewBox="{-MARGIN} {-MARGIN} {WIDTH + 2 * MARGIN} {HEIGHT + 2 * MARGIN}"
+  class:editable
+  role="img"
+  aria-label="Front view"
+>
   <rect width={WIDTH} height={HEIGHT} class="stage" />
   {#each GRID as line (line)}
-    <line x1={line * WIDTH} x2={line * WIDTH} y2={HEIGHT} class="grid" />
-    <line y1={line * HEIGHT} y2={line * HEIGHT} x2={WIDTH} class="grid" />
+    <line x1={screenX(line)} x2={screenX(line)} y2={HEIGHT} class="grid" />
+    <line y1={screenY(line)} y2={screenY(line)} x2={WIDTH} class="grid" />
   {/each}
-  <text x={WIDTH / 2} y="28" class="side">Upstage</text>
-  <text x={WIDTH / 2} y={HEIGHT - 14} class="side">Downstage · audience</text>
+  <line x2={WIDTH} y1={HEIGHT} y2={HEIGHT} class="floor" />
+  <text x={WIDTH / 2} y={-MARGIN / 2} class="side">Audience view</text>
+  <text x="0" y={HEIGHT + MARGIN / 2} class="side" text-anchor="start">Stage right</text>
+  <text x={WIDTH / 2} y={HEIGHT + MARGIN / 2} class="side">Floor</text>
+  <text x={WIDTH} y={HEIGHT + MARGIN / 2} class="side" text-anchor="end">Stage left</text>
 
   {#each engine.rig?.fixtures ?? [] as fixture (fixture.name)}
     {@const colours = engine.frame?.pixels[fixture.name] ?? []}
@@ -109,9 +124,9 @@
       tabindex="-1"
     >
       <rect
-        x={first.x * WIDTH - PIXEL_RADIUS - 6}
-        y={first.y * HEIGHT - PIXEL_RADIUS - 6}
-        width={(last.x - first.x) * WIDTH + 2 * PIXEL_RADIUS + 12}
+        x={screenX(first.x) - PIXEL_RADIUS - 6}
+        y={screenY(first.y) - PIXEL_RADIUS - 6}
+        width={screenX(last.x) - screenX(first.x) + 2 * PIXEL_RADIUS + 12}
         height={2 * PIXEL_RADIUS + 12}
         rx="10"
         class="body"
@@ -119,13 +134,13 @@
       {#each fixture.pixels as pixel, index (index)}
         <circle
           data-pixel={index}
-          cx={pixel.x * WIDTH}
-          cy={pixel.y * HEIGHT}
+          cx={screenX(pixel.x)}
+          cy={screenY(pixel.y)}
           r={PIXEL_RADIUS}
           fill={colours[index] ?? '#000000'}
         />
       {/each}
-      <text x={((first.x + last.x) / 2) * WIDTH} y={first.y * HEIGHT + PIXEL_RADIUS + 32} class="label">
+      <text x={screenX((first.x + last.x) / 2)} y={screenY(first.y) + PIXEL_RADIUS + 32} class="label">
         {fixture.name}
       </text>
     </g>
@@ -148,6 +163,11 @@
   .grid {
     stroke: #23252b;
     stroke-width: 1;
+  }
+
+  .floor {
+    stroke: #5d6170;
+    stroke-width: 4;
   }
 
   .side {

@@ -2,12 +2,12 @@
   import { engine } from './engine.svelte.js';
   import Monitor from './Monitor.svelte';
   import Patch from './Patch.svelte';
-  import StagePlan from './StagePlan.svelte';
+  import FrontView from './FrontView.svelte';
 
   const pages = {
     monitor: { title: 'Monitor', component: Monitor },
     patch: { title: 'Patch', component: Patch },
-    stage: { title: 'Stage plan', component: StagePlan },
+    front: { title: 'Front view', component: FrontView },
   };
 
   const pageInUrl = () => (location.hash.slice(1) in pages ? location.hash.slice(1) : 'monitor');
