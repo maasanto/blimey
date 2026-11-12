@@ -4,21 +4,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::colour::Rgb;
 use crate::fixture::{Channel, FixtureProfile, PixelChannels};
 use crate::{DMX_CHANNELS, Frame};
 
-#[derive(Deserialize)]
+/// `rig.yaml` as written. Field order here is the canonical order in the file.
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RigFile {
     fixtures: Vec<FixtureEntry>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     groups: BTreeMap<String, Vec<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureEntry {
     name: String,
@@ -30,15 +31,26 @@ struct FixtureEntry {
     canvas: Canvas,
 }
 
-/// Where a fixture sits on the normalised 2D stage canvas (0–1 on both axes). Its pixels are
+/// Where a fixture sits on the normalised 2D stage canvas, a front view from the audience:
+/// `x` from the left edge (0, stage right) to the right (1, stage left), `y` from the floor (0) up (1). Its pixels are
 /// spread evenly across `width`, in pixel order, starting at `x`.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Canvas {
     pub x: f32,
     pub y: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub width: f32,
+}
+
+fn is_zero(width: &f32) -> bool {
+    *width == 0.0
+}
+
+/// `rig.yaml` content, given as its JSON equivalent, in the engine's canonical YAML form.
+pub fn canonical_yaml(content: serde_json::Value) -> Result<String, String> {
+    let file: RigFile = serde_json::from_value(content).map_err(|error| error.to_string())?;
+    serde_yaml_ng::to_string(&file).map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

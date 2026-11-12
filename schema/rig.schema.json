@@ -43,13 +43,13 @@
       }
     },
     "canvas": {
-      "description": "Position on the normalised stage canvas. Pixels are spread evenly across width, in pixel order, starting at x.",
+      "description": "Position on the normalised stage canvas: a front view, as the audience sees the stage. Pixels are spread evenly across width, in pixel order, starting at x.",
       "type": "object",
       "additionalProperties": false,
       "required": ["x", "y"],
       "properties": {
-        "x": { "type": "number", "minimum": 0, "maximum": 1 },
-        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "x": { "description": "0 at the left edge, 1 at the right edge, as seen from the audience: 0 is stage right, 1 is stage left.", "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "description": "0 at the floor, 1 at the top of the stage picture.", "type": "number", "minimum": 0, "maximum": 1 },
         "width": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 }
       }
     }

@@ -1,8 +1,10 @@
+mod api;
 mod artnet;
 mod enttec;
 mod hot_reload;
 mod midi_input;
 mod stream;
+mod ui;
 
 use std::error::Error;
 use std::fs;
@@ -14,18 +16,20 @@ use std::time::Duration;
 
 use blimey_engine::look::{Look, LookSettings};
 use blimey_engine::ofl::import_ofl;
+use blimey_engine::rig::Rig;
 use blimey_engine::{
     DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource, MonotonicClock, Show,
-    Status, first_difference, format_dump, parse_dump,
+    ShowSource, Status, first_difference, format_dump, parse_dump,
 };
 use clap::{Args, Parser, Subcommand};
 use serialport::SerialPortType;
 
+use crate::api::Mode;
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
 use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
-use crate::stream::StreamSink;
+use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
 #[derive(Parser)]
 #[command(version, about = "Headless DMX lighting engine driven by MIDI")]
@@ -45,23 +49,21 @@ enum Command {
     /// Check a show folder: every file parses and refers to fixtures, groups and colours that
     /// exist. Errors name the file and line.
     Validate { show_dir: PathBuf },
-    /// Run a show live: MIDI in from a port such as the IAC bus, DMX out to an Enttec DMX USB Pro.
-    /// Saving a show file reloads it; a file that fails to load leaves the running show as is.
+    /// Run a show live: MIDI in from a port such as the IAC bus, out to an Enttec DMX USB Pro,
+    /// the web UI or Art-Net. Saving a show file reloads it; a file that fails to load leaves
+    /// the running show as is.
     Run {
         show_dir: PathBuf,
         /// MIDI input to listen on: the first port whose name contains this text.
         #[arg(long, default_value = "IAC")]
         midi_port: String,
-        /// Serial device of the Enttec box, e.g. /dev/cu.usbserial-EN123456 (see `blimey devices`).
-        #[arg(long)]
-        dmx_port: String,
         #[command(flatten)]
-        artnet: ArtNetMirror,
+        outputs: Outputs,
     },
     /// List MIDI input ports and serial ports.
     Devices,
     /// Set a look by fixture or group name. Prints it as a one-frame dump, or with --dmx-port,
-    /// --listen or --artnet holds it live until stopped.
+    /// --listen or --artnet holds it live, reloading the show like `run`, until stopped.
     Fire {
         show_dir: PathBuf,
         /// A fixture or group, then its settings: `--set all-wash color=deep-blue dimmer=60%`.
@@ -69,19 +71,49 @@ enum Command {
         /// white-rich). Repeatable; later sets win.
         #[arg(long, required = true, num_args = 2.., value_names = ["TARGET", "KEY=VALUE"])]
         set: Vec<String>,
-        /// Output to this Enttec DMX USB Pro, as `blimey run` does.
-        #[arg(long)]
-        dmx_port: Option<String>,
-        /// Stream engine state over WebSocket at ws://<LISTEN>/ws (see docs/api.md).
-        /// Port 0 picks a free port.
-        #[arg(long)]
-        listen: Option<SocketAddr>,
         #[command(flatten)]
-        artnet: ArtNetMirror,
+        outputs: Outputs,
     },
     /// Manage fixture profiles.
     #[command(subcommand)]
     Fixture(FixtureCommand),
+}
+
+/// Where a live engine sends its frames, and whether the web UI may edit.
+#[derive(Args)]
+struct Outputs {
+    /// Serial device of the Enttec DMX USB Pro, e.g. /dev/cu.usbserial-EN123456
+    /// (see `blimey devices`).
+    #[arg(long)]
+    dmx_port: Option<String>,
+    /// Serve the web UI and the WebSocket stream at http://<LISTEN>/ (see docs/api.md).
+    /// Port 0 picks a free port.
+    #[arg(long)]
+    listen: Option<SocketAddr>,
+    /// Let the web UI save show files and test fixtures. Without it the engine runs in show
+    /// mode: the UI is read-only.
+    #[arg(long, requires = "listen")]
+    edit: bool,
+    #[command(flatten)]
+    artnet: ArtNetMirror,
+}
+
+impl Outputs {
+    fn any(&self) -> bool {
+        self.dmx_port.is_some() || self.listen.is_some() || self.artnet.artnet.is_some()
+    }
+
+    fn start(&self, show_dir: &Path, rig: &Rig) -> io::Result<LiveOutput> {
+        let mode = if self.edit { Mode::Edit } else { Mode::Show };
+        Ok(LiveOutput {
+            dmx: self.dmx_port.clone().map(EnttecPro::new),
+            stream: self
+                .listen
+                .map(|address| StreamSink::start(address, show_dir, rig, mode))
+                .transpose()?,
+            artnet: self.artnet.start()?,
+        })
+    }
 }
 
 #[derive(Args)]
@@ -138,17 +170,14 @@ fn main() -> ExitCode {
         Command::Run {
             show_dir,
             midi_port,
-            dmx_port,
-            artnet,
-        } => run(&show_dir, &midi_port, dmx_port, &artnet),
+            outputs,
+        } => run(&show_dir, &midi_port, &outputs),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
             set,
-            dmx_port,
-            listen,
-            artnet,
-        } => fire(&show_dir, &set, dmx_port, listen, &artnet),
+            outputs,
+        } => fire(&show_dir, &set, &outputs),
         Command::Fixture(FixtureCommand::Import { ofl_json, out }) => {
             import_fixture(&ofl_json, out.as_deref())
         }
@@ -199,26 +228,21 @@ fn validate(show_dir: &Path) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run(
-    show_dir: &Path,
-    midi_port: &str,
-    dmx_port: String,
-    artnet: &ArtNetMirror,
-) -> Result<ExitCode, Box<dyn Error>> {
-    let show = HotReload::load(show_dir)?;
+fn run(show_dir: &Path, midi_port: &str, outputs: &Outputs) -> Result<ExitCode, Box<dyn Error>> {
+    if !outputs.any() {
+        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
+    }
+    let mut shows = HotReload::load(show_dir)?;
     let mut clock = MonotonicClock::default();
-    let mut midi = MidiInput::connect(midi_port, clock)?;
-    let mut output = LiveOutput {
-        dmx: Some(EnttecPro::new(dmx_port)),
-        stream: None,
-        artnet: artnet.start()?,
-    };
+    let midi = MidiInput::connect(midi_port, clock)?;
+    let mut output = outputs.start(show_dir, &shows.current().rig)?;
+    let mut midi = StreamedMidi::new(midi, output.stream.as_ref());
     eprintln!("blimey: running {}; Ctrl-C to stop", show_dir.display());
     // u32::MAX frames at 40 Hz is over three years: in practice, until the process is stopped.
     blimey_engine::run(
         &mut clock,
         &mut midi,
-        show,
+        StreamedShow::new(shows, output.stream.as_ref()),
         &Look::default(),
         &mut output,
         u32::MAX,
@@ -251,9 +275,7 @@ fn devices() -> Result<ExitCode, Box<dyn Error>> {
 fn fire(
     show_dir: &Path,
     set_values: &[String],
-    dmx_port: Option<String>,
-    listen: Option<SocketAddr>,
-    artnet: &ArtNetMirror,
+    outputs: &Outputs,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let show = Show::load(show_dir)?;
     let mut look = Look::default();
@@ -265,7 +287,7 @@ fn fire(
         look.set(&show, target, &settings)
             .map_err(|error| format!("--set {target}: {error}"))?;
     }
-    if dmx_port.is_none() && listen.is_none() && artnet.artnet.is_none() {
+    if !outputs.any() {
         let mut sink = FakeDmx::default();
         blimey_engine::run(
             &mut FakeClock::default(),
@@ -278,18 +300,13 @@ fn fire(
         print!("{}", format_dump(&sink.frames));
         return Ok(ExitCode::SUCCESS);
     }
-    let mut output = LiveOutput {
-        dmx: dmx_port.map(EnttecPro::new),
-        stream: listen
-            .map(|address| StreamSink::start(address, &show.rig))
-            .transpose()?,
-        artnet: artnet.start()?,
-    };
+    let mut output = outputs.start(show_dir, &show.rig)?;
+    let shows = StreamedShow::new(HotReload::load(show_dir)?, output.stream.as_ref());
     eprintln!("blimey: holding the look; Ctrl-C to stop");
     blimey_engine::run(
         &mut MonotonicClock::default(),
         &mut NoMidi,
-        &show,
+        shows,
         &look,
         &mut output,
         u32::MAX,
@@ -306,7 +323,8 @@ impl MidiSource for NoMidi {
     }
 }
 
-/// A live engine's outputs: any of the Enttec box, the WebSocket stream and the Art-Net mirror.
+/// A live engine's outputs: any of the Enttec box, the WebSocket stream and web UI, and the
+/// Art-Net mirror.
 struct LiveOutput {
     dmx: Option<EnttecPro>,
     stream: Option<StreamSink>,
@@ -315,14 +333,18 @@ struct LiveOutput {
 
 impl DmxSink for LiveOutput {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
+        let mut frame = *frame;
+        if let Some(stream) = &self.stream {
+            stream.apply_test_flash(at, &mut frame);
+        }
         if let Some(dmx) = &mut self.dmx {
-            dmx.send(at, frame)?;
+            dmx.send(at, &frame)?;
         }
         if let Some(stream) = &mut self.stream {
-            stream.send(at, frame)?;
+            stream.send(at, &frame)?;
         }
         if let Some(artnet) = &mut self.artnet {
-            artnet.send(at, frame)?;
+            artnet.send(at, &frame)?;
         }
         Ok(())
     }
