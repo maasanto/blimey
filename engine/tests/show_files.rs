@@ -82,6 +82,29 @@ fn the_rig_schema_rejects_a_misspelled_field() {
 }
 
 #[test]
+fn the_rig_schema_ties_universe_to_art_net_grids() {
+    let schema = fs::read_to_string(Path::new(ROOT).join("schema/rig.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&serde_json::from_str(&schema).unwrap()).unwrap();
+    let grid = |extra: serde_json::Value| {
+        let mut grid = serde_json::json!({
+            "name": "g", "type": "pixel-grid", "columns": 2, "rows": 2, "colour_order": "RGB",
+            "address": 1, "canvas": { "x": 0, "y": 0 }
+        });
+        grid.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        validator.is_valid(&serde_json::json!({ "fixtures": [grid] }))
+    };
+
+    assert!(grid(serde_json::json!({})));
+    assert!(grid(
+        serde_json::json!({ "output": "artnet", "universe": 2 })
+    ));
+    assert!(!grid(serde_json::json!({ "output": "artnet" })));
+    assert!(!grid(serde_json::json!({ "universe": 2 })));
+}
+
+#[test]
 fn the_fossile_show_loads() {
     let show = Show::load(&Path::new(ROOT).join("shows/fossile")).unwrap();
 

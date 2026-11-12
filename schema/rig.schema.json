@@ -9,7 +9,12 @@
   "properties": {
     "fixtures": {
       "type": "array",
-      "items": { "$ref": "#/$defs/fixture" }
+      "description": "Profiled fixtures, and pixel grids, which have a type.",
+      "items": {
+        "if": { "type": "object", "required": ["type"] },
+        "then": { "$ref": "#/$defs/pixelGrid" },
+        "else": { "$ref": "#/$defs/fixture" }
+      }
     },
     "groups": {
       "description": "Group name → fixture names. A group name can't also be a fixture name.",
@@ -42,8 +47,42 @@
         "canvas": { "$ref": "#/$defs/canvas" }
       }
     },
+    "pixelGrid": {
+      "description": "A generic RGB or RGBW pixel grid; a column is a grid with one column. Pixel cues drive it; looks don't. One universe holds 170 RGB or 128 RGBW pixels; a larger grid continues on the next Art-Net universe.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "columns", "rows", "colour_order", "address", "canvas"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "pattern": "^[^=]+$" },
+        "type": { "const": "pixel-grid" },
+        "columns": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 },
+        "colour_order": { "description": "Each pixel's emitters in DMX order: R, G and B, and optionally W, once each.", "type": "string", "pattern": "^[RGBW]{3,4}$" },
+        "wiring": { "description": "How the chain runs along the rows from the start corner. Defaults to row-by-row.", "enum": ["row-by-row", "serpentine"] },
+        "start_corner": { "description": "Where the first pixel is, as seen from the audience. Defaults to top-left.", "enum": ["top-left", "top-right", "bottom-left", "bottom-right"] },
+        "output": { "description": "Defaults to enttec.", "enum": ["enttec", "artnet"] },
+        "universe": { "description": "Art-Net port-address of the first pixel, 0-32767. Only, and required, for output: artnet.", "type": "integer", "minimum": 0, "maximum": 32767 },
+        "address": { "description": "1-based DMX start address in that universe.", "type": "integer", "minimum": 1, "maximum": 512 },
+        "canvas": { "$ref": "#/$defs/gridCanvas" }
+      },
+      "if": { "properties": { "output": { "const": "artnet" } }, "required": ["output"] },
+      "then": { "required": ["universe"] },
+      "else": { "not": { "required": ["universe"] } }
+    },
+    "gridCanvas": {
+      "description": "The rectangle the grid fills on the canvas, bottom-left corner at (x, y).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+        "height": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 }
+      }
+    },
     "canvas": {
-      "description": "Position on the normalised stage canvas: a front view, as the audience sees the stage. Pixels are spread evenly across width, in pixel order, starting at x.",
+      "description": "Position on the normalised stage canvas: a front view, as the audience sees the stage (x 0 stage right, 1 stage left; y 0 the floor, 1 the top). Pixels are spread evenly across width, in pixel order, starting at x.",
       "type": "object",
       "additionalProperties": false,
       "required": ["x", "y"],

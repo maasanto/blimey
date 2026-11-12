@@ -216,6 +216,46 @@ mod tests {
     }
 
     #[test]
+    fn a_pixel_cue_reads_its_layers_and_refuses_params_it_cannot_play() {
+        const PIXEL: &str =
+            "program: 3\nbpm: 92\ncues:\n  40:\n    name: bridge-chase\n    type: pixel\n";
+        let song = Song::parse(
+            "song",
+            &format!(
+                "{PIXEL}    effect: chase\n    params: {{ color: red, width: 0.2, speed: 1 bar, direction: left-to-right }}\n    seed: 7\n    layer_2: {{ shape: circle, blend: mask }}\n"
+            ),
+            &show(),
+        )
+        .unwrap();
+
+        let Cue::Pixel(scene) = &song.cues[&40] else {
+            panic!("cue 40 is a pixel cue");
+        };
+        assert_eq!(scene.layer.effect, crate::pixel::Effect::Chase);
+        assert_eq!(scene.layer.speed, Length::Bars(1.0));
+        assert_eq!(scene.seed, 7);
+        let (blend, layer_2) = scene.layer_2.as_ref().unwrap();
+        assert_eq!(*blend, crate::pixel::Blend::Mask);
+        assert_eq!(layer_2.shape, crate::pixel::Shape::Circle);
+        assert_eq!(layer_2.width, 1.0, "defaults to the whole canvas");
+
+        assert_eq!(
+            error(&format!("{PIXEL}    params: {{ width: 0 }}\n")),
+            "line 4: cue 40: width 0 must be above 0 and at most 1"
+        );
+        assert_eq!(
+            error(&format!(
+                "{PIXEL}    layer_2: {{ params: {{ color: teal }} }}\n"
+            )),
+            "line 4: cue 40: layer_2: no colour \"teal\" in palettes.yaml, and not a #rrggbb value"
+        );
+        assert_eq!(
+            error(&format!("{PIXEL}    params: {{ speed: 0 beats }}\n")),
+            "line 4: cue 40: speed must be above 0"
+        );
+    }
+
+    #[test]
     fn checks_against_the_rig_name_the_line_of_the_cue() {
         assert_eq!(
             error(&format!(
@@ -245,7 +285,7 @@ mod tests {
         );
         assert_eq!(
             error("program: 3\ncues:\n  36:\n    name: verse\n    type: scen\n"),
-            "cues.36.type: unknown variant `scen`, expected one of `scene`, `swell`, `pattern` at line 5 column 11"
+            "cues.36.type: unknown variant `scen`, expected one of `scene`, `swell`, `pattern`, `pixel` at line 5 column 11"
         );
         assert_eq!(
             error("program: 3\ntempo: 92\n"),

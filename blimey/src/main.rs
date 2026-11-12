@@ -18,8 +18,8 @@ use blimey_engine::look::{Look, LookSettings};
 use blimey_engine::ofl::import_ofl;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
-    DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource, MonotonicClock, Show,
-    ShowSource, Status, first_difference, format_dump, parse_dump,
+    ArtNetFrames, DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource,
+    MonotonicClock, Show, ShowSource, Status, first_difference, format_dump, parse_dump,
 };
 use clap::{Args, Parser, Subcommand};
 use serialport::SerialPortType;
@@ -111,7 +111,7 @@ impl Outputs {
                 .listen
                 .map(|address| StreamSink::start(address, show_dir, rig, mode))
                 .transpose()?,
-            artnet: self.artnet.start()?,
+            artnet: self.artnet.start(rig)?,
         })
     }
 }
@@ -139,7 +139,27 @@ struct ArtNetMirror {
 }
 
 impl ArtNetMirror {
-    fn start(&self) -> io::Result<Option<ArtNet>> {
+    /// Opens the Art-Net output, which also carries `rig`'s pixel grids on Art-Net universes.
+    // ponytail: checked against the rig at start only; a hot reload that adds grids isn't rechecked.
+    fn start(&self, rig: &Rig) -> io::Result<Option<ArtNet>> {
+        let grid_universes: Vec<String> = rig
+            .artnet_frames()
+            .keys()
+            .map(|universe| universe.to_string())
+            .collect();
+        match self.artnet {
+            None if !grid_universes.is_empty() => eprintln!(
+                "blimey: pixel grids use Art-Net universes {} but --artnet is not set: they get no output",
+                grid_universes.join(", ")
+            ),
+            Some(_) if grid_universes.contains(&self.artnet_universe.to_string()) => {
+                return Err(io::Error::other(format!(
+                    "--artnet-universe {} is also a pixel grid's universe; mirror the Enttec frame on another one",
+                    self.artnet_universe
+                )));
+            }
+            _ => {}
+        }
         self.artnet
             .map(|node| ArtNet::new(node, self.artnet_universe))
             .transpose()
@@ -347,6 +367,12 @@ impl DmxSink for LiveOutput {
             artnet.send(at, &frame)?;
         }
         Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        if let Some(artnet) = &mut self.artnet {
+            artnet.send_artnet(universes);
+        }
     }
 
     fn status(&mut self, status: &Status) {

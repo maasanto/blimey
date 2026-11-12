@@ -1,16 +1,16 @@
 //! Art-Net output, per Artistic Licence's "Art-Net 4" specification: one ArtDmx packet per
 //! universe per frame, over UDP. Used as a preview mirror (BlenderDMX, docs/blenderdmx.md)
-//! and, from C9, as the real output for pixel grids beyond the Enttec universe.
+//! and as the real output for pixel grids on Art-Net universes.
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
-use blimey_engine::{DMX_CHANNELS, DmxSink, Frame};
+use blimey_engine::{ArtNetFrames, DMX_CHANNELS, DmxSink, Frame};
 
 pub const PORT: u16 = 6454;
 /// Port-address is 15 bits: Net (7), Sub-Net (4), Universe (4).
-pub const MAX_UNIVERSE: u16 = 0x7FFF;
+pub const MAX_UNIVERSE: u16 = blimey_engine::rig::MAX_ARTNET_UNIVERSE;
 const ART_DMX_OPCODE: u16 = 0x5000;
 const PROTOCOL_VERSION: u16 = 14;
 
@@ -95,6 +95,12 @@ impl DmxSink for ArtNet {
     fn send(&mut self, _at: Duration, frame: &Frame) -> io::Result<()> {
         self.send_universe(self.mirror_universe, frame);
         Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        for (universe, frame) in universes {
+            self.send_universe(*universe, frame);
+        }
     }
 }
 

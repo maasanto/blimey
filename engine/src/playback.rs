@@ -12,7 +12,7 @@ use crate::fixture::Attribute;
 use crate::look::{self, Look};
 use crate::rig::Rig;
 use crate::song::Song;
-use crate::{DMX_CHANNELS, Frame, MidiEvent, Show};
+use crate::{DMX_CHANNELS, Frame, MidiEvent, Show, Universes};
 
 /// Status bytes on channel 2 (cues, song select, master, live parameters).
 const CUE_NOTE_OFF: u8 = 0x81;
@@ -186,15 +186,18 @@ impl Playback {
 
     /// The frame due at `at`, with `look` (from `blimey fire`) between legacy and cues.
     /// Drops cues that have finished fading out.
-    pub fn render(&mut self, show: &Show, look: &Look, at: Duration) -> Frame {
-        let mut frame = self.legacy;
-        look::render(&show.rig, look, &mut frame);
+    pub fn render(&mut self, show: &Show, look: &Look, at: Duration) -> Universes {
+        let mut output = Universes {
+            enttec: self.legacy,
+            artnet: show.rig.artnet_frames(),
+        };
+        look::render(&show.rig, look, &mut output.enttec);
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
-            apply_master(&show.rig, self.master, &mut frame);
-            return frame;
+            apply_master(&show.rig, self.master, &mut output);
+            return output;
         };
         if self.safe_look {
-            look::render(&show.rig, &song.safe_look, &mut frame);
+            look::render(&show.rig, &song.safe_look, &mut output.enttec);
         }
         let faded_out =
             |cue: &Cue, release: &Release| clock.progress(cue.release(), release.at, at) as f32;
@@ -212,17 +215,24 @@ impl Playback {
                 None => cue.opacity(clock, active.started, at),
                 Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
             };
-            let mut lit = frame;
-            cue.draw(&show.rig, active.intensity, &mut lit);
+            let mut lit = output.clone();
+            cue.draw(
+                &show.rig,
+                clock,
+                active.started,
+                at,
+                active.intensity,
+                &mut lit,
+            );
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
-            for (below, above) in frame.iter_mut().zip(lit) {
-                let blended = f32::from(*below) + (f32::from(above) - f32::from(*below)) * opacity;
-                *below = blended.round() as u8;
+            crossfade(&mut output.enttec, &lit.enttec, opacity);
+            for (universe, frame) in &mut output.artnet {
+                crossfade(frame, &lit.artnet[universe], opacity);
             }
         }
-        apply_master(&show.rig, self.master, &mut frame);
-        frame
+        apply_master(&show.rig, self.master, &mut output);
+        output
     }
 
     pub fn status(&self, show: &Show) -> Status {
@@ -248,13 +258,24 @@ impl Playback {
     }
 }
 
+/// Moves each channel of `below` towards `above` by `opacity` (0–1).
+fn crossfade(below: &mut Frame, above: &Frame, opacity: f32) {
+    for (below, above) in below.iter_mut().zip(above) {
+        let blended = f32::from(*below) + (f32::from(*above) - f32::from(*below)) * opacity;
+        *below = blended.round() as u8;
+    }
+}
+
 /// Scales intensity channels by `master`: dimmer channels, the colour channels of fixtures
-/// without a dimmer, and channels no fixture claims (legacy-only). Other channels, such as a
-/// shutter, keep their value.
-fn apply_master(rig: &Rig, master: f32, frame: &mut Frame) {
+/// without a dimmer, and channels no fixture claims (legacy-only and pixel grids, every
+/// Art-Net channel included). Other channels, such as a shutter, keep their value.
+fn apply_master(rig: &Rig, master: f32, output: &mut Universes) {
     if master >= 1.0 {
         return;
     }
+    let scale = |value: &mut u8| *value = (f32::from(*value) * master).round() as u8;
+    output.artnet.values_mut().flatten().for_each(scale);
+    let frame = &mut output.enttec;
     let mut is_intensity = [true; DMX_CHANNELS];
     for fixture in &rig.fixtures {
         for (offset, channel) in fixture.channels.iter().enumerate() {
@@ -267,7 +288,7 @@ fn apply_master(rig: &Rig, master: f32, frame: &mut Frame) {
     }
     for (value, scaled) in frame.iter_mut().zip(is_intensity) {
         if scaled {
-            *value = (f32::from(*value) * master).round() as u8;
+            scale(value);
         }
     }
 }
