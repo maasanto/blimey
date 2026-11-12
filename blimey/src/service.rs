@@ -84,7 +84,11 @@ pub fn uninstall() -> io::Result<()> {
         println!("{LABEL} is not installed: no {}", path.display());
         return Ok(());
     }
-    launchctl(&["unload", "-w", &path.to_string_lossy()])?;
+    // An agent that isn't loaded (e.g. after a failed install) fails to unload; the plist must
+    // go regardless, or launchd loads it again at the next login.
+    if let Err(error) = launchctl(&["unload", "-w", &path.to_string_lossy()]) {
+        eprintln!("service: {error}; removing the agent anyway");
+    }
     fs::remove_file(&path).map_err(|error| in_file(&path, error))?;
     println!("stopped and removed {LABEL}");
     Ok(())

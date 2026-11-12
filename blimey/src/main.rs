@@ -4,6 +4,7 @@ mod enttec;
 mod event_log;
 mod hot_reload;
 mod midi_input;
+mod recorder;
 mod service;
 mod state;
 mod stream;
@@ -30,10 +31,10 @@ use serialport::SerialPortType;
 use crate::api::Mode;
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
-use crate::event_log::EventLog;
 use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
-use crate::state::{Resumed, StateFile};
+use crate::recorder::Recorder;
+use crate::state::Resumed;
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
 #[derive(Parser)]
@@ -303,23 +304,14 @@ fn run(
     outputs: &Outputs,
     state_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    if !outputs.any() {
-        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
-    }
-    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
-    fs::create_dir_all(&state_dir).map_err(|error| format!("{}: {error}", state_dir.display()))?;
-    let mut shows = outputs.shows(show_dir)?;
-    let state = StateFile::open(&state_dir);
-    let resume = state.saved().resume_events(shows.current());
-    let mut log =
-        EventLog::open(&state_dir).map_err(|error| format!("{}: {error}", state_dir.display()))?;
-    let saved = state.saved();
-    log.start(
-        show_dir,
-        outputs.mode().name(),
-        saved.song.as_deref(),
-        saved.master,
-    );
+    let mut shows = check_run(show_dir, outputs)?;
+    let state_dir = state_dir.or_else(|| {
+        state::default_dir()
+            .map_err(|error| eprintln!("state: {error}; running without saved state or event log"))
+            .ok()
+    });
+    let recorder = Recorder::start(state_dir.as_deref(), show_dir, outputs.mode().name());
+    let resume = recorder.saved().resume_events(shows.current());
     let mut clock = MonotonicClock::default();
     let midi = MidiInput::connect(midi_port, clock)?;
     let output = outputs.start(show_dir, &shows.current().rig)?;
@@ -336,22 +328,39 @@ fn run(
         &mut midi,
         shows,
         &Look::default(),
-        &mut Recorded { output, log, state },
+        &mut Recorded { output, recorder },
         u32::MAX,
     )?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// Checks `run_args` as `blimey run` would, then installs the launch agent for them.
+/// What `run` refuses to start without: somewhere to send frames, and a show that loads.
+/// Returns the show to play.
+fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+    if !outputs.any() {
+        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
+    }
+    Ok(outputs.shows(show_dir)?)
+}
+
+/// Checks `run_args` as `blimey run` would at start, so launchd never restarts an engine that
+/// exits at once, then installs the launch agent for them.
 fn install_service(run_args: &[String], dry_run: bool) -> Result<ExitCode, Box<dyn Error>> {
     let command = ["blimey", "run"]
         .into_iter()
         .chain(run_args.iter().map(String::as_str));
     let parsed = Command::try_parse_from(command).unwrap_or_else(|error| error.exit());
-    let Command::Run { state_dir, .. } = parsed else {
+    let Command::Run {
+        show_dir,
+        outputs,
+        state_dir,
+        ..
+    } = parsed
+    else {
         unreachable!("parsed as `run`");
     };
-    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
+    check_run(&show_dir, &outputs)?;
+    let state_dir = std::path::absolute(state_dir.map_or_else(state::default_dir, Ok)?)?;
     let plist = service::plist(
         &std::env::current_exe()?,
         run_args,
@@ -484,8 +493,7 @@ impl DmxSink for LiveOutput {
 /// restart.
 struct Recorded {
     output: LiveOutput,
-    log: EventLog,
-    state: StateFile,
+    recorder: Recorder,
 }
 
 impl DmxSink for Recorded {
@@ -498,16 +506,16 @@ impl DmxSink for Recorded {
     }
 
     fn status(&mut self, status: &Status) {
-        self.state.record(status);
+        self.recorder.status(status);
         self.output.status(status);
     }
 
     fn midi(&mut self, event: &MidiEvent) {
-        self.log.midi(event);
+        self.recorder.midi(event);
     }
 
     fn cue(&mut self, event: &CueEvent) {
-        self.log.cue(event);
+        self.recorder.cue(event);
     }
 }
 

@@ -26,7 +26,7 @@ pub mod song;
 pub use dump::{first_difference, format_dump, parse_dump};
 pub use legacy::LegacyMap;
 pub use midi_file::MidiFile;
-pub use playback::{CueAction, CueEvent, CueStatus, Status};
+pub use playback::{CueAction, CueEvent, CueStatus, Status, resume_messages};
 pub use show::Show;
 
 use std::collections::BTreeMap;
