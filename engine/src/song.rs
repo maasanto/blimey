@@ -270,11 +270,13 @@ mod tests {
         let Cue::Pixel(scene) = &song.cues[&40] else {
             panic!("cue 40 is a pixel cue");
         };
-        assert_eq!(scene.layer.effect, crate::pixel::Effect::Chase);
-        assert_eq!(scene.layer.speed, Length::Bars(1.0));
+        let [layer_1, layer_2] = &scene.layers[..] else {
+            panic!("two layers: {:?}", scene.layers);
+        };
+        assert_eq!(layer_1.effect, crate::pixel::Effect::Chase);
+        assert_eq!(layer_1.speed, Length::Bars(1.0));
         assert_eq!(scene.seed, 7);
-        let (blend, layer_2) = scene.layer_2.as_ref().unwrap();
-        assert_eq!(*blend, crate::pixel::Blend::Mask);
+        assert_eq!(layer_2.blend, crate::pixel::Blend::Mask);
         assert_eq!(layer_2.shape, crate::pixel::Shape::Circle);
         assert_eq!(layer_2.width, 1.0, "defaults to the whole canvas");
 
@@ -291,6 +293,65 @@ mod tests {
         assert_eq!(
             error(&format!("{PIXEL}    params: {{ speed: 0 beats }}\n")),
             "line 4: cue 40: speed must be above 0"
+        );
+    }
+
+    #[test]
+    fn a_layered_pixel_cue_reads_its_areas_and_mutes_and_refuses_what_it_cannot_play() {
+        const PIXEL: &str = "program: 3\ncues:\n  40:\n    name: halves\n    type: pixel\n";
+        let layers = |layers: &str| format!("{PIXEL}    layers:\n{layers}");
+        let song = Song::parse(
+            "song",
+            &layers(
+                "      - { area: { x: 0, y: 0, width: 0.5, height: 1 }, shape: fill, level: 60% }\n      - { blend: over, mute: [both] }\n",
+            ),
+            &show(),
+        )
+        .unwrap();
+
+        let Cue::Pixel(scene) = &song.cues[&40] else {
+            panic!("cue 40 is a pixel cue");
+        };
+        let [left, whole] = &scene.layers[..] else {
+            panic!("two layers: {:?}", scene.layers);
+        };
+        assert_eq!((left.area.width, left.level), (0.5, 0.6));
+        assert_eq!(left.shape, crate::pixel::Shape::Fill);
+        assert_eq!((whole.area.width, whole.area.height), (1.0, 1.0));
+        assert_eq!(whole.blend, crate::pixel::Blend::Over);
+        assert_eq!(
+            whole.mute.iter().collect::<Vec<_>>(),
+            ["dimmer-par", "rgb-par"],
+            "a group mutes its fixtures"
+        );
+
+        let refused = [
+            (
+                "      - { area: { x: 0.5, y: 0, width: 0, height: 1 } }\n",
+                "layer 1: area { x: 0.5, y: 0, width: 0, height: 1 } is empty: width and height must be above 0",
+            ),
+            (
+                "      - {}\n      - { area: { x: 0.75, y: 0, width: 0.5, height: 1 } }\n",
+                "layer 2: area { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas",
+            ),
+            (
+                "      - { mute: [inner-wash] }\n",
+                "layer 1: mute: \"inner-wash\" is neither a fixture nor a group in the rig",
+            ),
+            (
+                &"      - {}\n".repeat(9),
+                "9 layers; a pixel cue has 1 to 8",
+            ),
+            ("      []\n", "0 layers; a pixel cue has 1 to 8"),
+        ];
+        for (yaml, expected) in refused {
+            assert_eq!(error(&layers(yaml)), format!("line 3: cue 40: {expected}"));
+        }
+        assert_eq!(
+            error(&format!(
+                "{PIXEL}    effect: chase\n    layers:\n      - {{}}\n"
+            )),
+            "line 3: cue 40: a pixel cue has either layers or shape, effect, params and layer_2, not both"
         );
     }
 

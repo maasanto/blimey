@@ -198,7 +198,8 @@ enum Output {
 /// Where a fixture sits on the normalised 2D stage canvas, a front view from the audience:
 /// `x` from the left edge (0, stage right) to the right (1, stage left), `y` from the floor (0) up (1). Its pixels are
 /// spread evenly across `width`, in pixel order, starting at `x`. A pixel grid's pixels fill
-/// the rectangle `width` wide and `height` tall whose bottom-left corner is (`x`, `y`).
+/// the rectangle `width` wide and `height` tall whose bottom-left corner is (`x`, `y`), as a
+/// pixel cue layer's `area` does.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Canvas {
