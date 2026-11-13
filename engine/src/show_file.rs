@@ -152,8 +152,8 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
     in_order(Value::Object(song), &schema["properties"])
 }
 
-/// A pixel cue's `params`, and its `layer_2` with that layer's `params`, in schema order too,
-/// so a file doesn't depend on the order the builder set them in.
+/// A pixel cue's `params`, its `layer_2` and each of its `layers`, with their `params` and
+/// `area`, in schema order too, so a file doesn't depend on the order the builder set them in.
 fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
     let params_in_order = |layer: &mut Value| {
         if let Some(params) = layer.get_mut("params") {
@@ -165,6 +165,16 @@ fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
         let layer_2_properties = &schema["$defs"]["pixel"]["properties"]["layer_2"]["properties"];
         *layer_2 = in_order(layer_2.take(), layer_2_properties);
         params_in_order(layer_2);
+    }
+    if let Some(Value::Array(layers)) = cue.get_mut("layers") {
+        let layer_properties = &schema["$defs"]["pixelLayer"]["properties"];
+        for layer in layers {
+            *layer = in_order(layer.take(), layer_properties);
+            if let Some(area) = layer.get_mut("area") {
+                *area = in_order(area.take(), &layer_properties["area"]["properties"]);
+            }
+            params_in_order(layer);
+        }
     }
     cue
 }
@@ -203,6 +213,11 @@ fn write_block(yaml: &mut String, value: &Value, indent: usize) {
     for (lead, child) in entries {
         if is_flat(child) {
             yaml.push_str(&format!("{lead} {}\n", flow(child)));
+        } else if value.is_array() && child.is_object() {
+            // A mapping in a list starts on the dash's line: `- area: …`.
+            let mut block = String::new();
+            write_block(&mut block, child, indent + 2);
+            yaml.push_str(&format!("{lead} {}", &block[indent + 2..]));
         } else {
             yaml.push_str(&format!("{lead}\n"));
             write_block(yaml, child, indent + 2);
@@ -732,6 +747,33 @@ mod tests {
         assert!(
             written.ends_with(
                 "  50:\n    name: two-layer\n    type: pixel\n    params: { color: amber, width: 0.5, speed: 1 bar }\n    layer_2:\n      shape: bar\n      params: { color: amber, width: 0.5, speed: 1 bar }\n      blend: add\n    seed: 7\n"
+            ),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn a_pixel_cues_layers_are_written_in_schema_order_one_mapping_per_dash() {
+        let show = fossile_copy("pixel-layers-order");
+        let cue = json!({
+            "layers": [
+                {
+                    "params": { "speed": "1 bar", "color": "amber" },
+                    "shape": "fill",
+                    "area": { "height": 1, "width": 0.5, "y": 0, "x": 0 },
+                },
+                { "mute": ["inner-wash"], "blend": "over", "level": "60%" },
+            ],
+            "type": "pixel",
+            "name": "layered",
+        });
+
+        save_cue(&show, "tell-me", 50, None, cue).unwrap();
+
+        let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        assert!(
+            written.ends_with(
+                "  50:\n    name: layered\n    type: pixel\n    layers:\n      - area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n      - level: 60%\n        blend: over\n        mute: [inner-wash]\n"
             ),
             "{written}"
         );
