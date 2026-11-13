@@ -40,6 +40,10 @@
   let song = $state(null);
   let tempo = $state(DEFAULT_BPM);
   let adding = $state('');
+  /** `GET /api/history`: how many saves can be undone and redone. */
+  let steps = $state({ undo: 0, redo: 0 });
+  /** The new-song form while it is open. */
+  let newSong = $state(null);
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
@@ -64,14 +68,30 @@
     tempo = song?.bpm ?? DEFAULT_BPM;
   }
 
-  attempt(async () => {
+  async function loadSummary() {
     summary = await request('GET', '/api/show');
     if (!summary.songs.some((entry) => entry.name === songName)) songName = summary.songs[0]?.name ?? '';
+  }
+
+  async function loadSteps() {
+    steps = await request('GET', '/api/history');
+  }
+
+  attempt(loadSummary);
+
+  // The front view beside the builder saves `rig.yaml` too; every saved rig comes back on the
+  // stream, so the step counts follow it.
+  $effect(() => {
+    if (engine.rig) loadSteps().catch((failure) => (error = failure.message));
   });
 
+  /** After a save: the song as written, and one more step to undo. */
+  const reloadAfterSave = () => Promise.all([loadSong(), loadSteps()]);
+
+  // Not through `attempt`: switching songs after a save or a new song keeps its notice.
   $effect(() => {
     songName;
-    attempt(loadSong);
+    loadSong().catch((failure) => (error = failure.message));
   });
 
   // One preview request at a time, always the latest look, so the output never steps back.
@@ -127,27 +147,56 @@
     if (cue.type === 'scene') cue.values = values;
     await request('PUT', `/api/songs/${songName}/cues/${form.note}`, { cue, replaces: form.replaces });
     notice = `Saved cue ${form.note} in ${songName}.`;
-    await loadSong();
+    await reloadAfterSave();
     form.replaces = { note: form.note, cue: $state.snapshot(song.cues[form.note]) };
   }
 
   async function deleteCue(note) {
     await request('DELETE', `/api/songs/${songName}/cues/${note}`);
     if (form.replaces?.note === note) form = newForm();
-    notice = `Deleted cue ${note}. Undo last save brings it back.`;
-    await loadSong();
+    notice = `Deleted cue ${note}. Undo brings it back.`;
+    await reloadAfterSave();
   }
 
   async function setTempo() {
     await request('PUT', `/api/songs/${songName}/bpm`, { bpm: tempo });
     notice = `${songName} runs at ${tempo} BPM when no MIDI clock comes in.`;
-    await loadSong();
+    await reloadAfterSave();
   }
 
-  async function undo() {
-    const { file } = await request('POST', '/api/undo');
-    notice = `Undid the last save of ${file}.`;
-    await loadSong();
+  /** `undo` or `redo` one save; either may add or remove a song. */
+  async function step(action) {
+    const { file, undo, redo } = await request('POST', `/api/${action}`);
+    steps = { undo, redo };
+    notice = action === 'undo' ? `Undid the last save of ${file}.` : `Redid the save of ${file}.`;
+    // The cue being edited, or its whole song, may have changed or gone.
+    form = newForm();
+    const shown = songName;
+    await loadSummary();
+    // A song that went is replaced in the picker, and the switch loads the new one.
+    if (songName === shown) await loadSong();
+  }
+
+  function openNewSong() {
+    const used = new Set(summary?.songs.map((entry) => entry.program));
+    let program = 0;
+    while (used.has(program)) program += 1;
+    newSong = { name: '', program, bpm: null, time_signature: '' };
+  }
+
+  async function createSong() {
+    const { name, program, bpm, time_signature } = $state.snapshot(newSong);
+    await request('POST', '/api/songs', {
+      name,
+      program,
+      ...(bpm ? { bpm } : {}),
+      ...(time_signature ? { time_signature } : {}),
+    });
+    newSong = null;
+    form = newForm();
+    songName = name;
+    notice = `Created song ${name}. Undo removes it.`;
+    await Promise.all([loadSummary(), loadSteps()]);
   }
 
   const isPlaying = (note) =>
@@ -179,12 +228,19 @@
 <div class="bar">
   <label>
     Song
-    <select bind:value={songName} onchange={() => (form = newForm())}>
+    <select
+      bind:value={songName}
+      onchange={() => {
+        form = newForm();
+        error = '';
+      }}
+    >
       {#each summary?.songs ?? [] as entry (entry.name)}
         <option value={entry.name}>{entry.name} (program {entry.program})</option>
       {/each}
     </select>
   </label>
+  <button disabled={!editable || newSong !== null} onclick={openNewSong}>New song</button>
   <fieldset disabled={!editable || !song}>
     <label>
       Metronome
@@ -193,10 +249,30 @@
     </label>
     <button onclick={() => attempt(setTempo)}>Set tempo</button>
   </fieldset>
-  <button class="undo" disabled={!editable} onclick={() => attempt(undo)}>Undo last save</button>
+  <span class="history">
+    <button disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
+    <button disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
+  </span>
 </div>
-{#if summary && !summary.songs.length}
-  <p class="hint">This show has no songs yet: add one as <code>songs/&lt;name&gt;.yaml</code> to save cues.</p>
+{#if newSong}
+  <fieldset class="new-song" disabled={!editable}>
+    <legend>New song</legend>
+    <div class="row">
+      <label>Song name <input bind:value={newSong.name} placeholder="encore" /></label>
+      <label>Program <input type="number" min="0" max="127" bind:value={newSong.program} /></label>
+      <label>Tempo <input type="number" min="1" step="any" bind:value={newSong.bpm} placeholder="120" /> BPM</label>
+      <label>Time signature <input bind:value={newSong.time_signature} placeholder="4/4" /></label>
+    </div>
+    <p class="hint">
+      The name is letters, digits, - and _. The program is the channel-2 Program Change that selects the song, one per song.
+    </p>
+    <div class="row">
+      <button disabled={!newSong.name || newSong.program == null} onclick={() => attempt(createSong)}>Create song</button>
+      <button onclick={() => (newSong = null)}>Cancel</button>
+    </div>
+  </fieldset>
+{:else if summary && !summary.songs.length}
+  <p class="hint">This show has no songs yet: create one with New song to save cues.</p>
 {/if}
 
 <div class="workspace">
@@ -339,7 +415,9 @@
     align-items: center;
   }
 
-  .undo {
+  .history {
+    display: flex;
+    gap: 8px;
     margin-left: auto;
   }
 
@@ -351,7 +429,8 @@
   }
 
   .look,
-  .cue {
+  .cue,
+  .new-song {
     padding: 12px;
     margin-bottom: 16px;
     border: 1px solid var(--line);

@@ -17,7 +17,7 @@ use blimey_engine::colour::Rgb;
 use blimey_engine::cue::resolve_look;
 use blimey_engine::look::{self, FixtureLook, Look};
 use blimey_engine::rig::Rig;
-use blimey_engine::show_file::{self, Save};
+use blimey_engine::show_file::{self, History, Save};
 use blimey_engine::{Frame, Show};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -60,8 +60,16 @@ pub struct Api {
     pub preview: TimedLook,
     /// MIDI messages for the render loop, as if from the input port.
     pub midi: Sender<Vec<u8>>,
-    /// The last save made through the API, for undo.
-    pub last_save: Arc<Mutex<Option<Save>>>,
+    /// The saves made through the API, to undo and redo.
+    pub history: Arc<Mutex<History>>,
+}
+
+#[derive(Deserialize)]
+struct NewSong {
+    name: String,
+    /// The song file's content: `program`, and optionally `bpm` and `time_signature`.
+    #[serde(flatten)]
+    content: serde_json::Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -105,8 +113,11 @@ pub fn routes(api: Api) -> Router {
             "/api/songs/{song}/cues/{note}",
             put(save_cue).delete(delete_cue),
         )
+        .route("/api/songs", post(create_song))
         .route("/api/songs/{song}/bpm", put(set_bpm))
+        .route("/api/history", get(history))
         .route("/api/undo", post(undo))
+        .route("/api/redo", post(redo))
         .route("/api/preview", put(set_preview).delete(clear_preview))
         .route("/api/midi", post(inject_midi))
         .route("/api/fixtures/{name}/test", post(test_fixture))
@@ -156,7 +167,7 @@ async fn write_show_file(
         Err(error) => return error_response(&error),
     };
     // Hot reload picks the file up on the next frame, and the stream then sends the new rig.
-    saved(&api, show_file::write(&api.show_dir, &file, content))
+    saved(&api, || show_file::write(&api.show_dir, &file, content))
 }
 
 async fn save_cue(
@@ -179,10 +190,9 @@ async fn save_cue(
         Err(error) => return error_response(&error),
     };
     let replaces = save.replaces.map(|replaced| (replaced.note, replaced.cue));
-    saved(
-        &api,
-        show_file::save_cue(&api.show_dir, &song, note, replaces, save.cue),
-    )
+    saved(&api, || {
+        show_file::save_cue(&api.show_dir, &song, note, replaces, save.cue)
+    })
 }
 
 async fn set_bpm(State(api): State<Api>, Path(song): Path<String>, content: JsonBody) -> Response {
@@ -194,7 +204,7 @@ async fn set_bpm(State(api): State<Api>, Path(song): Path<String>, content: Json
         Err(error) => return error_response(&error),
     };
     match body::<Tempo>(content, "send { bpm } with bpm a number") {
-        Ok(tempo) => saved(&api, show_file::set_bpm(&api.show_dir, &song, tempo.bpm)),
+        Ok(tempo) => saved(&api, || show_file::set_bpm(&api.show_dir, &song, tempo.bpm)),
         Err(error) => error_response(&error),
     }
 }
@@ -203,36 +213,70 @@ async fn delete_cue(State(api): State<Api>, Path((song, note)): Path<(String, u8
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
-    saved(&api, show_file::delete_cue(&api.show_dir, &song, note))
+    saved(&api, || show_file::delete_cue(&api.show_dir, &song, note))
 }
 
-fn saved(api: &Api, save: io::Result<Save>) -> Response {
-    match save {
+async fn create_song(State(api): State<Api>, content: JsonBody) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
+    match body::<NewSong>(
+        content,
+        "send { name, program } and optionally bpm, time_signature",
+    ) {
+        Ok(song) => saved(&api, || {
+            show_file::create_song(&api.show_dir, &song.name, song.content.into())
+        }),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// Makes a save and records it, holding the history throughout so the history lists saves in
+/// the order they reached the disk, as undo needs.
+fn saved(api: &Api, save: impl FnOnce() -> io::Result<Save>) -> Response {
+    let mut history = lock(&api.history);
+    match save() {
         Ok(save) => {
-            *lock(&api.last_save) = Some(save);
+            history.record(save);
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => error_response(&error),
     }
 }
 
+/// How many undos and redos are available, as `{ "undo": 3, "redo": 0 }`.
+fn steps(history: &History) -> Value {
+    let (undo, redo) = history.steps();
+    json!({ "undo": undo, "redo": redo })
+}
+
+async fn history(State(api): State<Api>) -> Response {
+    Json(steps(&lock(&api.history))).into_response()
+}
+
 async fn undo(State(api): State<Api>) -> Response {
+    step(&api, History::undo)
+}
+
+async fn redo(State(api): State<Api>) -> Response {
+    step(&api, History::redo)
+}
+
+/// Undoes or redoes one save; returns its file and the steps left, as `{ file, undo, redo }`.
+fn step(api: &Api, action: fn(&mut History, &std::path::Path) -> io::Result<String>) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
-    let mut last_save = lock(&api.last_save);
-    let Some(save) = last_save.as_ref() else {
-        return error_response(&io::Error::new(
-            io::ErrorKind::NotFound,
-            "nothing to undo: no save since the engine started, or it was already undone",
-        ));
-    };
-    // A refused undo keeps the save, to try again once the file is put right.
-    match save.undo(&api.show_dir) {
-        Ok(()) => {
-            let file = save.file().to_owned();
-            *last_save = None;
-            Json(json!({ "file": file })).into_response()
+    let mut history = lock(&api.history);
+    match action(&mut history, &api.show_dir) {
+        Ok(file) => {
+            let mut done = steps(&history);
+            done["file"] = file.into();
+            Json(done).into_response()
         }
         Err(error) => error_response(&error),
     }

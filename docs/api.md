@@ -250,7 +250,7 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 `--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
 
-**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, cue edits, undo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
+**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, new songs, cue edits, undo and redo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
 `--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. The same node also gets every Art-Net universe the rig's pixel grids use, one packet each per frame, blackout included; each universe numbers its packets on its own. If a grid uses universe 0 and `--artnet-universe` isn't given, the grid keeps universe 0 and the Enttec frame isn't mirrored (the engine says so on stderr): give `--artnet-universe` to mirror it elsewhere. An `--artnet-universe` that is also a grid's universe is refused. Without `--artnet`, a rig with Art-Net grids starts with a warning that they get no output. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
@@ -308,9 +308,9 @@ It needs at least three passes. Memory is flat when it stays within 1 MiB: the e
 
 ## HTTP API
 
-Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, a song name that differs from another only by case, a cue changed since it was loaded, or a file changed since the save to undo), `422` (content refused, or a request body not in the shape documented) or `500`.
+Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, a song name the show already has, a cue changed since it was loaded, or a file changed since the save to undo or redo), `422` (content refused, or a request body not in the shape documented) or `500`.
 
-**One write path.** Every endpoint that changes a show file, `PUT /api/show/<file>` and the song endpoints below alike, goes through the engine's one writer: it validates, writes atomically and keeps canonical formatting, as described for `PUT /api/show/<file>`. Each save can be undone.
+**One write path.** Every endpoint that changes a show file, `PUT /api/show/<file>` and the song endpoints below alike, goes through the engine's one writer: it validates, writes atomically and keeps canonical formatting, as described for `PUT /api/show/<file>`. Each save can be undone and redone.
 
 ### Show summary: `GET /api/show`
 
@@ -358,11 +358,26 @@ Each reads, edits and writes `songs/<song>.yaml` under one lock, so no other sav
 
 Sets the song's `bpm`, the tempo for beats and bars when no MIDI clock comes in, leaving the rest of the file as it is (`204`). The body is `{ "bpm": 92 }`. It goes under the same lock as the cue endpoints and takes effect from the next frame.
 
-### Undo: `POST /api/undo`
+### New song: `POST /api/songs`
 
-Undoes the last save made through the API since the engine started, whichever file it was: `PUT /api/show/<file>` or any song endpoint above. The previous content goes back byte for byte, comments and formatting included, after the same checks as a write; a file the save created is removed. Returns `{ "file": "songs/tell-me.yaml" }`.
+Creates `songs/<name>.yaml` (`204`). The body is the name and the start of the song file:
 
-One level only: a second undo, or one before any save, is a `404`. If the file has changed since the save (by hand, say), undo is refused with `409` rather than lose that change. A refused undo can be tried again, once the file is put back as the save left it.
+```json
+{ "name": "encore", "program": 7, "bpm": 100, "time_signature": "6/8" }
+```
+
+`bpm` and `time_signature` are optional. The song is checked and written like `PUT /api/show/<file>`, and hot reload makes it selectable from the next frame. Refused, with nothing written: a name the show already has, in any case (`409`); a name that isn't letters, digits, `-` and `_`, or a `program` another song uses (`422`). Unlike `PUT /api/show/<file>`, it never replaces a song.
+
+### Undo and redo: `POST /api/undo`, `POST /api/redo`, `GET /api/history`
+
+The engine keeps the last 50 saves made through the API, across all show files: `PUT /api/show/<file>` and every song endpoint above. The history lives in memory only: a restart clears it.
+
+- `POST /api/undo` undoes the latest save still in the history: the file goes back to what it held before, byte for byte, comments and formatting included, after the same checks as a write. A song the save created is removed.
+- `POST /api/redo` makes the latest undone save again, byte for byte. A new save clears what could be redone.
+- Both return the file and the steps left: `{ "file": "songs/tell-me.yaml", "undo": 2, "redo": 1 }`. With nothing to undo or redo, they return `404`.
+- `GET /api/history` returns the steps alone, `{ "undo": 3, "redo": 0 }`. It works in show mode, where the history is always empty.
+
+If the file has changed since the save or undo (by hand, say), the step is refused with `409` rather than lose that change; it stays in the history, to try again once the file is put back. A step whose earlier content no longer passes the checks, such as an undo back to a song that was broken before a fix, never could be made: it is refused with `422` and dropped, so it doesn't block the steps before it.
 
 ### Look preview: `PUT` and `DELETE /api/preview`
 
