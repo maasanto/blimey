@@ -31,9 +31,13 @@ impl TryFrom<String> for Length {
             .unwrap_or(text.len());
         let (number, unit) = text.split_at(unit_start);
         let number: f64 = number.parse().map_err(|_| invalid())?;
+        if !number.is_finite() {
+            return Err(invalid());
+        }
+        let seconds = |seconds| Duration::try_from_secs_f64(seconds).map_err(|_| invalid());
         match unit.trim() {
-            "ms" => Ok(Length::Time(Duration::from_secs_f64(number / 1000.0))),
-            "s" => Ok(Length::Time(Duration::from_secs_f64(number))),
+            "ms" => Ok(Length::Time(seconds(number / 1000.0)?)),
+            "s" => Ok(Length::Time(seconds(number)?)),
             "beat" | "beats" => Ok(Length::Beats(number)),
             "bar" | "bars" => Ok(Length::Bars(number)),
             _ => Err(invalid()),
@@ -115,6 +119,19 @@ mod tests {
         for text in ["2 minutes", "-1s", "s", "bars", "", "4 bars x", "1e3 s"] {
             assert!(parse(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn rejects_numbers_too_large_for_a_duration_instead_of_panicking() {
+        let too_long = format!("{}s", "9".repeat(400));
+        for text in [
+            "99999999999999999999s",
+            &too_long,
+            "99999999999999999999999ms",
+        ] {
+            assert!(parse(text).is_err(), "{text}");
+        }
+        assert!(parse(&format!("{} beats", "9".repeat(400))).is_err());
     }
 
     #[test]
