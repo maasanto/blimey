@@ -1,11 +1,13 @@
 <script>
   import { engine } from './engine.svelte.js';
+  import Builder from './Builder.svelte';
   import Monitor from './Monitor.svelte';
   import Patch from './Patch.svelte';
   import FrontView from './FrontView.svelte';
 
   const pages = {
     monitor: { title: 'Monitor', component: Monitor },
+    builder: { title: 'Builder', component: Builder },
     patch: { title: 'Patch', component: Patch },
     front: { title: 'Front view', component: FrontView },
   };

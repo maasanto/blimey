@@ -12,7 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use blimey_engine::look::Look;
 use blimey_engine::{
-    Clock, DmxSink, FRAME_PERIOD, Frame, MidiEvent, MidiFile, MidiSource, ShowSource, Status,
+    ArtNetFrames, Clock, DmxSink, FRAME_PERIOD, Frame, MidiEvent, MidiFile, MidiSource, ShowSource,
+    Status,
 };
 use serde::Deserialize;
 
@@ -260,6 +261,8 @@ struct Measured<'a, S> {
     /// Frames the emulated box received.
     received: usize,
     lateness: Lateness,
+    /// Fingerprint of the Art-Net universes of the frame about to be sent.
+    artnet: u64,
     drift: DriftCheck,
     memory: MemoryCheck,
     sample_every: u32,
@@ -279,6 +282,7 @@ impl<'a, S> Measured<'a, S> {
             sent: 0,
             received: 0,
             lateness: Lateness::default(),
+            artnet: 0,
             drift: DriftCheck::default(),
             memory: MemoryCheck::new(setlist.pass_frames * REFERENCE_PASS),
             sample_every: (frame_count / RSS_SAMPLES).max(1),
@@ -299,9 +303,18 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
         if index == self.memory.baseline_frame || index.is_multiple_of(self.sample_every) {
             self.memory.sample(index);
         }
-        self.drift.frame(slot, frame);
+        self.drift
+            .frame(slot, frame, std::mem::take(&mut self.artnet));
         self.sent += 1;
         self.output.send(at, frame)
+    }
+
+    /// The render loop calls it before each `send`; the universes count towards drift too.
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        let mut hash = DefaultHasher::new();
+        universes.hash(&mut hash);
+        self.artnet = hash.finish();
+        self.output.send_artnet(universes);
     }
 
     fn status(&mut self, status: &Status) {
@@ -443,12 +456,14 @@ struct DriftCheck {
 }
 
 impl DriftCheck {
-    fn frame(&mut self, slot: Slot, frame: &Frame) {
+    /// One frame: the Enttec universe, and the fingerprint of its Art-Net universes.
+    fn frame(&mut self, slot: Slot, frame: &Frame, artnet: u64) {
         if self.song != Some(slot) {
             self.finish_song();
             self.song = Some(slot);
         }
         frame.hash(&mut self.hash);
+        artnet.hash(&mut self.hash);
     }
 
     /// The run stopped after `frames` frames: the last song counts only if it played to its
@@ -704,7 +719,7 @@ mod tests {
         let mut drift = DriftCheck::default();
         let frames = passes * setlist.pass_frames;
         for index in 0..frames {
-            drift.frame(setlist.slot(index), &[value(index); 512]);
+            drift.frame(setlist.slot(index), &[value(index); 512], 0);
         }
         drift.end(&setlist, frames);
         drift
@@ -726,11 +741,31 @@ mod tests {
     }
 
     #[test]
+    fn art_net_universes_reach_the_output_and_count_towards_drift() {
+        let setlist = setlist(&[0], 4);
+        let mut sink = Measured::new(&setlist, blimey_engine::FakeDmx::default(), None, 16);
+
+        for index in 0..16 {
+            let universe = [u8::from(index == 13); 512];
+            sink.send_artnet(&ArtNetFrames::from([(3, universe)]));
+            sink.send(FRAME_PERIOD * index, &[0; 512]).unwrap();
+        }
+        sink.drift.end(&setlist, 16);
+
+        assert_eq!(sink.output.frames[13].artnet[&3][0], 1);
+        assert_eq!(
+            (sink.drift.compared, sink.drift.drifted),
+            (2, 1),
+            "only Art-Net universe 3 differs, in pass 4"
+        );
+    }
+
+    #[test]
     fn a_song_cut_short_by_the_end_of_the_run_is_not_compared() {
         let setlist = setlist(&[0], 4);
         let mut drift = DriftCheck::default();
         for index in 0..10 {
-            drift.frame(setlist.slot(index), &[0; 512]);
+            drift.frame(setlist.slot(index), &[0; 512], 0);
         }
         drift.end(&setlist, 10);
 

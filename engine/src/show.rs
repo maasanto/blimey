@@ -12,7 +12,7 @@ const LEGACY_MAP_FILE: &str = "legacy-map.yaml";
 pub(crate) const RIG_FILE: &str = "rig.yaml";
 const PALETTES_FILE: &str = "palettes.yaml";
 pub(crate) const PROFILES_DIR: &str = "fixtures";
-const SONGS_DIR: &str = "songs";
+pub(crate) const SONGS_DIR: &str = "songs";
 
 /// A show folder (plan §6), loaded and validated.
 #[derive(Debug, Default)]
@@ -29,6 +29,12 @@ pub struct Show {
 
 impl Show {
     pub fn load(dir: &Path) -> io::Result<Self> {
+        Self::load_with_song(dir, None)
+    }
+
+    /// The show as it would load with `songs/<name>.yaml` holding `yaml`, given as
+    /// `(name, yaml)`, whatever the file holds now or whether it exists.
+    pub(crate) fn load_with_song(dir: &Path, song: Option<(&str, &str)>) -> io::Result<Self> {
         if !dir.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -48,7 +54,7 @@ impl Show {
             palettes: load_optional(&dir.join(PALETTES_FILE), parse_palettes)?,
             songs: Vec::new(),
         };
-        show.songs = load_songs(&dir.join(SONGS_DIR), &show)?;
+        show.songs = load_songs(&dir.join(SONGS_DIR), &show, song)?;
         Ok(show)
     }
 }

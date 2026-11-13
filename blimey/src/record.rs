@@ -12,8 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use blimey_engine::{
-    Clock, DMX_CHANNELS, MidiEvent, MidiFile, MidiSource, MonotonicClock, RecordedFrame,
-    format_dump,
+    ArtNetFrames, Clock, DMX_CHANNELS, MidiEvent, MidiFile, MidiSource, MonotonicClock,
+    RecordedFrame, format_dump,
 };
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -183,7 +183,9 @@ fn stop_signals() -> io::Result<Arc<AtomicBool>> {
     Ok(stopped)
 }
 
-/// Every ArtDmx packet for one universe received on UDP 6454, stamped on the MIDI's clock.
+/// The ArtDmx packets received on UDP 6454, stamped on the MIDI's clock, as frames in Blimey's
+/// own layout: `enttec_universe` stands for the Enttec box, every other universe is Art-Net.
+/// Each packet gives a frame holding the latest values of every universe seen so far.
 struct ArtNetCapture {
     frames: Arc<Mutex<Vec<RecordedFrame>>>,
     /// Why the capture stopped before the end of the take, if it did.
@@ -191,7 +193,7 @@ struct ArtNetCapture {
 }
 
 impl ArtNetCapture {
-    fn start(universe: u16, clock: MonotonicClock) -> Result<Self, String> {
+    fn start(enttec_universe: u16, clock: MonotonicClock) -> Result<Self, String> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, artnet::PORT)).map_err(|error| {
             format!(
                 "cannot listen for Art-Net on UDP {}: {error}; quit BlenderDMX or any other Art-Net receiver",
@@ -205,6 +207,11 @@ impl ArtNetCapture {
         let (frames, failure) = (capture.frames.clone(), capture.failure.clone());
         thread::spawn(move || {
             let mut packet = [0; 1024];
+            let mut latest = RecordedFrame {
+                at: Duration::ZERO,
+                values: [0; DMX_CHANNELS],
+                artnet: ArtNetFrames::new(),
+            };
             loop {
                 let size = match socket.recv(&mut packet) {
                     Ok(size) => size,
@@ -231,12 +238,18 @@ impl ArtNetCapture {
                 else {
                     continue;
                 };
-                if packet_universe == universe {
-                    let mut values = [0; DMX_CHANNELS];
-                    values[..channels.len()].copy_from_slice(channels);
-                    let at = clock.now();
-                    frames.lock().unwrap().push(RecordedFrame { at, values });
-                }
+                let values = if packet_universe == enttec_universe {
+                    &mut latest.values
+                } else {
+                    latest
+                        .artnet
+                        .entry(packet_universe)
+                        .or_insert([0; DMX_CHANNELS])
+                };
+                values[..channels.len()].copy_from_slice(channels);
+                values[channels.len()..].fill(0);
+                latest.at = clock.now();
+                frames.lock().unwrap().push(latest.clone());
             }
         });
         Ok(capture)
@@ -251,7 +264,7 @@ impl ArtNetCapture {
             .filter_map(|frame| {
                 Some(RecordedFrame {
                     at: frame.at.checked_sub(start)?,
-                    values: frame.values,
+                    ..frame.clone()
                 })
             })
             .collect()

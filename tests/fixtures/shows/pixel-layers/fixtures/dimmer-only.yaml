@@ -1,0 +1,6 @@
+name: Dimmer only
+modes:
+  - name: 1ch
+    channels:
+      - name: Dimmer
+        attribute: dimmer

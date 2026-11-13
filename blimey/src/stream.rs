@@ -5,7 +5,8 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -14,14 +15,19 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
 use blimey_engine::rig::Rig;
-use blimey_engine::{DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status};
+use blimey_engine::{
+    ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status,
+};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, watch};
 
-use crate::api::{self, Api, Mode, TestFlash};
+use crate::api::{self, Api, Mode, PREVIEW_LIFETIME, TEST_FLASH_LENGTH, TimedLook};
 use crate::ui;
+
+/// MIDI posted to the API, waiting for the render loop.
+type InjectedMidi = Arc<Mutex<Receiver<Vec<u8>>>>;
 
 const PROTOCOL_VERSION: u32 = 1;
 /// MIDI messages a slow client may fall behind by before it skips some.
@@ -36,9 +42,13 @@ pub struct StreamSink {
     rig: Arc<watch::Sender<Rig>>,
     /// The engine state behind the next frame.
     status: Status,
+    /// The Art-Net universes of the next frame, for the grids' preview colours.
+    artnet: ArtNetFrames,
     frames: watch::Sender<Arc<str>>,
     midi: broadcast::Sender<Arc<str>>,
-    test_flash: TestFlash,
+    injected_midi: InjectedMidi,
+    preview: TimedLook,
+    test_flash: TimedLook,
     /// Serves the stream; dropping the sink stops it.
     _server: Runtime,
 }
@@ -66,7 +76,9 @@ impl StreamSink {
         let rig = Arc::new(watch::Sender::new(rig.clone()));
         let (frames, receiver) = watch::channel(Arc::from(""));
         let (midi, _) = broadcast::channel(MIDI_BACKLOG);
-        let test_flash = TestFlash::default();
+        let test_flash = TimedLook::new(TEST_FLASH_LENGTH);
+        let preview = TimedLook::new(PREVIEW_LIFETIME);
+        let (inject_midi, injected_midi) = mpsc::channel();
         let stream = Stream {
             rig: rig.clone(),
             mode,
@@ -81,6 +93,9 @@ impl StreamSink {
                 mode,
                 rig: rig.clone(),
                 test_flash: test_flash.clone(),
+                preview: preview.clone(),
+                midi: inject_midi,
+                last_save: Default::default(),
             }))
             .fallback(ui::serve);
         server.spawn(async move {
@@ -91,24 +106,41 @@ impl StreamSink {
         Ok(StreamSink {
             rig,
             status: Status::default(),
+            artnet: ArtNetFrames::new(),
             frames,
             midi,
+            injected_midi: Arc::new(Mutex::new(injected_midi)),
+            preview,
             test_flash,
             _server: server,
         })
     }
 
-    /// Draws a fixture test started from the UI over `frame`, if one is running.
-    pub fn apply_test_flash(&self, at: Duration, frame: &mut Frame) {
-        self.test_flash.apply(&self.rig.borrow(), at, frame);
+    /// The latest `frame` message published.
+    #[cfg(test)]
+    pub fn latest_frame(&self) -> Value {
+        serde_json::from_str(&self.frames.borrow()).unwrap()
+    }
+
+    /// Draws what the UI puts above every layer over `frame`: the builder's look, then a
+    /// fixture test if one is running.
+    pub fn apply_overlays(&self, at: Duration, frame: &mut Frame) {
+        let rig = self.rig.borrow();
+        self.preview.apply(&rig, at, frame);
+        self.test_flash.apply(&rig, at, frame);
     }
 }
 
 impl DmxSink for StreamSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
-        let message = frame_message(&self.rig.borrow(), at, frame, &self.status);
+        let rig = self.rig.borrow();
+        let message = frame_message(&rig, at, frame, &self.artnet, &self.status);
         self.frames.send_replace(message.to_string().into());
         Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        self.artnet = universes.clone();
     }
 
     fn status(&mut self, status: &Status) {
@@ -148,10 +180,12 @@ impl<S: ShowSource> ShowSource for StreamedShow<S> {
     }
 }
 
-/// The engine's MIDI input, with every event it delivers sent to the stream as a `midi` message.
+/// The engine's MIDI input plus MIDI posted to the API, with every event it delivers sent to
+/// the stream as a `midi` message.
 pub struct StreamedMidi<M> {
     midi: M,
     log: Option<broadcast::Sender<Arc<str>>>,
+    injected: Option<InjectedMidi>,
 }
 
 impl<M> StreamedMidi<M> {
@@ -159,13 +193,26 @@ impl<M> StreamedMidi<M> {
         StreamedMidi {
             midi,
             log: stream.map(|stream| stream.midi.clone()),
+            injected: stream.map(|stream| stream.injected_midi.clone()),
         }
+    }
+
+    /// A posted message, stamped `until`: it acts on the frame that picks it up.
+    fn injected(&self, until: Duration) -> Option<MidiEvent> {
+        let injected = self.injected.as_ref()?;
+        let message = injected
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .try_recv()
+            .ok()?;
+        Some(MidiEvent { at: until, message })
     }
 }
 
 impl<M: MidiSource> MidiSource for StreamedMidi<M> {
+    /// Input events come first, so events stay in time order.
     fn poll(&mut self, until: Duration) -> Option<MidiEvent> {
-        let event = self.midi.poll(until)?;
+        let event = self.midi.poll(until).or_else(|| self.injected(until))?;
         if let Some(log) = self.log.as_ref().filter(|_| !is_ticking(&event.message)) {
             // Fails only when no client is connected.
             let _ = log.send(midi_message(&event).to_string().into());
@@ -229,18 +276,35 @@ fn rig_message(rig: &Rig, mode: Mode) -> Value {
             })
         })
         .collect();
+    let grids: Vec<Value> = rig
+        .grids
+        .iter()
+        .map(|grid| {
+            json!({
+                "name": grid.name,
+                "pixels": grid.pixels.iter().map(|pixel| json!({ "x": pixel.x, "y": pixel.y })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     json!({
         "type": "rig",
         "protocol": PROTOCOL_VERSION,
         "mode": mode.name(),
         "fixtures": fixtures,
+        "grids": grids,
         "groups": rig.groups,
     })
 }
 
-fn frame_message(rig: &Rig, at: Duration, frame: &Frame, status: &Status) -> Value {
+fn frame_message(
+    rig: &Rig,
+    at: Duration,
+    frame: &Frame,
+    artnet: &ArtNetFrames,
+    status: &Status,
+) -> Value {
     let pixels: serde_json::Map<String, Value> = rig
-        .pixel_colours(frame)
+        .pixel_colours(frame, artnet)
         .into_iter()
         .map(|(name, colours)| {
             let hex: Vec<String> = colours.into_iter().map(|colour| colour.to_hex()).collect();
@@ -288,25 +352,33 @@ mod tests {
     }
 
     #[test]
-    fn midi_events_are_streamed_except_clock_ticks() {
+    fn midi_events_and_posted_midi_are_streamed_except_clock_ticks() {
         let (log, mut streamed) = broadcast::channel(MIDI_BACKLOG);
+        let (post, posted) = mpsc::channel();
         let event = |ms, message: &[u8]| MidiEvent {
             at: Duration::from_millis(ms),
             message: message.to_vec(),
         };
-        let sent = vec![
+        let received = vec![
             event(1000, &[MIDI_TIMING_CLOCK]),
             event(1250, &[0x91, 36, 127]),
             event(1260, &[0xFA]),
         ];
+        post.send(vec![0x81, 36, 0]).unwrap();
         let mut midi = StreamedMidi {
-            midi: Events(sent.clone()),
+            midi: Events(received.clone()),
             log: Some(log),
+            injected: Some(Arc::new(Mutex::new(posted))),
         };
 
         let taken: Vec<MidiEvent> =
             std::iter::from_fn(|| midi.poll(Duration::from_secs(2))).collect();
-        assert_eq!(taken, sent, "the engine still gets every event");
+        let mut expected = received;
+        expected.push(event(2000, &[0x81, 36, 0]));
+        assert_eq!(
+            taken, expected,
+            "the engine gets every event, posted ones after the input's, at the frame that takes them"
+        );
 
         let messages: Vec<Value> = std::iter::from_fn(|| streamed.try_recv().ok())
             .map(|message| serde_json::from_str(&message).unwrap())
@@ -316,6 +388,7 @@ mod tests {
             [
                 json!({ "type": "midi", "at_ms": 1250, "message": [0x91, 36, 127] }),
                 json!({ "type": "midi", "at_ms": 1260, "message": [0xFA] }),
+                json!({ "type": "midi", "at_ms": 2000, "message": [0x81, 36, 0] }),
             ]
         );
     }
@@ -419,7 +492,13 @@ mod tests {
             live_parameters,
         };
 
-        let message = frame_message(&Rig::default(), Duration::ZERO, &[0; 512], &status);
+        let message = frame_message(
+            &Rig::default(),
+            Duration::ZERO,
+            &[0; 512],
+            &ArtNetFrames::new(),
+            &status,
+        );
 
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
@@ -428,5 +507,32 @@ mod tests {
         );
         assert_eq!(message["master"], 0.25);
         assert_eq!(message["live_parameters"][2], 0.5);
+    }
+
+    #[test]
+    fn grids_come_with_their_pixel_positions_and_art_net_colours() {
+        let rig = Rig::parse(
+            "fixtures:\n  - { name: wall, type: pixel-grid, columns: 2, rows: 1, colour_order: GRB, output: artnet, universe: 3, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n",
+            Path::new("."),
+        )
+        .unwrap();
+        let mut universe = [0; 512];
+        universe[4] = 255; // GRB: the second pixel's red
+
+        let rig_message = rig_message(&rig, Mode::Show);
+        let frame = frame_message(
+            &rig,
+            Duration::ZERO,
+            &[0; 512],
+            &ArtNetFrames::from([(3, universe)]),
+            &Status::default(),
+        );
+
+        assert_eq!(rig_message["fixtures"], json!([]));
+        assert_eq!(
+            rig_message["grids"],
+            json!([{ "name": "wall", "pixels": [{ "x": 0.25, "y": 0.5 }, { "x": 0.75, "y": 0.5 }] }])
+        );
+        assert_eq!(frame["pixels"]["wall"], json!(["#000000", "#ff0000"]));
     }
 }

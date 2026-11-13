@@ -6,5 +6,5 @@ node_modules/
 .DS_Store
 .claude/
 .lavish/
-claude-artifacts/
+/claude-artifacts/
 /soak-*.txt

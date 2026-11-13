@@ -107,13 +107,24 @@ fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
     }
     assert_eq!(recorded.len(), played.len());
     let emu_frames = parse_dump(&fs::read_to_string(&emu_dump).unwrap()).unwrap();
-    let [emu_frame] = emu_frames.as_slice() else {
+    let [first, emu_frame] = emu_frames.as_slice() else {
         panic!(
-            "expected the one Art-Net frame sent, got {}",
+            "expected the two Art-Net packets sent, got {}",
             emu_frames.len()
         );
     };
-    assert_eq!(emu_frame.values[..3], [0, 0, 77], "universe 0, DMX 3");
+    assert_eq!(
+        first.values[..3],
+        [0, 0, 77],
+        "universe 0 is the Enttec one"
+    );
+    assert!(first.artnet.is_empty());
+    assert_eq!(
+        emu_frame.values[..3],
+        [0, 0, 77],
+        "the latest of every universe"
+    );
+    assert_eq!(emu_frame.artnet[&2][..2], [9, 0], "universe 2, DMX 1");
     let emu_sent_at = emu_sent_at.unwrap() - start;
     assert!(
         emu_frame.at.abs_diff(emu_sent_at) <= MAX_LATENCY,
@@ -196,15 +207,18 @@ fn start_recording(port_name: &str, out: &Path, args: &[&OsStr]) -> Child {
     recorder
 }
 
-/// EMU's side: one ArtDmx packet for universe 0 with DMX 3 at 77, written from the
-/// specification rather than with the engine's encoder.
+/// EMU's side, written from the specification rather than with the engine's encoder: universe
+/// 0 with DMX 3 at 77, then a pixel grid's universe 2 with DMX 1 at 9.
 fn send_emu_frame() {
-    let mut packet = b"Art-Net\0".to_vec();
-    packet.extend([0x00, 0x50, 0, 14, 1, 0, 0, 0, 0, 4, 0, 0, 77, 0]);
-    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .send_to(&packet, (Ipv4Addr::LOCALHOST, 6454))
-        .unwrap();
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    for (universe, channels) in [(0, [0, 0, 77, 0]), (2, [9, 0, 0, 0])] {
+        let mut packet = b"Art-Net\0".to_vec();
+        packet.extend([0x00, 0x50, 0, 14, 1, 0, universe, 0, 0, 4]);
+        packet.extend(channels);
+        socket
+            .send_to(&packet, (Ipv4Addr::LOCALHOST, 6454))
+            .unwrap();
+    }
 }
 
 fn events(mut midi: MidiFile) -> Vec<MidiEvent> {

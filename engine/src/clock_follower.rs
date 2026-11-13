@@ -119,6 +119,23 @@ impl ClockFollower {
         self.time_signature
     }
 
+    /// Changes the tempo used without a clock, as when the song's `bpm` is edited. Musical time
+    /// carries on from where it is at `at`, at the new pace.
+    pub fn set_song_bpm(&mut self, at: Duration, bpm: f64) {
+        if bpm == self.song_bpm {
+            return;
+        }
+        if self.source(at) == TempoSource::SongBpm {
+            self.line = BeatLine {
+                at,
+                beats: self.beats(at),
+                per_second: bpm / 60.0,
+            };
+        }
+        self.song_bpm = bpm;
+        self.reported_source = None;
+    }
+
     /// Applies one MIDI message received at `at`; anything but clock and transport messages is
     /// ignored. Apply messages in time order, before asking about any later time.
     pub fn apply(&mut self, at: Duration, message: &[u8]) {
@@ -245,12 +262,7 @@ impl ClockFollower {
     /// How far through `length` it is at `at`, from 0 to 1, counting from `from`. Beats and bars
     /// count elapsed beats, so they follow the tempo while they run. A zero length is done at once.
     pub fn progress(&self, length: Length, from: Moment, at: Duration) -> f64 {
-        let beats = || self.beats(at) - from.beats;
-        let (elapsed, span) = match length {
-            Length::Time(span) => (at.saturating_sub(from.at).as_secs_f64(), span.as_secs_f64()),
-            Length::Beats(span) => (beats(), span),
-            Length::Bars(bars) => (beats(), bars * self.time_signature.beats_per_bar()),
-        };
+        let (elapsed, span) = self.elapsed(length, from, at);
         if span > 0.0 {
             (elapsed / span).clamp(0.0, 1.0)
         } else {
@@ -258,11 +270,29 @@ impl ClockFollower {
         }
     }
 
+    /// How many `length`s have passed at `at` since `from`, unclamped, for effects that repeat.
+    /// Counts as `progress` does. `length` must not be zero.
+    pub fn cycles(&self, length: Length, from: Moment, at: Duration) -> f64 {
+        let (elapsed, span) = self.elapsed(length, from, at);
+        elapsed / span
+    }
+
+    /// Time or beats from `from` to `at`, and `length` in the same unit.
+    fn elapsed(&self, length: Length, from: Moment, at: Duration) -> (f64, f64) {
+        let beats = || self.beats(at) - from.beats;
+        match length {
+            Length::Time(span) => (at.saturating_sub(from.at).as_secs_f64(), span.as_secs_f64()),
+            Length::Beats(span) => (beats(), span),
+            Length::Bars(bars) => (beats(), bars * self.time_signature.beats_per_bar()),
+        }
+    }
+
     /// When the song's BPM takes over: once the clock times out, or at once if it never ticked.
+    /// A BPM edited after the timeout moves the line, and runs from there.
     fn song_bpm_from(&self) -> Duration {
-        self.ticks
-            .back()
-            .map_or(self.line.at, |latest| *latest + CLOCK_TIMEOUT)
+        self.ticks.back().map_or(self.line.at, |latest| {
+            (*latest + CLOCK_TIMEOUT).max(self.line.at)
+        })
     }
 
     pub fn bar_position(&self, at: Duration) -> BarPosition {
@@ -342,6 +372,39 @@ mod tests {
     fn tick_arrival_ms(bpm: f64, index: u32) -> f64 {
         let jitter_ms = [0.0, 1.0, -1.0][index as usize % 3];
         f64::from(index) * 60_000.0 / bpm / TICKS_PER_BEAT + jitter_ms
+    }
+
+    #[test]
+    fn a_new_song_bpm_changes_the_pace_without_moving_musical_time() {
+        let mut follower = ClockFollower::new(60.0, TimeSignature::default());
+        let second = Duration::from_secs(1);
+
+        follower.set_song_bpm(second, 120.0);
+
+        assert_eq!(follower.beats(second), 1.0);
+        assert_eq!(follower.beats(2 * second), 3.0);
+        assert_eq!(
+            follower.log_line(second).as_deref(),
+            Some("no MIDI clock: using the song's 120 BPM")
+        );
+    }
+
+    #[test]
+    fn a_bpm_edited_during_a_clock_dropout_still_catches_up_with_the_clock() {
+        let mut follower = ClockFollower::new(120.0, TimeSignature::default());
+        // Two beats of clock at 120 BPM, then a dropout from 1 s to 2.5 s while Reaper plays on.
+        send_ticks(&mut follower, 120.0, 0, 49);
+
+        follower.set_song_bpm(millis(1500.0), 60.0);
+        // Musical time is a beat behind when the clock comes back; four beats to catch up.
+        let next_ms = send_ticks(&mut follower, 120.0, 120, 96);
+
+        let clock_beats = next_ms / 500.0;
+        let beats = follower.beats(millis(next_ms));
+        assert!(
+            (beats - clock_beats).abs() < 0.1,
+            "{beats} beats against the clock's {clock_beats}"
+        );
     }
 
     #[test]
