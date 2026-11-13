@@ -500,4 +500,38 @@ mod tests {
         assert_eq!(beats(1.5), [(39, 2.0), (42, -1.0)]);
         assert_eq!(beats(3.25), [(39, 5.5), (42, 2.5)]);
     }
+
+    /// The builder's playhead follows a pattern that drives a pixel cue's intensity, though
+    /// the pattern draws nothing itself.
+    #[test]
+    fn a_pattern_linked_to_a_pixel_cue_reports_its_beats_while_it_dims_the_cue() {
+        let mut show = cues_show();
+        let song = "program: 1\ncues:\n  40: { name: red, type: pixel, params: { color: \"#ff0000\" } }\n  42:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { red: intensity }\n    hits:\n      - { at: 1, shape: ramp-up, length: 1 beat, level: 100% }\n";
+        show.songs = vec![Song::parse("linked", song, &show).unwrap()];
+        let mut playback = Playback::default();
+        for message in [
+            [CUE_PROGRAM_CHANGE, 1].as_slice(),
+            &[CUE_NOTE_ON, 40, 127],
+            &[CUE_NOTE_ON, 42, 127],
+        ] {
+            let event = MidiEvent {
+                at: Duration::ZERO,
+                message: message.to_vec(),
+            };
+            playback.apply(&show, &event);
+        }
+        // 120 BPM: half a beat in, half-way up the ramp.
+        let at = Duration::from_millis(250);
+
+        let output = playback.render(&show, &Look::default(), at);
+        let status = playback.status(&show, at);
+
+        assert_eq!(output.enttec[4], 128, "rgb-par red at half intensity");
+        let beats: Vec<(u8, f64)> = status
+            .cues
+            .iter()
+            .map(|cue| (cue.note, cue.beats))
+            .collect();
+        assert_eq!(beats, [(42, 0.5), (40, 0.5)]);
+    }
 }

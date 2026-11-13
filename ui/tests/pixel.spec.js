@@ -117,6 +117,24 @@ test("linking a pattern to a pixel scene's intensity saves it as the pattern's t
   await expect(page.getByText('velocity only')).toBeHidden();
 });
 
+test("a pattern's own target picker links it to a pixel scene's intensity", async ({ page, show, startEngine }) => {
+  const pattern =
+    '  42:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { all-wash: dimmer }\n' +
+    '    hits:\n      - { at: 1, shape: ramp-up, length: 1 beat, level: 100% }\n';
+  const pixelCue = '  40:\n    name: red-wash\n    type: pixel\n    params: { color: "#ff0000" }\n';
+  const songFile = addSong(show, `${HEADER}${pixelCue}${pattern}`);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await page.locator('tr[data-note="42"]').getByRole('button', { name: 'Edit' }).click();
+  await page.getByLabel('Drives').selectOption('intensity');
+  await expect(page.getByLabel('Target', { exact: true })).toHaveValue('red-wash');
+  await page.getByRole('button', { name: 'Save cue' }).click();
+
+  await expect(page.getByText('Saved cue 42 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toBe(`${HEADER}${pixelCue}${pattern.replace('{ all-wash: dimmer }', '{ red-wash: intensity }')}`);
+});
+
 test('a thumbnail the engine refuses says why', async ({ page, show, startEngine }) => {
   addSong(show, HEADER.replace('cues:\n', ''));
   const { url } = await startEngine();

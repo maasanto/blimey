@@ -52,4 +52,8 @@ test('C10 pixel scene editor', async ({ page, show, startEngine }) => {
   await page.getByRole('button', { name: 'Link to intensity' }).click();
   await expect(page.getByText('driven by cue 42, verse-pulse (pattern)')).toBeVisible();
   await shoot(page, 'intensity-linked');
+
+  await page.locator('tr[data-note="42"]').getByRole('button', { name: 'Edit' }).click();
+  await expect(page.getByLabel('Drives')).toHaveValue('intensity');
+  await shoot(page, 'pattern-target-intensity');
 });
