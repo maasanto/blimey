@@ -68,6 +68,13 @@
     pattern: () => ({ type: 'pattern', length: '1 bar', target: { [targets[0]]: 'dimmer' }, hits: [] }),
   };
 
+  /** Starts the new cue over as `type`, keeping what the form shows for every type. */
+  function changeType(type) {
+    const { name, fade_in, release } = form.cue;
+    const kept = { name, ...(release && { release }), ...(fade_in && FADE_IN_TYPES.includes(type) && { fade_in }) };
+    form.cue = { ...kept, ...newCue[type]() };
+  }
+
   async function attempt(action) {
     error = '';
     notice = '';
@@ -362,7 +369,7 @@
             Type
             <select
               value={form.cue.type}
-              onchange={(event) => (form.cue = { name: form.cue.name, ...newCue[event.currentTarget.value]() })}
+              onchange={(event) => changeType(event.currentTarget.value)}
             >
               {#each Object.keys(newCue) as type (type)}<option>{type}</option>{/each}
             </select>
@@ -403,7 +410,7 @@
       palettes: summary?.palettes,
       barBeats,
       beats: editedBeats,
-      canAudition: form.replaces !== null,
+      saved: form.replaces?.cue ?? null,
       onaudition: () => attempt(() => audition(form.replaces.note)),
     }}
     {#if form.cue.type === 'swell'}

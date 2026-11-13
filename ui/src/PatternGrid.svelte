@@ -1,13 +1,14 @@
 <script>
   import { formatLength, lengthInBeats, parseLength } from './duration.js';
-  import { SHAPES, curveLevels, curvePoints } from './envelope.svelte.js';
+  import { SHAPES, curveLevels, curvePoints, envelope } from './envelope.svelte.js';
   import TargetPicker from './TargetPicker.svelte';
 
   /**
-   * `cue` is the pattern as in the song file. `beats` is how far the saved cue's loop has played
-   * while it is auditioned (the stream's `beats`); `onaudition` starts or stops that.
+   * `cue` is the pattern as in the song file; `saved` is the cue as saved, which is what an
+   * audition plays, or null before the first save. `beats` is how far the saved cue's loop has
+   * played while it is auditioned (the stream's `beats`); `onaudition` starts or stops that.
    */
-  let { cue = $bindable(), targets, palettes, barBeats, beats, canAudition, onaudition } = $props();
+  let { cue = $bindable(), saved, targets, palettes, barBeats, beats, onaudition } = $props();
 
   /** Hits sit on quarter beats (docs/api.md). */
   const STEPS_PER_BEAT = 4;
@@ -25,7 +26,10 @@
   const steps = $derived(Array.from({ length: loopBeats * STEPS_PER_BEAT }, (_, step) => 1 + step / STEPS_PER_BEAT));
   const hit = $derived(cue.hits[selected]);
   const hitLength = $derived(parseLength(hit?.length) ?? { count: 0.5, unit: 'beats' });
-  const playhead = $derived(beats === undefined || beats < 0 ? null : beats % loopBeats);
+  const savedLoopBeats = $derived(saved ? (parseLength(saved.length)?.count ?? 1) * barBeats : null);
+  const playhead = $derived(beats === undefined || beats < 0 || !savedLoopBeats ? null : beats % savedLoopBeats);
+  const barLines = $derived(Array.from({ length: bars }, (_, bar) => bar * barBeats));
+  const beatLines = $derived(Array.from({ length: Math.ceil(loopBeats) }, (_, beat) => beat));
 
   const hitIndex = (at) => cue.hits.findIndex((other) => other.at === at);
   const barOf = (at) => Math.floor((at - 1) / barBeats) + 1;
@@ -55,9 +59,16 @@
     selected = null;
   }
 
+  /** Drops the hits past the new loop's end and shortens those now longer than the loop. */
   function setBars(count) {
+    const beats = count * barBeats;
     cue.length = formatLength(count, 'bars');
-    cue.hits = cue.hits.filter((other) => other.at - 1 < count * barBeats);
+    cue.hits = cue.hits.filter((other) => other.at - 1 < beats);
+    for (const other of cue.hits) {
+      if (lengthInBeats(parseLength(other.length) ?? { count: 0, unit: 'beats' }, barBeats) > beats) {
+        other.length = formatLength(count, 'bars');
+      }
+    }
     selected = null;
   }
 
@@ -102,8 +113,11 @@
 
   <div class="grid" style:--steps={steps.length}>
     <svg class="lane" viewBox="0 0 {loopBeats} {LANE_HEIGHT}" preserveAspectRatio="none" aria-hidden="true">
-      {#each Array.from({ length: loopBeats }, (_, beat) => beat) as beat (beat)}
-        <line class:bar-line={beat % barBeats === 0} class="beat-line" x1={beat} x2={beat} y2={LANE_HEIGHT} />
+      {#each beatLines as beat (beat)}
+        <line class="beat-line" x1={beat} x2={beat} y2={LANE_HEIGHT} />
+      {/each}
+      {#each barLines as bar (bar)}
+        <line class="beat-line bar-line" x1={bar} x2={bar} y2={LANE_HEIGHT} />
       {/each}
       {#each cue.hits as other, index (index)}
         {@const levels = curveLevels(other.shape)}
@@ -138,6 +152,7 @@
     </div>
   </div>
 
+  {#if envelope.error}<p class="error" role="alert">{envelope.error}</p>{/if}
   {#if hit}
     <div class="row">
       <strong>Hit at {hit.at}</strong>
@@ -174,9 +189,9 @@
   {/if}
 
   <div class="row">
-    <button disabled={!canAudition} onclick={onaudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
+    <button disabled={!saved} onclick={onaudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
     <span class="hint">
-      {canAudition ? 'Loops the saved cue from the next bar line. Save to hear changes.' : 'Save the cue to audition it.'}
+      {saved ? 'Loops the saved cue from the next bar line. Save to hear changes.' : 'Save the cue to audition it.'}
     </span>
   </div>
 </fieldset>

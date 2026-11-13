@@ -1,14 +1,15 @@
 <script>
   import { formatLength, lengthInBeats, parseLength } from './duration.js';
-  import { SAMPLES, SHAPES, curveLevels, curvePoints } from './envelope.svelte.js';
+  import { SAMPLES, SHAPES, curveLevels, curvePoints, envelope } from './envelope.svelte.js';
   import TargetPicker from './TargetPicker.svelte';
 
   /**
-   * `cue` is the swell as in the song file. `beats` is how far the saved cue has played while it
-   * is auditioned (the stream's `beats`); `onaudition` starts or stops that, `onrestart` plays it
+   * `cue` is the swell as in the song file; `saved` is the cue as saved, which is what an audition
+   * plays, or null before the first save. `beats` is how far the saved cue has played while it is
+   * auditioned (the stream's `beats`); `onaudition` starts or stops that, `onrestart` plays it
    * again from the top.
    */
-  let { cue = $bindable(), targets, palettes, barBeats, beats, canAudition, onaudition, onrestart } = $props();
+  let { cue = $bindable(), saved, targets, palettes, barBeats, beats, onaudition, onrestart } = $props();
 
   const WIDTH = 600;
   const HEIGHT = 160;
@@ -30,17 +31,26 @@
   const length = $derived(parseLength(cue.duration) ?? { count: 4, unit: 'bars' });
   const units = $derived([...new Set(['beats', 'bars', length.unit])]);
   const swellBeats = $derived(lengthInBeats(length, barBeats));
-  const progress = $derived(beats === undefined || !swellBeats ? null : Math.min(Math.max(beats / swellBeats, 0), 1));
+  /** The saved swell's length in beats: null for one timed in s or ms, which has no playhead. */
+  const savedBeats = $derived(saved ? lengthInBeats(parseLength(saved.duration) ?? { count: 0, unit: 's' }, barBeats) : null);
+  const progress = $derived(beats === undefined || !savedBeats ? null : Math.min(Math.max(beats / savedBeats, 0), 1));
 
+  // Only an audition started here loops: a cue fired from Reaper or the cue list plays as fired.
+  let looping = $state(false);
   let restarted = false;
   $effect(() => {
-    if (beats === undefined || !swellBeats) return;
-    if (beats < swellBeats) restarted = false;
-    else if (!restarted && beats >= swellBeats + HOLD_BARS * barBeats) {
+    if (!looping || beats === undefined || !savedBeats) return;
+    if (beats < savedBeats) restarted = false;
+    else if (!restarted && beats >= savedBeats + HOLD_BARS * barBeats) {
       restarted = true;
       onrestart();
     }
   });
+
+  function toggleAudition() {
+    looping = beats === undefined;
+    onaudition();
+  }
 
   const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
   const round = (value) => Math.round(value / STEP) * STEP;
@@ -66,7 +76,10 @@
     const [time, level] = curvePoint(event);
     const earliest = dragging === 0 ? 0 : points[dragging - 1][0] + STEP;
     const latest = dragging === points.length - 1 ? 1 : points[dragging + 1][0] - STEP;
-    points[dragging] = [tidy(clamp(time, earliest, latest)), tidy(clamp(level, 0, 1))];
+    // Neighbours closer than two steps, as a file may have them, leave no room to slide: the
+    // point only moves up and down, so times still rise.
+    const moved = earliest > latest ? points[dragging][0] : tidy(clamp(time, earliest, latest));
+    points[dragging] = [moved, tidy(clamp(level, 0, 1))];
   }
 
   function addPoint(event) {
@@ -151,14 +164,19 @@
     {/each}
     {#if progress !== null}<line class="playhead" x1={progress * WIDTH} x2={progress * WIDTH} y2={HEIGHT} />{/if}
   </svg>
+  {#if envelope.error}<p class="error" role="alert">{envelope.error}</p>{/if}
   {#if points}<p class="hint">Drag a point to shape the curve; double-click the curve to add one, a point to remove it.</p>{/if}
 
   <div class="row">
-    <button disabled={!canAudition} onclick={onaudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
+    <button disabled={!saved} onclick={toggleAudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
     <span class="hint">
-      {canAudition
-        ? 'Plays the saved cue, again each time its end has held for a bar. Save to hear changes.'
-        : 'Save the cue to audition it.'}
+      {#if !saved}
+        Save the cue to audition it.
+      {:else if savedBeats}
+        Plays the saved cue, again each time its end has held for a bar. Save to hear changes.
+      {:else}
+        Plays the saved cue once: a swell timed in s or ms has no playhead or loop. Save to hear changes.
+      {/if}
     </span>
   </div>
 </fieldset>

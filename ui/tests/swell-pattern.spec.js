@@ -142,3 +142,78 @@ test("a 4-bar ease-in swell saves as C4's reference and draws the engine's curve
   await page.getByRole('button', { name: 'Stop audition' }).click();
   await expect(playhead).toHaveCount(0);
 });
+
+test('only the editor loops a swell, timed by the saved cue rather than unsaved edits', async ({ page, show, startEngine }) => {
+  const rise = '  39:\n    name: rise\n    type: swell\n    target:\n      all-wash: { dimmer: 100% }\n    duration: 1 beat\n';
+  addSong(show, HEADER + BLACKOUT + rise);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const playhead = page.locator('.curve .playhead');
+
+  await page.locator('tr[data-note="39"]').getByRole('button', { name: 'Edit' }).click();
+  await page.getByLabel('Swell length', { exact: true }).fill('4');
+  await page.getByLabel('Swell length unit').selectOption('bars');
+  await page.getByRole('button', { name: 'Audition loop' }).click();
+  // The saved beat-long swell ends in half a second; four unsaved bars would take eight.
+  await expect(playhead).toHaveAttribute('x1', '600', { timeout: 2000 });
+  await expect(playhead).not.toHaveAttribute('x1', '600', { timeout: 5000 });
+  await page.getByRole('button', { name: 'Stop audition' }).click();
+  await expect(playhead).toHaveCount(0);
+
+  // Fired from the cue list, as from Reaper, it plays once and holds its end.
+  const row = page.locator('tr[data-note="39"]');
+  await row.getByRole('button', { name: 'Audition' }).click();
+  await expect(playhead).toHaveAttribute('x1', '600', { timeout: 2000 });
+  await page.waitForTimeout(3500);
+  await expect(playhead, 'past the bar the editor would hold it for').toHaveAttribute('x1', '600');
+  await row.getByRole('button', { name: 'Release' }).click();
+});
+
+test('crowded points still rise when dragged, and a curve the engine refuses is shown', async ({ page, show, startEngine }) => {
+  const points = (middle) =>
+    `  40:\n    name: crowded\n    type: swell\n    target:\n      all-wash: { dimmer: 100% }\n    duration: 1 bar\n` +
+    `    curve:\n      points:\n        - [0.3, 0]\n        - ${middle}\n        - [0.31, 1]\n`;
+  const songFile = addSong(show, HEADER + BLACKOUT + points('[0.305, 0.5]'));
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await page.locator('tr[data-note="40"]').getByRole('button', { name: 'Edit' }).click();
+  await page.locator('.curve').scrollIntoViewIfNeeded();
+  const curve = await page.locator('.curve').boundingBox();
+  const middle = await page.locator('.curve .point[data-point="1"]').boundingBox();
+  await page.mouse.move(middle.x + middle.width / 2, middle.y + middle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(curve.x + curve.width * 0.9, curve.y - 20, { steps: 5 });
+  await page.mouse.up();
+  await page.getByRole('button', { name: 'Save cue' }).click();
+  await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toBe(HEADER + BLACKOUT + points('[0.305, 1]'));
+
+  await page.route('**/api/envelope', (route) => route.fulfill({ status: 422, json: { error: 'points: times must rise' } }));
+  await page.getByLabel('Curve', { exact: true }).selectOption('sine');
+  await expect(page.getByRole('alert')).toHaveText("Can't draw the curve: points: times must rise");
+});
+
+test('a new cue keeps its release across types; a shorter loop keeps its hits playable', async ({ page, show, startEngine }) => {
+  const groove = (length, hit) =>
+    `  42:\n    name: groove\n    type: pattern\n    length: ${length}\n    target: { all-wash: dimmer }\n` +
+    `    hits:\n      - { at: 1, shape: sine, length: ${hit}, level: 50% }\n`;
+  const header = HEADER.replace('cues:', 'time_signature: 7/8\ncues:');
+  const songFile = addSong(show, header + BLACKOUT + groove('2 bars', '2 bars'));
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await page.getByLabel('Release').fill('2s');
+  await page.getByLabel('Type').selectOption('swell');
+  await page.getByLabel('Type').selectOption('pattern');
+  await expect(page.getByLabel('Release')).toHaveValue('2s');
+
+  // Two bars of 7/8 are 7 beats, the second bar starting on beat 3.5.
+  await page.locator('tr[data-note="42"]').getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('.lane .bar-line')).toHaveCount(2);
+  await expect(page.locator('.lane .bar-line').nth(1)).toHaveAttribute('x1', '3.5');
+  await page.getByLabel('Bars').selectOption('1');
+  await page.getByRole('button', { name: 'Save cue' }).click();
+  await expect(page.getByText('Saved cue 42 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toBe(header + BLACKOUT + groove('1 bar', '1 bar'));
+});

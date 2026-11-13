@@ -7,6 +7,11 @@ export const SHAPES = ['ramp-up', 'ramp-down', 'ease-in', 'sine', 'hold'];
 /** Levels per curve: index 25 is a quarter of the way through. */
 export const SAMPLES = 101;
 
+/** Why the latest curve couldn't be sampled, for the editors to show; empty once one is. */
+export const envelope = $state({ error: '' });
+
+// ponytail: every curve drawn stays cached for the page's life, a dragged point adding one per
+// hundredth it passes; a few kB each, so prune only if long sessions ever show it.
 const sampled = $state({});
 const requested = new Set();
 
@@ -16,10 +21,14 @@ export function curveLevels(curve) {
   if (!requested.has(key)) {
     requested.add(key);
     request('POST', '/api/envelope', { curve, samples: SAMPLES }).then(
-      ({ levels }) => (sampled[key] = levels),
+      ({ levels }) => {
+        sampled[key] = levels;
+        envelope.error = '';
+      },
+      // Forgotten, so the next time the curve is drawn it is asked for again.
       (failure) => {
         requested.delete(key);
-        throw failure;
+        envelope.error = `Can't draw the curve: ${failure.message}`;
       },
     );
   }
