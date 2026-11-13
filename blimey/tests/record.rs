@@ -5,11 +5,12 @@
 //! `cargo test -p blimey --test record -- --ignored --nocapture`.
 #![cfg(target_os = "macos")]
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -55,27 +56,15 @@ fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
         .create_virtual(&port_name)
         .expect("create a virtual CoreMIDI port");
     let emu_dump = out.with_extension("dump");
-    let mut recorder = Command::new(env!("CARGO_BIN_EXE_blimey"))
-        .args(["record", "--until-stop", "--midi-port", &port_name])
-        .arg(&out)
-        .arg("--artnet")
-        .arg(&emu_dump)
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start blimey record");
-    let (listening, lines) = mpsc::channel();
-    let stderr = BufReader::new(recorder.stderr.take().unwrap());
-    thread::spawn(move || {
-        for line in stderr.lines().map_while(Result::ok) {
-            eprintln!("{line}");
-            let _ = listening.send(line);
-        }
-    });
-    while !lines
-        .recv_timeout(PATIENCE)
-        .expect("blimey record never connected")
-        .starts_with("record: recording")
-    {}
+    let mut recorder = start_recording(
+        &port_name,
+        &out,
+        &[
+            "--until-stop".as_ref(),
+            "--artnet".as_ref(),
+            emu_dump.as_os_str(),
+        ],
+    );
 
     // What was actually played: the sender's own timing jitters by a few milliseconds.
     let mut played = Vec::new();
@@ -146,6 +135,65 @@ fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
             MidiFile::parse(&MidiFile::encode(&played).unwrap()).unwrap()
         ))
     );
+}
+
+#[test]
+#[ignore = "needs macOS CoreMIDI: cargo test -p blimey --test record -- --ignored"]
+fn a_take_is_on_disk_every_few_seconds_and_complete_after_sigterm() {
+    let port_name = format!("blimey-record-term-{}", std::process::id());
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{port_name}.mid"));
+    let _ = fs::remove_file(&out);
+    let mut reaper = MidiOutput::new("blimey-record-test")
+        .unwrap()
+        .create_virtual(&port_name)
+        .expect("create a virtual CoreMIDI port");
+    let mut recorder = start_recording(&port_name, &out, &[]);
+    let note = |velocity| [0x90, 37, velocity];
+
+    reaper.send(&note(10)).unwrap();
+    thread::sleep(Duration::from_secs(6));
+    let saved = events(MidiFile::open(&out).expect("saved within 5 s, as a kill -9 would find it"));
+    reaper.send(&note(20)).unwrap();
+    thread::sleep(Duration::from_millis(100));
+    // SAFETY: kill only sends a signal to the recorder's process id.
+    assert_eq!(
+        unsafe { libc::kill(recorder.id() as i32, libc::SIGTERM) },
+        0
+    );
+    let status = recorder.wait().unwrap();
+
+    assert_eq!(saved.len(), 1);
+    assert!(status.success(), "{status}");
+    let messages: Vec<Vec<u8>> = events(MidiFile::open(&out).unwrap())
+        .into_iter()
+        .map(|event| event.message)
+        .collect();
+    assert_eq!(messages, [note(10), note(20)]);
+}
+
+/// Starts `blimey record <out> --midi-port <port_name> <args>` and waits until it records.
+fn start_recording(port_name: &str, out: &Path, args: &[&OsStr]) -> Child {
+    let mut recorder = Command::new(env!("CARGO_BIN_EXE_blimey"))
+        .args(["record", "--midi-port", port_name])
+        .arg(out)
+        .args(args)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start blimey record");
+    let (listening, lines) = mpsc::channel();
+    let stderr = BufReader::new(recorder.stderr.take().unwrap());
+    thread::spawn(move || {
+        for line in stderr.lines().map_while(Result::ok) {
+            eprintln!("{line}");
+            let _ = listening.send(line);
+        }
+    });
+    while !lines
+        .recv_timeout(PATIENCE)
+        .expect("blimey record never connected")
+        .starts_with("record: recording")
+    {}
+    recorder
 }
 
 /// EMU's side: one ArtDmx packet for universe 0 with DMX 3 at 77, written from the

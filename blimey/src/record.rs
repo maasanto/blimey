@@ -3,27 +3,31 @@
 //! same timeline for parity checks (plan §15).
 
 use std::error::Error;
-use std::fs;
+use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use blimey_engine::{
     Clock, DMX_CHANNELS, MidiEvent, MidiFile, MidiSource, MonotonicClock, RecordedFrame,
     format_dump,
 };
+use tokio::signal::unix::{SignalKind, signal};
 
 use crate::artnet;
 use crate::midi_input::MidiInput;
+use crate::state::write_atomically;
 
 const START: u8 = 0xFA;
 const CONTINUE: u8 = 0xFB;
 const STOP: u8 = 0xFC;
-/// Events are stamped as they arrive, so polling this often only bounds how late Ctrl-C lands.
+/// Events are stamped as they arrive, so polling this often only bounds how late a stop lands.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// How much of a take a crash or `kill -9` can lose: the files are rewritten this often.
+const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct Recording<'a> {
     pub midi_port: &'a str,
@@ -32,14 +36,15 @@ pub struct Recording<'a> {
     pub artnet: Option<(&'a Path, u16)>,
 }
 
-/// Records until Ctrl-C (or the first MIDI Stop after a Start, with `until_stop`), then writes
-/// `out`. Time 0 is the first MIDI message, in both files.
+/// Records until Ctrl-C, SIGTERM or SIGHUP (or the first MIDI Stop after a Start, with
+/// `until_stop`), saving to `out` every few seconds and at the end. Time 0 is the first MIDI
+/// message, in both files.
 pub fn record(out: &Path, recording: &Recording) -> Result<(), Box<dyn Error>> {
-    let interrupted = ctrl_c()?;
+    let stopped = stop_signals()?;
     let clock = MonotonicClock::default();
-    let capture = recording
+    let artnet = recording
         .artnet
-        .map(|(_, universe)| ArtNetCapture::start(universe, clock))
+        .map(|(dump, universe)| Ok::<_, String>((dump, ArtNetCapture::start(universe, clock)?)))
         .transpose()?;
     let mut midi = MidiInput::connect(recording.midi_port, clock)?;
     eprintln!(
@@ -51,84 +56,138 @@ pub fn record(out: &Path, recording: &Recording) -> Result<(), Box<dyn Error>> {
             ""
         }
     );
-    let events = take_events(&mut midi, &clock, &interrupted, recording.until_stop);
-    let Some(start) = events.first().map(|event| event.at) else {
+    let mut take = Take {
+        out,
+        events: Vec::new(),
+        artnet,
+    };
+    take.record(&mut midi, &clock, &stopped, recording.until_stop)?;
+    take.save()?;
+    let (Some(first), Some(last)) = (take.events.first(), take.events.last()) else {
         return Err(format!(
             "no MIDI received on the port matching {:?}; nothing written",
             recording.midi_port
         )
         .into());
     };
-    let events: Vec<MidiEvent> = events
-        .into_iter()
-        .map(|event| MidiEvent {
-            at: event.at - start,
-            message: event.message,
-        })
-        .collect();
-    let in_out = |error: std::io::Error| format!("{}: {error}", out.display());
-    fs::write(out, MidiFile::encode(&events).map_err(in_out)?).map_err(in_out)?;
-    let length = events.last().map_or(Duration::ZERO, |event| event.at);
     eprintln!(
         "record: {} MIDI events over {:.1} s written to {}",
-        events.len(),
-        length.as_secs_f64(),
+        take.events.len(),
+        (last.at - first.at).as_secs_f64(),
         out.display()
     );
-    if let (Some(capture), Some((dump, _))) = (capture, recording.artnet) {
-        let frames = capture.since(start);
-        fs::write(dump, format_dump(&frames))
-            .map_err(|error| format!("{}: {error}", dump.display()))?;
+    if let Some((dump, capture)) = &take.artnet {
+        let frames = capture.frames.lock().unwrap().len();
         eprintln!(
-            "record: {} Art-Net frames written to {}",
-            frames.len(),
+            "record: {frames} Art-Net frames written to {}",
             dump.display()
         );
+        if let Some(failure) = capture.failure.lock().unwrap().as_ref() {
+            return Err(format!(
+                "the Art-Net capture in {} is INCOMPLETE: it stopped early: {failure}",
+                dump.display()
+            )
+            .into());
+        }
     }
     Ok(())
 }
 
-fn take_events(
-    midi: &mut MidiInput,
-    clock: &MonotonicClock,
-    interrupted: &AtomicBool,
-    until_stop: bool,
-) -> Vec<MidiEvent> {
-    let mut events = Vec::new();
-    let mut is_playing = false;
-    while !interrupted.load(Ordering::Relaxed) {
-        while let Some(event) = midi.poll(clock.now()) {
-            let is_stop = event.message == [STOP];
-            is_playing |= event.message == [START] || event.message == [CONTINUE];
-            events.push(event);
-            // Reaper may send Stop before it starts playing, e.g. when seeking.
-            if until_stop && is_playing && is_stop {
-                return events;
-            }
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-    events
+struct Take<'a> {
+    out: &'a Path,
+    /// Stamped on the recording's clock; saved timed from the first one.
+    events: Vec<MidiEvent>,
+    artnet: Option<(&'a Path, ArtNetCapture)>,
 }
 
-/// Set once Ctrl-C is pressed, instead of the process being killed.
-fn ctrl_c() -> std::io::Result<Arc<AtomicBool>> {
+impl Take<'_> {
+    fn record(
+        &mut self,
+        midi: &mut MidiInput,
+        clock: &MonotonicClock,
+        stopped: &AtomicBool,
+        until_stop: bool,
+    ) -> Result<(), String> {
+        let mut is_playing = false;
+        let mut saved = Instant::now();
+        while !stopped.load(Ordering::Relaxed) {
+            while let Some(event) = midi.poll(clock.now()) {
+                let is_stop = event.message == [STOP];
+                is_playing |= event.message == [START] || event.message == [CONTINUE];
+                self.events.push(event);
+                // Reaper may send Stop before it starts playing, e.g. when seeking.
+                if until_stop && is_playing && is_stop {
+                    return Ok(());
+                }
+            }
+            if saved.elapsed() >= SAVE_INTERVAL {
+                self.save()?;
+                saved = Instant::now();
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    /// Rewrites each file with the whole take so far, atomically, so a crash or kill leaves the
+    /// take as of the last save. Writes nothing before the first MIDI message.
+    fn save(&self) -> Result<(), String> {
+        let Some(start) = self.events.first().map(|event| event.at) else {
+            return Ok(());
+        };
+        let events: Vec<MidiEvent> = self
+            .events
+            .iter()
+            .map(|event| MidiEvent {
+                at: event.at - start,
+                message: event.message.clone(),
+            })
+            .collect();
+        let in_out = |error: io::Error| format!("{}: {error}", self.out.display());
+        write_atomically(self.out, MidiFile::encode(&events).map_err(in_out)?).map_err(in_out)?;
+        if let Some((dump, capture)) = &self.artnet {
+            write_atomically(dump, format_dump(&capture.since(start)))
+                .map_err(|error| format!("{}: {error}", dump.display()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Set on Ctrl-C, SIGTERM or SIGHUP (the terminal closing), so the take is saved rather than
+/// lost. The handlers are in place when this returns.
+fn stop_signals() -> io::Result<Arc<AtomicBool>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let flag = interrupted.clone();
+    let mut signals = {
+        let _context = runtime.enter();
+        [
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+            signal(SignalKind::hangup())?,
+        ]
+    };
+    let stopped = Arc::new(AtomicBool::new(false));
+    let flag = stopped.clone();
     thread::spawn(move || {
-        if runtime.block_on(tokio::signal::ctrl_c()).is_ok() {
-            flag.store(true, Ordering::Relaxed);
-        }
+        let [interrupt, terminate, hang_up] = &mut signals;
+        runtime.block_on(async {
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = terminate.recv() => {}
+                _ = hang_up.recv() => {}
+            }
+        });
+        flag.store(true, Ordering::Relaxed);
     });
-    Ok(interrupted)
+    Ok(stopped)
 }
 
 /// Every ArtDmx packet for one universe received on UDP 6454, stamped on the MIDI's clock.
 struct ArtNetCapture {
     frames: Arc<Mutex<Vec<RecordedFrame>>>,
+    /// Why the capture stopped before the end of the take, if it did.
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl ArtNetCapture {
@@ -139,11 +198,35 @@ impl ArtNetCapture {
                 artnet::PORT
             )
         })?;
-        let frames = Arc::<Mutex<Vec<RecordedFrame>>>::default();
-        let received = frames.clone();
+        let capture = Self {
+            frames: Arc::default(),
+            failure: Arc::default(),
+        };
+        let (frames, failure) = (capture.frames.clone(), capture.failure.clone());
         thread::spawn(move || {
             let mut packet = [0; 1024];
-            while let Ok(size) = socket.recv(&mut packet) {
+            loop {
+                let size = match socket.recv(&mut packet) {
+                    Ok(size) => size,
+                    // ICMP errors from earlier sends and signals: the socket is still good.
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::Interrupted
+                                | ErrorKind::ConnectionRefused
+                                | ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "record: Art-Net capture STOPPED: {error}; the dump ends here, MIDI keeps recording"
+                        );
+                        *failure.lock().unwrap() = Some(error.to_string());
+                        return;
+                    }
+                };
                 let Some((packet_universe, channels)) = artnet::parse_art_dmx(&packet[..size])
                 else {
                     continue;
@@ -152,18 +235,19 @@ impl ArtNetCapture {
                     let mut values = [0; DMX_CHANNELS];
                     values[..channels.len()].copy_from_slice(channels);
                     let at = clock.now();
-                    received.lock().unwrap().push(RecordedFrame { at, values });
+                    frames.lock().unwrap().push(RecordedFrame { at, values });
                 }
             }
         });
-        Ok(Self { frames })
+        Ok(capture)
     }
 
     /// The frames from `start` on, timed from it.
-    fn since(self, start: Duration) -> Vec<RecordedFrame> {
-        let frames = std::mem::take(&mut *self.frames.lock().unwrap());
-        frames
-            .into_iter()
+    fn since(&self, start: Duration) -> Vec<RecordedFrame> {
+        self.frames
+            .lock()
+            .unwrap()
+            .iter()
             .filter_map(|frame| {
                 Some(RecordedFrame {
                     at: frame.at.checked_sub(start)?,
