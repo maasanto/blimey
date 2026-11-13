@@ -59,10 +59,13 @@ enum Transport {
     Cued,
 }
 
+/// Times are in seconds from `from`, a recent tick, not from engine start: the same ticks then
+/// give the same result however long the engine has run.
 #[derive(Debug, Clone, Copy)]
 struct TickFit {
+    from: Duration,
     interval_seconds: f64,
-    /// Where the line puts the latest tick, in seconds since the follower started.
+    /// Where the line puts the latest tick.
     latest_tick_seconds: f64,
 }
 
@@ -93,18 +96,25 @@ pub struct ClockFollower {
 }
 
 impl ClockFollower {
+    /// A follower started at engine time zero.
     pub fn new(song_bpm: f64, time_signature: TimeSignature) -> Self {
+        Self::started_at(Duration::ZERO, song_bpm, time_signature)
+    }
+
+    /// A follower whose beats and bars count from `at`, the song select.
+    pub fn started_at(at: Duration, song_bpm: f64, time_signature: TimeSignature) -> Self {
         Self {
             song_bpm,
             time_signature,
             line: BeatLine {
-                at: Duration::ZERO,
+                at,
                 beats: 0.0,
                 per_second: song_bpm / 60.0,
             },
             clock_beats: 0.0,
             ticks: VecDeque::with_capacity(TEMPO_WINDOW),
             tick_fit: TickFit {
+                from: at,
                 interval_seconds: 60.0 / song_bpm / TICKS_PER_BEAT,
                 latest_tick_seconds: 0.0,
             },
@@ -186,8 +196,9 @@ impl ClockFollower {
         let latest = self.ticks[self.ticks.len() - 1];
         if self.ticks.len() < MIN_FIT_TICKS {
             return TickFit {
+                from: first,
                 interval_seconds: self.tick_fit.interval_seconds,
-                latest_tick_seconds: latest.as_secs_f64(),
+                latest_tick_seconds: (latest - first).as_secs_f64(),
             };
         }
         let count = self.ticks.len() as f64;
@@ -206,19 +217,22 @@ impl ClockFollower {
                 });
         let interval_seconds = covariance / variance;
         TickFit {
+            from: first,
             interval_seconds,
-            latest_tick_seconds: first.as_secs_f64() + mean_offset + interval_seconds * mean_index,
+            latest_tick_seconds: mean_offset + interval_seconds * mean_index,
         }
     }
 
     /// Where the clock is at `at`, in elapsed beats, extrapolating from its latest tick.
     fn clock_position(&self, at: Duration) -> f64 {
         let TickFit {
+            from,
             interval_seconds,
             latest_tick_seconds,
         } = self.tick_fit;
         self.clock_beats
-            + (at.as_secs_f64() - latest_tick_seconds) / (interval_seconds * TICKS_PER_BEAT)
+            + (at.saturating_sub(from).as_secs_f64() - latest_tick_seconds)
+                / (interval_seconds * TICKS_PER_BEAT)
     }
 
     /// Beats elapsed since the follower started: continuous, never going back. Count durations

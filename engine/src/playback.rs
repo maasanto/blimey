@@ -118,7 +118,7 @@ impl Playback {
         }
         show.legacy.apply(&event.message, &mut self.legacy);
         match *event.message.as_slice() {
-            [CUE_PROGRAM_CHANGE, program] => self.select_song(show, program),
+            [CUE_PROGRAM_CHANGE, program] => self.select_song(show, program, event.at),
             [CUE_NOTE_ON, note, velocity] if velocity > 0 => {
                 self.start(show, note, velocity, event.at)
             }
@@ -143,12 +143,12 @@ impl Playback {
     }
 
     /// Output only depends on MIDI since the song started: its cues start from nothing.
-    fn select_song(&mut self, show: &Show, program: u8) {
+    fn select_song(&mut self, show: &Show, program: u8, at: Duration) {
         let song = show.songs.iter().find(|song| song.program == program);
         self.song = song.map(|song| song.name.clone());
         self.clock = song.map(|song| {
             let bpm = song.bpm.unwrap_or(DEFAULT_BPM);
-            ClockFollower::new(f64::from(bpm), song.time_signature)
+            ClockFollower::started_at(at, f64::from(bpm), song.time_signature)
         });
         self.cues.clear();
         self.safe_look = false;
@@ -313,6 +313,92 @@ fn apply_master(rig: &Rig, master: f32, frame: &mut Frame) {
     for (value, scaled) in frame.iter_mut().zip(is_intensity) {
         if scaled {
             *value = (f32::from(*value) * master).round() as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FRAME_PERIOD, MidiFile, MidiSource};
+    use std::path::Path;
+
+    const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
+
+    fn cues_show() -> Show {
+        Show::load(Path::new(&format!("{FIXTURES}/shows/cues"))).unwrap()
+    }
+
+    /// Plays `events` on an engine that has been running for `uptime`, frame by frame.
+    fn render_after(show: &Show, events: &[MidiEvent], uptime: Duration) -> Vec<Frame> {
+        let mut playback = Playback::default();
+        let mut pending = events.iter().peekable();
+        let last = events.last().map_or(Duration::ZERO, |event| event.at);
+        let frame_count = last.as_nanos() / FRAME_PERIOD.as_nanos() + 40;
+        (0..frame_count as u32)
+            .map(|index| {
+                let deadline = FRAME_PERIOD * index;
+                while let Some(event) = pending.next_if(|event| event.at <= deadline) {
+                    let shifted = MidiEvent {
+                        at: event.at + uptime,
+                        message: event.message.clone(),
+                    };
+                    playback.apply(show, &shifted);
+                }
+                playback.render(show, &Look::default(), deadline + uptime)
+            })
+            .collect()
+    }
+
+    fn midi_events(name: &str) -> Vec<MidiEvent> {
+        let mut midi = MidiFile::open(Path::new(&format!("{FIXTURES}/midi/{name}.mid"))).unwrap();
+        std::iter::from_fn(|| midi.poll(Duration::MAX)).collect()
+    }
+
+    #[test]
+    fn output_does_not_depend_on_how_long_the_engine_has_run() {
+        let show = cues_show();
+        let event = |seconds: f64, message: &[u8]| MidiEvent {
+            at: Duration::from_secs_f64(seconds),
+            message: message.to_vec(),
+        };
+        // No clock, 120 BPM: verse-pulse over a green scene, fired exactly on the bar 2 line,
+        // 2 s after the select.
+        let on_a_bar_line = vec![
+            event(0.0, &[CUE_PROGRAM_CHANGE, 1]),
+            event(0.0, &[CUE_NOTE_ON, 38, 127]),
+            event(2.0, &[CUE_NOTE_ON, 42, 127]),
+            event(6.0, &[CUE_NOTE_OFF, 42, 0]),
+        ];
+        // The same on a steady MIDI clock at 125 BPM, a tick every 20 ms: the bar 2 line is at
+        // 1.92 s, on tick 96.
+        let mut on_the_clock = vec![
+            event(0.0, &[CUE_PROGRAM_CHANGE, 1]),
+            event(0.0, &[0xFA]),
+            event(0.0, &[CUE_NOTE_ON, 38, 127]),
+        ];
+        for tick in 0..400 {
+            on_the_clock.push(event(f64::from(tick) * 0.020, &[0xF8]));
+            if tick == 96 {
+                on_the_clock.push(event(1.92, &[CUE_NOTE_ON, 42, 127]));
+            }
+        }
+        let hundred_hours = Duration::from_secs(100 * 3600) + Duration::from_millis(1234);
+
+        for (name, events) in [
+            ("on-a-bar-line", on_a_bar_line),
+            ("on-the-clock", on_the_clock),
+            ("pattern-92", midi_events("pattern-92")),
+            ("pattern-140", midi_events("pattern-140")),
+            ("swell-clock", midi_events("swell-clock")),
+        ] {
+            let fresh = render_after(&show, &events, Duration::ZERO);
+            let later = render_after(&show, &events, hundred_hours);
+            let first_difference = fresh.iter().zip(&later).position(|(a, b)| a != b);
+            assert_eq!(
+                first_difference, None,
+                "{name}: frame index of the first difference"
+            );
         }
     }
 }
