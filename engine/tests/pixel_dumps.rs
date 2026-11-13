@@ -357,6 +357,38 @@ fn a_pattern_on_a_pixel_cues_intensity_pulses_it_then_lets_it_back_up_on_release
     );
 }
 
+/// A pixel cue whose intensity a pattern drives, over a red scene at 50% that a dimmer-only
+/// swell brings to full: the pattern still pulses the pixel cue, and once the pixel cue goes the
+/// washes show the swell's full red, the virtual dimmers below untouched by either. At 150 BPM
+/// a beat is 16 frames; both are released on beat 4.
+#[test]
+fn a_pixel_cue_linked_to_a_pattern_leaves_a_dimmer_only_swell_below_it_alone() {
+    let cues = "  50: { name: red-half, type: scene, values: { all-wash: { color: \"#ff0000\", dimmer: 50% } } }\n  51: { name: full, type: swell, target: { all-wash: { dimmer: 100% } }, duration: 1 beat }\n  60: { name: green-wash, type: pixel, params: { color: \"#00ff00\" } }\n  61:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { green-wash: intensity }\n    hits:\n      - { at: 1, shape: ramp-up, length: 1 beat, level: 100% }\n";
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/four-washes"))).unwrap();
+    let note_on = |note: u8| (Duration::ZERO, vec![0x91, note, 127]);
+    let beat_4 = Duration::from_millis(1200);
+    let messages = [
+        note_on(50),
+        note_on(51),
+        note_on(60),
+        note_on(61),
+        (beat_4, vec![0x81, 60, 0]),
+        (beat_4, vec![0x81, 61, 0]),
+    ];
+
+    let frames = render_show(show, cues, &messages, 56);
+
+    // Wash 1's first red, green, blue and white.
+    let wash_1 = |frame: usize| frames[frame].values[0..4].to_vec();
+    assert_eq!(wash_1(8), [0, 128, 0, 0], "half-way up the pattern's ramp");
+    assert_eq!(wash_1(24), [0, 0, 0, 0], "the pixel cue dark between hits");
+    assert_eq!(
+        wash_1(52),
+        [255, 0, 0, 0],
+        "the scene's red, brought to full"
+    );
+}
+
 #[test]
 fn a_swell_on_a_pixel_cues_intensity_brings_it_up_along_its_curve() {
     let cues = "  60: { name: red-wash, type: pixel, params: { color: \"#ff0000\" } }\n  62: { name: rise, type: swell, target: { red-wash: intensity }, duration: 1 beat }\n";
