@@ -88,8 +88,12 @@ pub trait DmxSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()>;
 
     /// Outputs the Art-Net universes of the next frame sent, just before `send`. Sinks without
-    /// Art-Net output ignore them.
-    fn send_artnet(&mut self, _universes: &ArtNetFrames) {}
+    /// Art-Net output ignore them. An error doesn't stop the render loop, as a network node
+    /// may come back: the driver reports it, and a wrapping sink, such as the soak's, can
+    /// count it.
+    fn send_artnet(&mut self, _universes: &ArtNetFrames) -> io::Result<()> {
+        Ok(())
+    }
 
     /// The engine state behind the next frame sent. Sinks that only output DMX ignore it.
     fn status(&mut self, _status: &Status) {}
@@ -201,8 +205,9 @@ impl DmxSink for FakeDmx {
         Ok(())
     }
 
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
         self.artnet = universes.clone();
+        Ok(())
     }
 }
 
@@ -236,7 +241,8 @@ pub fn run(
             eprintln!("blimey: {line}");
         }
         sink.status(&playback.status(show));
-        sink.send_artnet(&output.artnet);
+        // Reported by the driver; see `DmxSink::send_artnet`.
+        let _ = sink.send_artnet(&output.artnet);
         sink.send(clock.now(), &output.enttec)?;
     }
     Ok(())

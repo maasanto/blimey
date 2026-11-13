@@ -62,20 +62,27 @@
     }
     drag.saving = true;
     try {
-      await save(drag.name, drag.dx, drag.dy);
+      // An unchanged rig brings no new rig message to end the drag.
+      if (!(await save(drag.name, drag.dx, drag.dy))) drag = null;
     } catch (failure) {
       error = failure.message;
       drag = null;
     }
   }
 
-  /** Moves a fixture in rig.yaml through the engine; the stream then sends the new rig. */
+  /**
+   * Moves a fixture in rig.yaml through the engine; the stream then sends the new rig.
+   * Returns false, saving nothing, when the move rounds or clamps back to where it was.
+   */
   async function save(name, dx, dy) {
     const rig = await request('GET', '/api/show/rig.yaml');
     const { canvas } = rig.fixtures.find((fixture) => fixture.name === name);
-    canvas.x = round(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
-    canvas.y = round(clamp(canvas.y + dy, 0, 1));
+    const x = round(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
+    const y = round(clamp(canvas.y + dy, 0, 1));
+    if (x === canvas.x && y === canvas.y) return false;
+    Object.assign(canvas, { x, y });
     await request('PUT', '/api/show/rig.yaml', rig);
+    return true;
   }
 
   const offset = (fixture) =>

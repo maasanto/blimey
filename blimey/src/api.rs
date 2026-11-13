@@ -7,6 +7,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -143,14 +144,28 @@ async fn read_show_file(State(api): State<Api>, Path(file): Path<String>) -> Res
     }
 }
 
+/// A JSON request body, its rejection included: handlers refuse show mode (403) before looking
+/// at the body, and a body that is not JSON gets the JSON error, not axum's plain text.
+type JsonBody = Result<Json<Value>, JsonRejection>;
+
+fn json_body(content: JsonBody) -> io::Result<Value> {
+    content
+        .map(|Json(content)| content)
+        .map_err(|rejection| io::Error::new(io::ErrorKind::InvalidData, rejection.body_text()))
+}
+
 async fn write_show_file(
     State(api): State<Api>,
     Path(file): Path<String>,
-    Json(content): Json<Value>,
+    content: JsonBody,
 ) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
     // Hot reload picks the file up on the next frame, and the stream then sends the new rig.
     saved(&api, || show_file::write(&api.show_dir, &file, content))
 }
@@ -158,11 +173,15 @@ async fn write_show_file(
 async fn save_cue(
     State(api): State<Api>,
     Path((song, note)): Path<(String, u8)>,
-    Json(content): Json<Value>,
+    content: JsonBody,
 ) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
     let save: CueSave = match body(
         content,
         "send { cue, replaces }, replaces being null or { note, cue } as loaded",
@@ -176,14 +195,14 @@ async fn save_cue(
     })
 }
 
-async fn set_bpm(
-    State(api): State<Api>,
-    Path(song): Path<String>,
-    Json(content): Json<Value>,
-) -> Response {
+async fn set_bpm(State(api): State<Api>, Path(song): Path<String>, content: JsonBody) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
     match body::<Tempo>(content, "send { bpm } with bpm a number") {
         Ok(tempo) => saved(&api, || show_file::set_bpm(&api.show_dir, &song, tempo.bpm)),
         Err(error) => error_response(&error),
@@ -259,10 +278,14 @@ fn step(api: &Api, action: fn(&mut History, &std::path::Path) -> io::Result<Stri
     }
 }
 
-async fn set_preview(State(api): State<Api>, Json(values): Json<Value>) -> Response {
+async fn set_preview(State(api): State<Api>, values: JsonBody) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let values = match json_body(values) {
+        Ok(values) => values,
+        Err(error) => return error_response(&error),
+    };
     let Ok(values) = serde_json::from_value::<Mapping>(values) else {
         return unprocessable(
             "the preview is a mapping of fixture or group names to look settings",
@@ -289,10 +312,14 @@ async fn clear_preview(State(api): State<Api>) -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn inject_midi(State(api): State<Api>, Json(content): Json<Value>) -> Response {
+async fn inject_midi(State(api): State<Api>, content: JsonBody) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
     let expected = "message must be one MIDI message as bytes, status first, e.g. [145, 36, 127]";
     let message = match body::<PostedMidi>(content, expected) {
         Ok(posted) => posted.message,

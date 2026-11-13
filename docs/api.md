@@ -57,6 +57,7 @@ fixtures:
 - Positions are in the front view from the audience: x 0 is stage right and 1 stage left; y 0 is the floor and 1 the top. `canvas` is the rectangle the grid fills, its bottom-left corner at (`x`, `y`). Pixels sit at the centres of `columns` × `rows` equal cells.
 - `start_corner` is where the first pixel is, as seen from the audience. The chain runs along rows: `row-by-row` starts every row on the start corner's side, `serpentine` runs each row back the way the previous one came. With `start_corner: bottom-left`, row 1 of the wiring is the bottom row.
 - One universe holds 170 RGB or 128 RGBW pixels. A pixel that doesn't fit in the rest of its universe starts the next Art-Net universe at channel 1. An `enttec` grid must fit in the Enttec universe, shared with the other fixtures: anything bigger needs `output: artnet`.
+- All the grids together may use at most 32 Art-Net universes (about 5,400 RGB pixels), four times the plan's 8-universe load target, so a typo in a grid's size can't stall the 40 Hz render: `the pixel grids use 48 Art-Net universes; pixel grids may use at most 32 in all, so the render keeps up at 40 Hz`.
 - Only pixel cues drive grids. Looks, scenes, swells and patterns can't name them yet, and groups can't list them.
 - The engine refuses a grid that overflows the Enttec universe or Art-Net universe 32767, an `artnet` grid without `universe`, an `enttec` grid with one, a bad colour order, and channels that overlap another fixture or grid in the same universe (`fixtures "a" (Art-Net universe 4, DMX 1-6) and "b" (Art-Net universe 4, DMX 4-9) overlap`).
 
@@ -186,7 +187,7 @@ Plan §7's other effect names map onto these: `solid` is `static` with the defau
 
 `layer_2` takes its own `shape`, `effect` and `params`, plus `blend`: `max` (the brighter of the two per emitter, the default), `add` (the sum, clipped at full) or `mask` (layer 1 shows only where layer 2's shape is lit, as much as it is). Layer 2's sparkle differs from layer 1's under the same seed.
 
-The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
+The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
 ## Playback
 
@@ -235,6 +236,8 @@ blimey run <show> … [--state-dir <folder>]                         # where sta
 blimey service install [--dry-run] <run arguments>                  # keep `blimey run <run arguments>` going under launchd
 blimey service uninstall
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
+blimey record <out.mid> [--midi-port IAC] [--until-stop] [--artnet <emu.dump> --show <show> [--artnet-universe <n>]]
+blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run outputs>]
 ```
 
 `validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
@@ -273,6 +276,35 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 `blimey service install <run arguments>` makes the checks `run` makes at start (an output is given, the show loads), so launchd never keeps restarting an engine that exits at once. It then writes the launch agent `~/Library/LaunchAgents/app.blimey.engine.plist` and starts it. launchd starts the engine at login and restarts it within a second whenever it exits. Relative paths are taken from the folder the command ran in, and the engine's stdout and stderr go to `engine.log` in the state folder. Installing again replaces the agent; `--dry-run` prints the plist instead. `blimey service uninstall` stops and removes it, even if it wasn't running.
 
 `scripts/fault-injection.sh [kill|midi|serial|state]` (macOS) checks recovery against the real binary, an emulated Enttec box on a pty and a virtual CoreMIDI port: killing the engine mid-song, dropping the MIDI port, unplugging the box, starting with an unusable state folder.
+
+## Recording and soak
+
+`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, SIGTERM or SIGHUP (the terminal closing), or with `--until-stop` at the first Stop after a Start or Continue. The files are saved every 5 s and at the end (the MIDI file rewritten atomically, the dump appended to), so a crash or `kill -9` loses at most the last 5 s. `--artnet <dump> --show <show>` also records the ArtDmx packets received on UDP 6454 to a [frame dump](frame-dump.md) on the same timeline and 25 ms frame grid as `blimey replay`'s, laid out like it, so the two compare line by line:
+
+- the Enttec stand-in, `--artnet-universe` (15-bit port-address), is written as plain channels. It is chosen as `run --artnet` chooses its mirror: universe 0 by default, unless one of the show's pixel grids uses 0, in which case the grid keeps it. Naming a grid's universe is refused.
+- the show's pixel-grid universes are written as `<universe>:<channel>=<value>`;
+- any other universe is ignored, such as a desk elsewhere on the network.
+
+Frame N holds the latest values received by N × 25 ms, a short packet leaving the rest of its universe at 0. A frame with no packet gets no line. Packets before the first MIDI message only set the values the first frame starts from. If the capture fails mid-take, the MIDI keeps recording, and `record` reports the dump as incomplete and exits 1.
+
+`blimey soak <setlist>` plays a setlist's songs back to back, 2 s apart and each starting on a frame, looped for `--hours` (default 4), through the same render loop as `run`. A setlist is a YAML file, paths relative to it:
+
+```yaml
+show: .                                  # the show folder
+songs:                                   # played in this order, then again
+  - recordings/tell-me.mid
+```
+
+In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen`, `--artnet`, `--edit`), or with `--emulated-enttec` through the real driver to an emulated box on a pseudo terminal. `--accelerated` runs on a fake clock with no outputs, as fast as the machine renders. It prints a report, writes it to `--report <file>` (by default a new `soak-<setlist>-<mode>-<unix time>-<process id>.txt` in the current folder) and exits 1 if a check fails:
+
+| Check | Measured | Passes when |
+| --- | --- | --- |
+| frames | Frames sent a frame period (25 ms) or more after their deadline, plus frames the emulated box never received; fails too if the box stopped reading, naming the error | None |
+| jitter | How late each frame went out after its deadline: p50, p99 and max, in 0.1 ms steps | p99 under 5 ms |
+| drift | Each song's frames, from the third pass on, against the same song in the second pass (the first starts from a fresh engine); the last song counts if it played to its end | None differ |
+| memory | Process RSS, read from the kernel about 20 times over the run | Peak after the first pass is at most 1 MiB above RSS at its end |
+
+It needs at least three passes. Memory is flat when it stays within 1 MiB: the engine keeps nothing from one frame to the next, so what remains is allocator noise, while a leak of 8 bytes a frame passes 1 MiB within an hour and of 1 byte a frame within 8 hours.
 
 ## HTTP API
 
