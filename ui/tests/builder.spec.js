@@ -217,6 +217,20 @@ test('a new song takes a cue, and two undos remove the cue then the song', async
   expect(readFileSync(encoreFile, 'utf8')).toBe(withCue);
 });
 
+test("a fixture dragged in the builder's front view is a step to undo", async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  await expect(page.getByRole('button', { name: 'Undo (0)' })).toBeDisabled();
+  const pixel = await page.locator('[data-fixture="wash-2"] circle').first().boundingBox();
+
+  await page.mouse.move(pixel.x + pixel.width / 2, pixel.y + pixel.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(pixel.x + 60, pixel.y + 40, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.getByRole('button', { name: 'Undo (1)' })).toBeEnabled();
+});
+
 test('malformed request bodies are refused with 422', async ({ page, show, startEngine }) => {
   addSong(show);
   const { url } = await startEngine();

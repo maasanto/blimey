@@ -77,7 +77,13 @@
     steps = await request('GET', '/api/history');
   }
 
-  attempt(() => Promise.all([loadSummary(), loadSteps()]));
+  attempt(loadSummary);
+
+  // The front view beside the builder saves `rig.yaml` too; every saved rig comes back on the
+  // stream, so the step counts follow it.
+  $effect(() => {
+    if (engine.rig) loadSteps().catch((failure) => (error = failure.message));
+  });
 
   /** After a save: the song as written, and one more step to undo. */
   const reloadAfterSave = () => Promise.all([loadSong(), loadSteps()]);
@@ -163,8 +169,12 @@
     const { file, undo, redo } = await request('POST', `/api/${action}`);
     steps = { undo, redo };
     notice = action === 'undo' ? `Undid the last save of ${file}.` : `Redid the save of ${file}.`;
+    // The cue being edited, or its whole song, may have changed or gone.
+    form = newForm();
+    const shown = songName;
     await loadSummary();
-    await loadSong();
+    // A song that went is replaced in the picker, and the switch loads the new one.
+    if (songName === shown) await loadSong();
   }
 
   function openNewSong() {
@@ -218,7 +228,13 @@
 <div class="bar">
   <label>
     Song
-    <select bind:value={songName} onchange={() => (form = newForm())}>
+    <select
+      bind:value={songName}
+      onchange={() => {
+        form = newForm();
+        error = '';
+      }}
+    >
       {#each summary?.songs ?? [] as entry (entry.name)}
         <option value={entry.name}>{entry.name} (program {entry.program})</option>
       {/each}
