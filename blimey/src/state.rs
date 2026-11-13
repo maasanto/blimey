@@ -126,9 +126,9 @@ fn parse(text: &str) -> Option<SavedState> {
 /// A crash mid-write leaves the old state or the new one.
 // ponytail: no fsync, which guards against power loss rather than a crash and would cost a disk
 // flush per change during a master fade. Add one if power cuts ever lose the state.
-fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, text)?;
+pub fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    let temporary = path.with_added_extension("tmp");
+    fs::write(&temporary, contents)?;
     fs::rename(&temporary, path)
 }
 

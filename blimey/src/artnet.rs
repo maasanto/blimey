@@ -37,6 +37,18 @@ pub fn art_dmx_packet(universe: u16, sequence: u8, channels: &[u8]) -> Vec<u8> {
     packet
 }
 
+/// The universe (15-bit port-address) and channels of an ArtDmx packet; `None` for any other
+/// packet.
+pub fn parse_art_dmx(packet: &[u8]) -> Option<(u16, &[u8])> {
+    let header = packet.get(..18)?;
+    if header[..8] != *b"Art-Net\0" || header[8..10] != ART_DMX_OPCODE.to_le_bytes() {
+        return None;
+    }
+    let universe = u16::from_le_bytes([header[14], header[15]]);
+    let length = usize::from(u16::from_be_bytes([header[16], header[17]])).min(DMX_CHANNELS);
+    Some((universe, packet.get(18..18 + length)?))
+}
+
 /// Accepts `127.0.0.1` (port 6454) or `2.0.0.10:6454`.
 pub fn parse_node(text: &str) -> Result<SocketAddrV4, String> {
     text.parse()
@@ -75,37 +87,66 @@ impl ArtNet {
         })
     }
 
-    /// Never fails: a send error is reported once on stderr and the render loop keeps going.
-    pub fn send_universe(&mut self, universe: u16, channels: &[u8]) {
+    /// A send error is reported once on stderr until a send succeeds again, and returned.
+    pub fn send_universe(&mut self, universe: u16, channels: &[u8]) -> io::Result<()> {
         let sequence = self.sequences.entry(universe).or_default();
         *sequence = *sequence % 255 + 1;
         let packet = art_dmx_packet(universe, *sequence, channels);
         match self.socket.send_to(&packet, self.node) {
-            Ok(_) => self.is_failure_reported = false,
-            Err(error) if !self.is_failure_reported => {
-                eprintln!(
-                    "artnet: cannot send to {}: {error}; still trying",
-                    self.node
-                );
-                self.is_failure_reported = true;
+            Ok(_) => {
+                self.is_failure_reported = false;
+                Ok(())
             }
-            Err(_) => {}
+            Err(error) => {
+                if !self.is_failure_reported {
+                    eprintln!(
+                        "artnet: cannot send to {}: {error}; still trying",
+                        self.node
+                    );
+                    self.is_failure_reported = true;
+                }
+                Err(error)
+            }
         }
     }
 }
 
 impl DmxSink for ArtNet {
+    /// Never fails: the mirror is a preview, and its failures are reported on stderr.
     fn send(&mut self, _at: Duration, frame: &Frame) -> io::Result<()> {
         if let Some(universe) = self.mirror_universe {
-            self.send_universe(universe, frame);
+            let _ = self.send_universe(universe, frame);
         }
         Ok(())
     }
 
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+    /// Sends every universe, then returns the first error: the grids are real output.
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
+        let mut result = Ok(());
         for (universe, frame) in universes {
-            self.send_universe(*universe, frame);
+            let sent = self.send_universe(*universe, frame);
+            if result.is_ok() {
+                result = sent;
+            }
         }
+        result
+    }
+}
+
+/// When nothing else is asked for, the Enttec frame goes on universe 0.
+pub const DEFAULT_ENTTEC_UNIVERSE: u16 = 0;
+
+/// The Art-Net universe that carries the Enttec frame, given the pixel grids' universes: the
+/// one `asked` for, refused if a grid uses it; otherwise universe 0, unless a grid has it,
+/// in which case the grid keeps it and the Enttec frame gets none.
+pub fn enttec_universe(asked: Option<u16>, grid_universes: &[u16]) -> Result<Option<u16>, String> {
+    match asked {
+        Some(universe) if grid_universes.contains(&universe) => Err(format!(
+            "--artnet-universe {universe} is also a pixel grid's universe; put the Enttec frame on another one"
+        )),
+        Some(universe) => Ok(Some(universe)),
+        None if grid_universes.contains(&DEFAULT_ENTTEC_UNIVERSE) => Ok(None),
+        None => Ok(Some(DEFAULT_ENTTEC_UNIVERSE)),
     }
 }
 
@@ -148,6 +189,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_reads_back_what_the_packet_carries_and_skips_other_opcodes() {
+        let packet = art_dmx_packet(0x0123, 9, &[1, 2, 3]);
+        let mut poll = packet.clone();
+        poll[8..10].copy_from_slice(&0x2000u16.to_le_bytes());
+
+        assert_eq!(parse_art_dmx(&packet), Some((0x0123, &[1, 2, 3, 0][..])));
+        assert_eq!(parse_art_dmx(&poll), None, "ArtPoll is not DMX");
+        assert_eq!(parse_art_dmx(&packet[..19]), None, "cut short");
+    }
+
+    #[test]
     #[should_panic(expected = "32768")]
     fn universe_beyond_15_bits_is_refused() {
         art_dmx_packet(0x8000, 1, &[0; 2]);
@@ -161,7 +213,7 @@ mod tests {
 
         let sequences: Vec<u8> = (0..257)
             .map(|_| {
-                sender.send_universe(0, &[0; 2]);
+                sender.send_universe(0, &[0; 2]).unwrap();
                 receiver.recv(&mut buffer).unwrap();
                 buffer[12]
             })
@@ -180,7 +232,7 @@ mod tests {
         let sent: Vec<(u16, u8)> = [0, 1, 0, 1, 1]
             .into_iter()
             .map(|universe| {
-                sender.send_universe(universe, &[0; 2]);
+                sender.send_universe(universe, &[0; 2]).unwrap();
                 receiver.recv(&mut buffer).unwrap();
                 (u16::from_le_bytes([buffer[14], buffer[15]]), buffer[12])
             })
@@ -211,8 +263,8 @@ mod tests {
         frame[511] = 11;
 
         sender.send(Duration::ZERO, &frame).unwrap();
-        sender.send_universe(1, &[20; 384]);
-        sender.send_universe(0x0110, &[30; 3]);
+        sender.send_universe(1, &[20; 384]).unwrap();
+        sender.send_universe(0x0110, &[30; 3]).unwrap();
 
         let mut universes: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
         let mut buffer = [0; 600];

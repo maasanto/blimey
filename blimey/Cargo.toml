@@ -7,6 +7,8 @@ publish.workspace = true
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
+# Already in the tree: reads the soak's RSS from the kernel.
+libc = "0.2"
 midir = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -14,7 +16,7 @@ serde_yaml_ng = "0.10"
 # libudev only adds USB details to port listings on Linux; macOS uses IOKit regardless.
 serialport = { version = "4.10", default-features = false }
 blimey-engine = { path = "../engine" }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already in the tree through midir: runs the loop CoreMIDI updates its port list on.

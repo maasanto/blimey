@@ -1,0 +1,12 @@
+# Every replay fixture of the cues show, back to back, for the soak test.
+show: ../shows/cues
+songs:
+  - ../midi/cue-fade.mid
+  - ../midi/cue-over-legacy.mid
+  - ../midi/song-switch.mid
+  - ../midi/panic.mid
+  - ../midi/master.mid
+  - ../midi/swell-clock.mid
+  - ../midi/swell-no-clock.mid
+  - ../midi/pattern-92.mid
+  - ../midi/pattern-140.mid

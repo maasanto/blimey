@@ -139,8 +139,9 @@ impl DmxSink for StreamSink {
         Ok(())
     }
 
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
         self.artnet = universes.clone();
+        Ok(())
     }
 
     fn status(&mut self, status: &Status) {

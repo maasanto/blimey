@@ -4,8 +4,10 @@ mod enttec;
 mod event_log;
 mod hot_reload;
 mod midi_input;
+mod record;
 mod recorder;
 mod service;
+mod soak;
 mod state;
 mod stream;
 mod ui;
@@ -31,9 +33,11 @@ use serialport::SerialPortType;
 use crate::api::Mode;
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
+use crate::enttec::emulator::EmulatedEnttec;
 use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
 use crate::recorder::Recorder;
+use crate::soak::{Setlist, Soak};
 use crate::state::Resumed;
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
@@ -69,6 +73,57 @@ enum Command {
         /// (events.log). Default: ~/Library/Application Support/Blimey
         #[arg(long)]
         state_dir: Option<PathBuf>,
+    },
+    /// Record what arrives on a MIDI port, such as Reaper playing a song over the IAC bus, to a
+    /// Standard MIDI File for `blimey replay`, clock, Start and Stop included. Time 0 is the
+    /// first message. Stops on Ctrl-C.
+    Record {
+        out: PathBuf,
+        /// MIDI input to record: the first port whose name contains this text.
+        #[arg(long, default_value = "IAC")]
+        midi_port: String,
+        /// Also stop at the first MIDI Stop after a Start or Continue: when Reaper stops.
+        #[arg(long)]
+        until_stop: bool,
+        /// Also capture the Art-Net received on UDP 6454, such as EMU's output, to this frame
+        /// dump on the same timeline as the MIDI, on the 25 ms frame grid (docs/migration.md).
+        /// Keeps only the universes --show outputs on.
+        #[arg(long, value_name = "DUMP", requires = "show")]
+        artnet: Option<PathBuf>,
+        /// The show the Art-Net is captured for: its pixel grids' universes are kept as
+        /// Art-Net, any other universe but the Enttec one is ignored.
+        #[arg(long, value_name = "SHOW_DIR", requires = "artnet")]
+        show: Option<PathBuf>,
+        /// The Art-Net universe that stands for the Enttec box in the dump: the 15-bit
+        /// port-address. Defaults to 0, unless a pixel grid uses 0: then the grid keeps it.
+        #[arg(
+            long,
+            value_parser = clap::value_parser!(u16).range(..=i64::from(artnet::MAX_UNIVERSE)),
+            requires = "artnet",
+        )]
+        artnet_universe: Option<u16>,
+    },
+    /// Loop a setlist of recorded songs against its show for hours, then report dropped
+    /// frames, drift, frame-time jitter and memory. Exits with status 1 if a check fails.
+    Soak {
+        /// YAML file: `show: <folder>` and `songs: [<file.mid>, …]`, relative to the file.
+        setlist: PathBuf,
+        #[arg(long, default_value_t = 4.0)]
+        hours: f64,
+        /// Write the report to this file. Default: a new
+        /// soak-<setlist>-<mode>-<unix time>-<process id>.txt in the current folder.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Simulate on a fake clock as fast as the machine renders, with no outputs: 100 hours
+        /// of show in minutes.
+        #[arg(long, conflicts_with_all = ["emulated_enttec", "dmx_port", "listen", "artnet"])]
+        accelerated: bool,
+        /// Send DMX through the real driver to an emulated Enttec box on a pseudo terminal,
+        /// and count the frames it receives.
+        #[arg(long, conflicts_with = "dmx_port")]
+        emulated_enttec: bool,
+        #[command(flatten)]
+        outputs: Outputs,
     },
     /// List MIDI input ports and serial ports.
     Devices,
@@ -181,8 +236,6 @@ struct ArtNetMirror {
     artnet_universe: Option<u16>,
 }
 
-const DEFAULT_MIRROR_UNIVERSE: u16 = 0;
-
 impl ArtNetMirror {
     /// Opens the Art-Net output, which also carries `rig`'s pixel grids on Art-Net universes.
     // ponytail: checked against the rig at start only; a hot reload that adds grids isn't rechecked.
@@ -201,23 +254,16 @@ impl ArtNetMirror {
             .map_err(io::Error::other)?;
         if mirror.is_none() {
             eprintln!(
-                "blimey: not mirroring the output: a pixel grid uses Art-Net universe {DEFAULT_MIRROR_UNIVERSE}; pass --artnet-universe to mirror on another"
+                "blimey: not mirroring the output: a pixel grid uses Art-Net universe {}; pass --artnet-universe to mirror on another",
+                artnet::DEFAULT_ENTTEC_UNIVERSE
             );
         }
         ArtNet::new(node, mirror).map(Some)
     }
 
-    /// Where the output is mirrored, given the universes the grids use: the one asked for,
-    /// or by default universe 0 unless a grid has it.
+    /// Where the output is mirrored, given the universes the grids use.
     fn mirror_universe(&self, grid_universes: &[u16]) -> Result<Option<u16>, String> {
-        match self.artnet_universe {
-            Some(universe) if grid_universes.contains(&universe) => Err(format!(
-                "--artnet-universe {universe} is also a pixel grid's universe; mirror the Enttec frame on another one"
-            )),
-            Some(universe) => Ok(Some(universe)),
-            None if grid_universes.contains(&DEFAULT_MIRROR_UNIVERSE) => Ok(None),
-            None => Ok(Some(DEFAULT_MIRROR_UNIVERSE)),
-        }
+        artnet::enttec_universe(self.artnet_universe, grid_universes)
     }
 }
 
@@ -248,6 +294,35 @@ fn main() -> ExitCode {
             outputs,
             state_dir,
         } => run(&show_dir, &midi_port, &outputs, state_dir),
+        Command::Record {
+            out,
+            midi_port,
+            until_stop,
+            artnet,
+            show,
+            artnet_universe,
+        } => record(
+            &out,
+            &midi_port,
+            until_stop,
+            artnet.as_deref().zip(show.as_deref()),
+            artnet_universe,
+        ),
+        Command::Soak {
+            setlist,
+            hours,
+            report,
+            accelerated,
+            emulated_enttec,
+            outputs,
+        } => soak(
+            &setlist,
+            hours,
+            report,
+            accelerated,
+            emulated_enttec,
+            &outputs,
+        ),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
@@ -344,6 +419,71 @@ fn run(
         u32::MAX,
     )?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// `artnet` is the dump to capture Art-Net to, and the show it is captured for.
+fn record(
+    out: &Path,
+    midi_port: &str,
+    until_stop: bool,
+    artnet: Option<(&Path, &Path)>,
+    artnet_universe: Option<u16>,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let artnet = artnet
+        .map(|(dump, show_dir)| {
+            let grid_universes = Show::load(show_dir)?.rig.artnet_universes;
+            let enttec_universe = artnet::enttec_universe(artnet_universe, &grid_universes)?;
+            Ok::<_, Box<dyn Error>>(record::ArtNetRecording {
+                dump,
+                enttec_universe,
+                grid_universes,
+            })
+        })
+        .transpose()?;
+    record::record(
+        out,
+        &record::Recording {
+            midi_port,
+            until_stop,
+            artnet,
+        },
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn soak(
+    setlist: &Path,
+    hours: f64,
+    report: Option<PathBuf>,
+    accelerated: bool,
+    emulated_enttec: bool,
+    outputs: &Outputs,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let setlist = Setlist::load(setlist)?;
+    let mut shows = outputs.shows(&setlist.show_dir)?;
+    let device = emulated_enttec.then(EmulatedEnttec::plug_in).transpose()?;
+    let mut output = outputs.start(&setlist.show_dir, &shows.current().rig)?;
+    if let Some(device) = &device {
+        output.dmx = Some(EnttecPro::new(device.path()));
+    }
+    let soak = Soak {
+        setlist: &setlist,
+        hours,
+        accelerated,
+        output,
+        device: device.as_ref(),
+        report,
+    };
+    let passed = if accelerated {
+        soak.run(&mut FakeClock::default(), shows)?
+    } else {
+        soak.run(&mut MonotonicClock::default(), shows)?
+    };
+    Ok(if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// What `run` refuses to start without: somewhere to send frames, and a show that loads.
@@ -488,13 +628,14 @@ impl DmxSink for LiveOutput {
         Ok(())
     }
 
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
         if let Some(stream) = &mut self.stream {
-            stream.send_artnet(universes);
+            stream.send_artnet(universes)?;
         }
         if let Some(artnet) = &mut self.artnet {
-            artnet.send_artnet(universes);
+            artnet.send_artnet(universes)?;
         }
+        Ok(())
     }
 
     fn status(&mut self, status: &Status) {
@@ -516,8 +657,8 @@ impl DmxSink for Recorded {
         self.output.send(at, frame)
     }
 
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
-        self.output.send_artnet(universes);
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
+        self.output.send_artnet(universes)
     }
 
     fn status(&mut self, status: &Status) {
@@ -557,6 +698,31 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    #[test]
+    fn record_takes_art_net_universes_up_to_15_bits_like_run() {
+        let record = |universe: &str| {
+            Command::try_parse_from([
+                "blimey",
+                "record",
+                "take.mid",
+                "--artnet",
+                "emu.dump",
+                "--show",
+                "shows/fossile",
+                "--artnet-universe",
+                universe,
+            ])
+        };
+
+        assert!(record("32767").is_ok());
+        assert!(record("32768").is_err());
+        assert!(
+            Command::try_parse_from(["blimey", "record", "take.mid", "--artnet", "emu.dump"])
+                .is_err(),
+            "the capture needs the show whose universes it keeps"
+        );
+    }
+
     const WALL_ON_ART_NET_3: &str = "fixtures:\n  - { name: wall, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, output: artnet, universe: 3, address: 1, canvas: { x: 0.5, y: 0.5 } }\n";
 
     #[test]
@@ -572,7 +738,9 @@ mod tests {
         let mut universe = [0; 512];
         universe[0] = 255;
 
-        output.send_artnet(&ArtNetFrames::from([(3, universe)]));
+        output
+            .send_artnet(&ArtNetFrames::from([(3, universe)]))
+            .unwrap();
         output.send(Duration::ZERO, &[0; 512]).unwrap();
 
         let frame = output.stream.unwrap().latest_frame();
