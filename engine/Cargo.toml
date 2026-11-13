@@ -11,3 +11,7 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order: a look's entries apply in file order, so show files keep their key order as JSON.
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
+
+[dev-dependencies]
+# Writes the pixel preview sheet (examples/pixel_sheet.rs).
+png = "0.18"

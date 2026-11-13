@@ -12,8 +12,9 @@ use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{self, Look, LookSettings};
 use crate::pattern::{Pattern, PatternEntry, PatternTarget};
+use crate::pixel::{PixelEntry, PixelScene};
 use crate::rig::Rig;
-use crate::{Frame, Show};
+use crate::{Show, Universes};
 
 /// A cue as written in a song file, before its targets and colours are checked.
 #[derive(Deserialize)]
@@ -33,6 +34,7 @@ pub(crate) enum CueEntry {
         release: Option<Length>,
     },
     Pattern(PatternEntry),
+    Pixel(PixelEntry),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +45,8 @@ pub enum Cue {
     Swell(Swell),
     /// Envelope hits looping on the beat from the bar line after note-on until note-off.
     Pattern(Pattern),
+    /// A shape animated over every pixel of the rig: fades in from note-on, out from note-off.
+    Pixel(PixelScene),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +97,7 @@ impl CueEntry {
                 release: release.unwrap_or(INSTANT),
             })),
             CueEntry::Pattern(entry) => entry.resolve(show, time_signature).map(Cue::Pattern),
+            CueEntry::Pixel(entry) => entry.resolve(show).map(Cue::Pixel),
         }
     }
 }
@@ -119,6 +124,7 @@ impl Cue {
             Cue::Scene(scene) => &scene.name,
             Cue::Swell(swell) => &swell.name,
             Cue::Pattern(pattern) => &pattern.name,
+            Cue::Pixel(scene) => &scene.name,
         }
     }
 
@@ -136,6 +142,7 @@ impl Cue {
     pub fn opacity(&self, clock: &ClockFollower, started: Moment, at: Duration) -> f32 {
         let opacity = match self {
             Cue::Scene(scene) => clock.progress(scene.fade_in, started, at),
+            Cue::Pixel(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Swell(swell) => swell
                 .curve
                 .level(clock.progress(swell.duration, started, at)),
@@ -155,13 +162,25 @@ impl Cue {
             Cue::Scene(scene) => scene.release,
             Cue::Swell(swell) => swell.release,
             Cue::Pattern(pattern) => pattern.release,
+            Cue::Pixel(scene) => scene.release,
         }
     }
 
-    /// Draws the cue at full opacity over `frame`, its dimmers scaled by `intensity` (0–1).
-    /// A pattern's dimmer target is its fixtures as below, darkened by `intensity`.
-    pub fn draw(&self, rig: &Rig, intensity: f32, frame: &mut Frame) {
+    /// Draws the cue at full opacity over `out`, as it is at `at` after it started at
+    /// `started`, its dimmers scaled by `intensity` (0–1). A pattern's dimmer target is its
+    /// fixtures as below, darkened by `intensity`.
+    pub fn draw(
+        &self,
+        rig: &Rig,
+        clock: &ClockFollower,
+        started: Moment,
+        at: Duration,
+        intensity: f32,
+        out: &mut Universes,
+    ) {
+        let frame = &mut out.enttec;
         let mut look = match self {
+            Cue::Pixel(scene) => return scene.draw(rig, clock, started, at, intensity, out),
             Cue::Scene(scene) => scene.look.clone(),
             Cue::Swell(swell) => swell.target.clone(),
             Cue::Pattern(pattern) => match &pattern.target {

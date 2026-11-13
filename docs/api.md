@@ -32,9 +32,33 @@ The engine refuses to load a rig where:
 - two fixtures' channel ranges overlap (`fixtures "wash-a" (DMX 1-16) and "wash-b" (DMX 16-31) overlap`),
 - a fixture runs past channel 512,
 - a fixture name appears twice, a group lists an unknown fixture, or a group shares a fixture's name,
-- the profile or mode doesn't exist.
+- the profile or mode doesn't exist,
+- a pixel grid doesn't fit its output (see below).
 
 **Canvas.** Fixtures sit on a normalised 2D canvas, 0–1 on both axes, which is the stage as the audience sees it: a front view, not a plan from above. `x` runs from the left edge (0) to the right edge (1) as seen from the audience: x = 0 is stage right, x = 1 is stage left. `y` runs from the floor (0) up to the top of the stage picture (1). A fixture's pixels sit on one row at height `y`, spread evenly across `width` starting at `x`, in pixel order: pixel *i* of *n* is at `x + width × (i + 0.5) / n`. A single-pixel fixture can omit `width`.
+
+**Pixel grids.** Any RGB or RGBW grid is a fixture of `type: pixel-grid`, with no profile. A column is a grid with one column.
+
+```yaml
+fixtures:
+  - name: back-grid
+    type: pixel-grid
+    columns: 16
+    rows: 8
+    colour_order: RGB          # each pixel's emitters in DMX order: R, G, B and optional W, e.g. GRB, RGBW, WRGB
+    wiring: serpentine         # optional: row-by-row (default) or serpentine
+    start_corner: bottom-left  # optional: top-left (default), top-right, bottom-left, bottom-right
+    output: artnet             # optional: enttec (default) or artnet
+    universe: 2                # Art-Net port-address of the first pixel; only, and required, for artnet
+    address: 1                 # 1-based DMX start address in that universe
+    canvas: { x: 0.2, y: 0.5, width: 0.6, height: 0.4 }
+```
+
+- Positions are in the front view from the audience: x 0 is stage right and 1 stage left; y 0 is the floor and 1 the top. `canvas` is the rectangle the grid fills, its bottom-left corner at (`x`, `y`). Pixels sit at the centres of `columns` × `rows` equal cells.
+- `start_corner` is where the first pixel is, as seen from the audience. The chain runs along rows: `row-by-row` starts every row on the start corner's side, `serpentine` runs each row back the way the previous one came. With `start_corner: bottom-left`, row 1 of the wiring is the bottom row.
+- One universe holds 170 RGB or 128 RGBW pixels. A pixel that doesn't fit in the rest of its universe starts the next Art-Net universe at channel 1. An `enttec` grid must fit in the Enttec universe, shared with the other fixtures: anything bigger needs `output: artnet`.
+- Only pixel cues drive grids. Looks, scenes, swells and patterns can't name them yet, and groups can't list them.
+- The engine refuses a grid that overflows the Enttec universe or Art-Net universe 32767, an `artnet` grid without `universe`, an `enttec` grid with one, a bad colour order, and channels that overlap another fixture or grid in the same universe (`fixtures "a" (Art-Net universe 4, DMX 1-6) and "b" (Art-Net universe 4, DMX 4-9) overlap`).
 
 ### palettes.yaml
 
@@ -96,6 +120,18 @@ cues:
       - { at: 1,   shape: ramp-up, length: 0.5 beats, level: 100% }
       - { at: 2,   shape: sine,    length: 0.5 beats, level: 80% }
       - { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 100% }
+  40:
+    name: bridge-chase
+    type: pixel
+    shape: bar           # optional, default bar
+    effect: chase        # optional, default static
+    params: { color: amber, width: 0.2, speed: 1 bar, direction: left-to-right }
+    seed: 7              # optional, default 0
+    rgbw: white-rich     # optional, default saturated
+    fade_in: 500ms       # optional, default 0
+    release: 1s          # optional, default 0
+    layer_2:             # optional
+      { shape: circle, effect: pulse, blend: add, params: { color: white, width: 0.1 } }
 ```
 
 - `safe_look`, `values` and `target` use the [look](#looks) keys.
@@ -107,6 +143,48 @@ cues:
     - Start: the loop starts on the next bar line after note-on, so a note just before a bar line waits for it. A note up to one MIDI clock tick (1/24 beat) after a bar line starts it at once, in step with that bar line. That window absorbs MIDI jitter and a note placed on the bar but counted a tick late; it is 18–27 ms at 140–92 BPM, under one frame, so the first hit loses at most a frame of light. Bar lines follow Reaper's bar position from the MIDI clock, or count from the song select without one.
     - `target: { all-wash: dimmer }` scales the intensity the layers below give those fixtures by the pattern's level (their dimmer channel, or their colour channels without one): dark between hits, so put a scene under it for colour. Velocity sets how deep it cuts: 127 goes dark between hits, 64 halfway. On release the fixtures fade back to the layers below.
     - `target: { all-wash: { color: amber } }` takes look settings, as a swell's `target`: the level is how much of that look shows over the layers below. Every entry of one target is either `dimmer` or look settings.
+  - `pixel` draws a preset `shape` on the canvas, animated by an `effect`, at every pixel of every fixture and grid. It fades in over `fade_in` from note-on and out over `release` from note-off. See [pixel cues](#pixel-cues).
+
+### Pixel cues
+
+The effect is worked out in RGB at each pixel's canvas position, then converted per fixture: RGBW pixels follow `rgbw` (`saturated` or `white-rich`, as in looks). Velocity is the cue's intensity: it goes on the dimmer channel of fixtures that have one, and scales the colour of the others. A pixel cue writes only what it drives: the colour emitters of fixtures and grids, and the dimmer channel of a fixture whose pixels it draws. Fixtures without colour emitters, and other channels such as a shutter or strobe, keep the layers below. A frame depends only on the time and beats since the note, and on `seed`.
+
+`params`, all optional:
+
+| Key | Value | Default |
+| --- | --- | --- |
+| `color` | Palette name or `#rrggbb`: the lit colour | white |
+| `background` | Palette name or `#rrggbb`: where the shape isn't lit | black |
+| `width` | Above 0, up to 1, of the canvas: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
+| `speed` | Duration of one cycle, any unit; beats and bars follow the tempo | `1 bar` |
+| `direction` | `left-to-right` (as seen from the audience: stage right to stage left), `right-to-left`, `bottom-to-top` (floor up), `top-to-bottom` | `left-to-right` |
+| `phase` | Offset in cycles: shifts a moving effect in time, a static shape along its travel | 0 |
+| `curve` | A pulse's level over one cycle, any swell curve | `sine` |
+
+Shapes, each with a position along its travel from 0 to 1:
+
+| Shape | Lit |
+| --- | --- |
+| `bar` | A band `width` wide across the direction, centred on the position |
+| `sweep` | Everything from the start edge up to the position: a wipe |
+| `circle` | A ring `width` thick around the canvas centre, at the position as a fraction of the distance to the corners: growing for `left-to-right` and `bottom-to-top`, shrinking for the other two |
+| `split` | The canvas split into halves mirrored about the centre line across the direction, with a bar `width` wide in each: the two bars travel from the centre out to the edges for `left-to-right` and `bottom-to-top`, from the edges in for the other two |
+| `gradient` | A ramp from `background` to `color` along the direction, scrolled by the position |
+| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down. Cells at the same position along the direction, a fixture's at its centre, light together: two grids hung one above the other step left to right as one |
+
+Effects, each repeating once per `speed`, counted from the note:
+
+| Effect | Does |
+| --- | --- |
+| `static` | Holds the shape mid-travel; `phase` moves it |
+| `move` | Glides the shape along its travel |
+| `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width` |
+| `pulse` | Holds the shape mid-travel, its level following `curve` |
+| `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. `seed` fixes the pattern |
+
+Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, `wave` is `gradient` with `move`, and `strobe` is `pulse` with a square curve such as `{ points: [[0, 1], [0.2, 1], [0.21, 0]] }`. `noise` has no equivalent; `sparkle` is the closest.
+
+`layer_2` takes its own `shape`, `effect` and `params`, plus `blend`: `max` (the brighter of the two per emitter, the default), `add` (the sum, clipped at full) or `mask` (layer 1 shows only where layer 2's shape is lit, as much as it is). Layer 2's sparkle differs from layer 1's under the same seed.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
@@ -126,9 +204,9 @@ What the MIDI does (plan §5). Output depends only on the show and the MIDI rece
 
 Fades run from the note's timestamp, not from the next frame.
 
-**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`; an edited `bpm` sets the pace from the next frame, without moving musical time (the builder's metronome). When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
+**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`; an edited `bpm` sets the pace from the next frame, without moving musical time (the builder's metronome). When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top, except that pixel cues always draw above the others.
 
-Layers, lowest first: legacy notes, the safe look after panic, cues, then the master dimmer. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no fixture uses (legacy-only). Other channels, such as a shutter, keep their value.
+Layers, lowest first (plan §5): legacy notes, the safe look after panic, scene, swell and pattern cues, pixel cues, then the master dimmer. Within the cue and pixel layers, a cue fired later draws over earlier ones. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no profiled fixture uses (legacy-only, and pixel grids, on every Art-Net universe too). Other channels, such as a shutter, keep their value.
 
 ## Looks
 
@@ -171,7 +249,7 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 **Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, cue edits, undo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
-`--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
+`--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. The same node also gets every Art-Net universe the rig's pixel grids use, one packet each per frame, blackout included; each universe numbers its packets on its own. If a grid uses universe 0 and `--artnet-universe` isn't given, the grid keeps universe 0 and the Enttec frame isn't mirrored (the engine says so on stderr): give `--artnet-universe` to mirror it elsewhere. An `--artnet-universe` that is also a grid's universe is refused. Without `--artnet`, a rig with Art-Net grids starts with a warning that they get no output. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
 ## State, event log and service
 
@@ -295,6 +373,9 @@ Server to client only, one JSON object per text message. Every message has a `ty
       "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"]
     }
   ],
+  "grids": [
+    { "name": "back-grid", "pixels": [{ "x": 0.21875, "y": 0.525 }, "…"] }
+  ],
   "groups": { "all-wash": ["wash-1", "wash-2", "wash-3", "wash-4"] }
 }
 ```
@@ -302,7 +383,8 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `protocol` is bumped only by a breaking change to this stream.
 - `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
-- `pixels` are canvas positions, in pixel order.
+- `pixels` are canvas positions, in pixel order; for a grid, in wiring order.
+- `grids`: the rig's [pixel grids](#rigyaml), apart from `fixtures` since they have no profile, mode or single address.
 
 ### `frame`: the output, after each rendered frame
 
@@ -321,7 +403,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 
 - `at_ms`: engine time when the frame was output, in milliseconds.
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
-- `pixels`: per fixture, the colour each pixel shows, in the same order as the `rig` message. It is computed from `dmx` (white added to R, G and B, then the dimmer channel applied), so the preview always matches the output.
+- `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `song`: the selected song's name, or `null`.
 - `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off.
 - `master`: the master dimmer, 0–1.

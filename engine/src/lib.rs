@@ -16,6 +16,7 @@ pub mod look;
 mod midi_file;
 pub mod ofl;
 pub mod pattern;
+pub mod pixel;
 mod playback;
 pub mod rig;
 mod show;
@@ -28,6 +29,7 @@ pub use midi_file::MidiFile;
 pub use playback::{CueAction, CueEvent, CueStatus, Status, resume_messages};
 pub use show::Show;
 
+use std::collections::BTreeMap;
 use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,7 +37,38 @@ use std::time::{Duration, Instant};
 pub const DMX_CHANNELS: usize = 512;
 pub const FRAME_PERIOD: Duration = Duration::from_millis(25);
 
+/// One universe of DMX values; index 0 is channel 1.
 pub type Frame = [u8; DMX_CHANNELS];
+
+/// Art-Net port-address → that universe's channels.
+pub type ArtNetFrames = BTreeMap<u16, Frame>;
+
+/// Where a channel goes out: the Enttec box's single universe, or an Art-Net universe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Universe {
+    Enttec,
+    /// The 15-bit Art-Net port-address.
+    ArtNet(u16),
+}
+
+/// One rendered frame on every universe: the Enttec one, and the Art-Net ones the rig's pixel
+/// grids use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Universes {
+    pub enttec: Frame,
+    pub artnet: ArtNetFrames,
+}
+
+impl Universes {
+    pub fn frame_mut(&mut self, universe: Universe) -> &mut Frame {
+        match universe {
+            Universe::Enttec => &mut self.enttec,
+            Universe::ArtNet(port_address) => {
+                self.artnet.entry(port_address).or_insert([0; DMX_CHANNELS])
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiEvent {
@@ -53,6 +86,10 @@ pub trait MidiSource {
 pub trait DmxSink {
     /// Outputs one frame. `at` is the clock time at which it was sent.
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()>;
+
+    /// Outputs the Art-Net universes of the next frame sent, just before `send`. Sinks without
+    /// Art-Net output ignore them.
+    fn send_artnet(&mut self, _universes: &ArtNetFrames) {}
 
     /// The engine state behind the next frame sent. Sinks that only output DMX ignore it.
     fn status(&mut self, _status: &Status) {}
@@ -141,27 +178,39 @@ impl Clock for FakeClock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedFrame {
     pub at: Duration,
+    /// The Enttec universe.
     pub values: Frame,
+    pub artnet: ArtNetFrames,
 }
 
 /// A sink that keeps every frame it is sent.
 #[derive(Default)]
 pub struct FakeDmx {
     pub frames: Vec<RecordedFrame>,
+    /// The Art-Net universes of the next frame.
+    artnet: ArtNetFrames,
 }
 
 impl DmxSink for FakeDmx {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
-        self.frames.push(RecordedFrame { at, values: *frame });
+        self.frames.push(RecordedFrame {
+            at,
+            values: *frame,
+            artnet: std::mem::take(&mut self.artnet),
+        });
         Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        self.artnet = universes.clone();
     }
 }
 
 /// Renders `frame_count` frames, frame N due at N × `FRAME_PERIOD` on `clock`.
 ///
-/// Layers, lowest first (plan §5): legacy notes, `look` on the fixtures it sets, cues, then
-/// the master dimmer. Each frame renders at its deadline, so fades depend only on event
-/// timestamps. Deadlines are absolute, so a late frame never shifts the ones after it.
+/// Layers, lowest first (plan §5): legacy notes, `look` on the fixtures it sets, cues, pixel
+/// cues, then the master dimmer. Each frame renders at its deadline, so fades depend only on
+/// event timestamps. Deadlines are absolute, so a late frame never shifts the ones after it.
 pub fn run(
     clock: &mut impl Clock,
     midi: &mut impl MidiSource,
@@ -187,7 +236,8 @@ pub fn run(
             eprintln!("blimey: {line}");
         }
         sink.status(&playback.status(show));
-        sink.send(clock.now(), &output)?;
+        sink.send_artnet(&output.artnet);
+        sink.send(clock.now(), &output.enttec)?;
     }
     Ok(())
 }

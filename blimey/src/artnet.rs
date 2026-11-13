@@ -1,16 +1,17 @@
 //! Art-Net output, per Artistic Licence's "Art-Net 4" specification: one ArtDmx packet per
 //! universe per frame, over UDP. Used as a preview mirror (BlenderDMX, docs/blenderdmx.md)
-//! and, from C9, as the real output for pixel grids beyond the Enttec universe.
+//! and as the real output for pixel grids on Art-Net universes.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
-use blimey_engine::{DMX_CHANNELS, DmxSink, Frame};
+use blimey_engine::{ArtNetFrames, DMX_CHANNELS, DmxSink, Frame};
 
 pub const PORT: u16 = 6454;
 /// Port-address is 15 bits: Net (7), Sub-Net (4), Universe (4).
-pub const MAX_UNIVERSE: u16 = 0x7FFF;
+pub const MAX_UNIVERSE: u16 = blimey_engine::rig::MAX_ARTNET_UNIVERSE;
 const ART_DMX_OPCODE: u16 = 0x5000;
 const PROTOCOL_VERSION: u16 = 14;
 
@@ -49,18 +50,19 @@ pub fn parse_node(text: &str) -> Result<SocketAddrV4, String> {
 }
 
 /// Sends to one node, unicast or broadcast. As a `DmxSink` it mirrors the engine's frame on
-/// `mirror_universe`.
+/// `mirror_universe`, if any, and sends the pixel grids' universes.
 pub struct ArtNet {
     socket: UdpSocket,
     node: SocketAddrV4,
-    mirror_universe: u16,
-    /// 1 to 255; 0 would tell receivers not to reorder.
-    sequence: u8,
+    mirror_universe: Option<u16>,
+    /// The last sequence number sent on each universe, 1 to 255: receivers reorder packets per
+    /// universe, so each counts on its own. 0 would tell them not to reorder.
+    sequences: BTreeMap<u16, u8>,
     is_failure_reported: bool,
 }
 
 impl ArtNet {
-    pub fn new(node: SocketAddrV4, mirror_universe: u16) -> io::Result<Self> {
+    pub fn new(node: SocketAddrV4, mirror_universe: Option<u16>) -> io::Result<Self> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
         // Nodes are often addressed by broadcast, e.g. 2.255.255.255.
         socket.set_broadcast(true)?;
@@ -68,15 +70,16 @@ impl ArtNet {
             socket,
             node,
             mirror_universe,
-            sequence: 0,
+            sequences: BTreeMap::new(),
             is_failure_reported: false,
         })
     }
 
     /// Never fails: a send error is reported once on stderr and the render loop keeps going.
     pub fn send_universe(&mut self, universe: u16, channels: &[u8]) {
-        self.sequence = self.sequence % 255 + 1;
-        let packet = art_dmx_packet(universe, self.sequence, channels);
+        let sequence = self.sequences.entry(universe).or_default();
+        *sequence = *sequence % 255 + 1;
+        let packet = art_dmx_packet(universe, *sequence, channels);
         match self.socket.send_to(&packet, self.node) {
             Ok(_) => self.is_failure_reported = false,
             Err(error) if !self.is_failure_reported => {
@@ -93,15 +96,21 @@ impl ArtNet {
 
 impl DmxSink for ArtNet {
     fn send(&mut self, _at: Duration, frame: &Frame) -> io::Result<()> {
-        self.send_universe(self.mirror_universe, frame);
+        if let Some(universe) = self.mirror_universe {
+            self.send_universe(universe, frame);
+        }
         Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        for (universe, frame) in universes {
+            self.send_universe(*universe, frame);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
 
     #[test]
@@ -147,7 +156,7 @@ mod tests {
     #[test]
     fn sequence_counts_1_to_255_then_wraps_past_0() {
         let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let mut sender = ArtNet::new(local_address(&receiver), 0).unwrap();
+        let mut sender = ArtNet::new(local_address(&receiver), Some(0)).unwrap();
         let mut buffer = [0; 600];
 
         let sequences: Vec<u8> = (0..257)
@@ -163,9 +172,40 @@ mod tests {
     }
 
     #[test]
+    fn each_universe_counts_its_own_sequence() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut sender = ArtNet::new(local_address(&receiver), None).unwrap();
+        let mut buffer = [0; 600];
+
+        let sent: Vec<(u16, u8)> = [0, 1, 0, 1, 1]
+            .into_iter()
+            .map(|universe| {
+                sender.send_universe(universe, &[0; 2]);
+                receiver.recv(&mut buffer).unwrap();
+                (u16::from_le_bytes([buffer[14], buffer[15]]), buffer[12])
+            })
+            .collect();
+
+        assert_eq!(sent, [(0, 1), (1, 1), (0, 2), (1, 2), (1, 3)]);
+    }
+
+    #[test]
+    fn without_a_mirror_universe_the_engine_frame_is_not_sent() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut sender = ArtNet::new(local_address(&receiver), None).unwrap();
+
+        sender.send(Duration::ZERO, &[1; DMX_CHANNELS]).unwrap();
+
+        assert!(receiver.recv(&mut [0; 600]).is_err());
+    }
+
+    #[test]
     fn several_universes_arrive_on_localhost_and_decode_per_universe() {
         let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let mut sender = ArtNet::new(local_address(&receiver), 0).unwrap();
+        let mut sender = ArtNet::new(local_address(&receiver), Some(0)).unwrap();
         let mut frame = [0; DMX_CHANNELS];
         frame[0] = 10;
         frame[511] = 11;
@@ -174,7 +214,7 @@ mod tests {
         sender.send_universe(1, &[20; 384]);
         sender.send_universe(0x0110, &[30; 3]);
 
-        let mut universes = BTreeMap::new();
+        let mut universes: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
         let mut buffer = [0; 600];
         for _ in 0..3 {
             let size = receiver.recv(&mut buffer).unwrap();

@@ -34,6 +34,12 @@ cues:
     duration: 4 bars
     curve: ease-in
     release: 500ms
+  40:
+    name: bridge-chase
+    type: pixel
+    effect: chase
+    params: { color: amber, width: 0.2, speed: 1 bar, direction: left-to-right }
+    seed: 7
   42:
     name: verse-pulse
     type: pattern
