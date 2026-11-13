@@ -24,6 +24,12 @@ const TEMPO_WINDOW: usize = 25;
 const MIN_FIT_TICKS: usize = 6;
 /// No tick for this long means the clock is gone. A tick every 250 ms is 10 BPM, far below any song.
 const CLOCK_TIMEOUT: Duration = Duration::from_millis(250);
+/// A stalled MIDI input delivers the ticks it held all at once. Ticks closer than this (a tick
+/// every 5 ms is 500 BPM) are such a burst.
+const BURST_GAP: Duration = Duration::from_millis(2);
+/// A fit outside this is not a tempo but ticks bunched in some other way; the previous estimate
+/// stands. Without the bound, a near-zero interval makes musical time race, or turn NaN.
+const PLAUSIBLE_BPM: std::ops::RangeInclusive<f64> = 20.0..=500.0;
 /// Bounds on the line's speed against the clock's tempo while it catches up. Keeps beats moving
 /// forward when ahead, and fades no more than twice as fast as written when behind.
 const CATCH_UP_SPEEDS: (f64, f64) = (0.5, 2.0);
@@ -173,6 +179,14 @@ impl ClockFollower {
             self.song_from_beats = beats;
             self.transport = Transport::Playing;
         }
+        // A burst still counts, but its arrival times say nothing of the tempo: fit afresh after it.
+        if self
+            .ticks
+            .back()
+            .is_some_and(|&latest| at.saturating_sub(latest) < BURST_GAP)
+        {
+            self.ticks.clear();
+        }
         if self.ticks.len() == TEMPO_WINDOW {
             self.ticks.pop_front();
         }
@@ -194,12 +208,13 @@ impl ClockFollower {
     fn fit_ticks(&self) -> TickFit {
         let first = self.ticks[0];
         let latest = self.ticks[self.ticks.len() - 1];
+        let previous_tempo = TickFit {
+            from: first,
+            interval_seconds: self.tick_fit.interval_seconds,
+            latest_tick_seconds: (latest - first).as_secs_f64(),
+        };
         if self.ticks.len() < MIN_FIT_TICKS {
-            return TickFit {
-                from: first,
-                interval_seconds: self.tick_fit.interval_seconds,
-                latest_tick_seconds: (latest - first).as_secs_f64(),
-            };
+            return previous_tempo;
         }
         let count = self.ticks.len() as f64;
         let mean_index = (count - 1.0) / 2.0;
@@ -216,6 +231,9 @@ impl ClockFollower {
                     )
                 });
         let interval_seconds = covariance / variance;
+        if !PLAUSIBLE_BPM.contains(&(60.0 / (interval_seconds * TICKS_PER_BEAT))) {
+            return previous_tempo;
+        }
         TickFit {
             from: first,
             interval_seconds,
@@ -412,6 +430,29 @@ mod tests {
         assert!((cued.beat - 3.0).abs() < 1e-9, "{cued:?}");
         assert_eq!(a_beat_later.bar, 12);
         assert!((a_beat_later.beat - 1.0).abs() < 1.0 / TICKS_PER_BEAT);
+    }
+
+    #[test]
+    fn ticks_delivered_in_a_burst_do_not_race_musical_time_ahead() {
+        let mut follower = ClockFollower::new(120.0, TimeSignature::default());
+        let next_ms = send_ticks(&mut follower, 120.0, 0, 48);
+        // MIDI input stalls for 500 ms, then delivers the buffered ticks all at once.
+        let burst_ms = next_ms + 500.0;
+        for _ in 0..12 {
+            follower.apply(millis(burst_ms), CLOCK);
+        }
+        let mut previous = follower.beats(millis(burst_ms));
+        // Burst at tick 72's time; the clock carries on from tick 73.
+        for tick in 73..73 + 4 * 24 {
+            let at_ms = f64::from(tick) * 500.0 / TICKS_PER_BEAT;
+            follower.apply(millis(at_ms), CLOCK);
+            let beats = follower.beats(millis(at_ms));
+            assert!(
+                beats - previous < 0.1,
+                "beats jumped from {previous} to {beats} at {at_ms} ms"
+            );
+            previous = beats;
+        }
     }
 
     #[test]
