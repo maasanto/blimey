@@ -1,0 +1,19 @@
+# The four washes of the Fossile rig, three rows high (plan §16): the rig once it gains height.
+fixtures:
+  - { name: low-1, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 1, canvas: { x: 0.1, y: 0.15, width: 0.125 } }
+  - { name: low-2, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 17, canvas: { x: 0.325, y: 0.15, width: 0.125 } }
+  - { name: low-3, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 33, canvas: { x: 0.55, y: 0.15, width: 0.125 } }
+  - { name: low-4, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 49, canvas: { x: 0.775, y: 0.15, width: 0.125 } }
+  - { name: mid-1, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 65, canvas: { x: 0.1, y: 0.5, width: 0.125 } }
+  - { name: mid-2, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 81, canvas: { x: 0.325, y: 0.5, width: 0.125 } }
+  - { name: mid-3, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 97, canvas: { x: 0.55, y: 0.5, width: 0.125 } }
+  - { name: mid-4, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 113, canvas: { x: 0.775, y: 0.5, width: 0.125 } }
+  - { name: high-1, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 129, canvas: { x: 0.1, y: 0.85, width: 0.125 } }
+  - { name: high-2, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 145, canvas: { x: 0.325, y: 0.85, width: 0.125 } }
+  - { name: high-3, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 161, canvas: { x: 0.55, y: 0.85, width: 0.125 } }
+  - { name: high-4, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 177, canvas: { x: 0.775, y: 0.85, width: 0.125 } }
+
+groups:
+  all-wash: [low-1, low-2, low-3, low-4, mid-1, mid-2, mid-3, mid-4, high-1, high-2, high-3, high-4]
+  inner-wash: [low-2, low-3, mid-2, mid-3, high-2, high-3]
+  outer-wash: [low-1, low-4, mid-1, mid-4, high-1, high-4]

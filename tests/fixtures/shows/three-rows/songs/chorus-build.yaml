@@ -1,0 +1,23 @@
+# Plan §16's example cue, without its swell (C15).
+program: 1
+bpm: 150
+cues:
+  43:
+    name: chorus-build
+    type: pixel
+    release: 1s
+    layers:
+      - area: { x: 0, y: 0, width: 0.5, height: 1 }
+        shape: fill
+        params: { color: warm-white }
+      - area: { x: 0.5, y: 0, width: 0.5, height: 1 }
+        shape: bar
+        effect: chase
+        params: { color: amber, width: 0.25, speed: 1 bar }
+        blend: over
+      - area: { x: 0, y: 0.65, width: 1, height: 0.35 }
+        shape: fill
+        effect: sparkle
+        params: { color: steel-blue, width: 0.4, speed: 2 beats }
+        blend: add
+        mute: [inner-wash]
