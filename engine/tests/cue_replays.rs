@@ -179,13 +179,13 @@ fn a_dimmer_only_swell_brightens_the_scene_below_and_keeps_its_colour() {
     assert_eq!(channels(&frames, 500, 1, 7), green_half);
     assert_eq!(
         channels(&frames, 1500, 1, 7),
-        [192, 0, 255, 0, 0, 128, 0],
-        "halfway: the dimmer channel halfway to full, the green kept"
+        [192, 0, 255, 0, 0, 192, 0],
+        "halfway, alike: dimmer-par's dimmer channel and rgb-par's virtual dimmer"
     );
     assert_eq!(
         channels(&frames, 2500, 1, 7),
-        [255, 0, 255, 0, 0, 128, 0],
-        "full; rgb-par has no dimmer channel, so 100% is its colour as below"
+        [255, 0, 255, 0, 0, 255, 0],
+        "full green on both"
     );
     assert_eq!(
         channels(&frames, 3500, 1, 7),

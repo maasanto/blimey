@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::colour::{Rgb, RgbwMode, to_dmx};
 use crate::fixture::PixelChannels;
 use crate::rig::{Fixture, Pixel, Rig};
-use crate::{Frame, Show};
+use crate::{DMX_CHANNELS, Frame, Show};
 
 /// The settings applied to a fixture or group, as written in show files
 /// (`{ color: deep-blue, dimmer: 60% }`) or on the command line. Unset fields keep their value.
@@ -128,16 +128,57 @@ pub(crate) fn colour(show: &Show, name: &str) -> Result<Rgb, String> {
         .ok_or_else(|| format!("no colour {name:?} in palettes.yaml, and not a #rrggbb value"))
 }
 
-/// Draws `look` over `frame`, which holds the layers below. Other fixtures are untouched.
+/// The virtual dimmer of every fixture without a dimmer channel, such as the Wild Wash in 16ch:
+/// each colour emitter's level at full and the intensity it shows at, kept beside the Enttec
+/// frame, whose DMX is only their product. A look that sets just a dimmer reads the colour at
+/// full here, so on these fixtures too it can bring a dim scene to full, or one out of a
+/// blackout, as a dimmer channel does. Indexed like the frame; only those emitters' entries
+/// are used.
+#[derive(Debug, Clone)]
+pub struct VirtualDimmers {
+    at_full: [f32; DMX_CHANNELS],
+    intensity: [f32; DMX_CHANNELS],
+}
+
+impl VirtualDimmers {
+    /// `frame` as drawn straight to DMX, like legacy notes: each value is a colour at full,
+    /// shown at intensity 1.
+    pub fn of(frame: &Frame) -> Self {
+        VirtualDimmers {
+            at_full: frame.map(|value| f32::from(value) / 255.0),
+            intensity: [1.0; DMX_CHANNELS],
+        }
+    }
+
+    /// Moves each entry towards `above`'s by `opacity` (0–1), as the frames crossfade.
+    pub fn crossfade(&mut self, above: &VirtualDimmers, opacity: f32) {
+        let mix = |below: &mut f32, above: f32| *below += (above - *below) * opacity;
+        for (below, above) in self.at_full.iter_mut().zip(above.at_full) {
+            mix(below, above);
+        }
+        for (below, above) in self.intensity.iter_mut().zip(above.intensity) {
+            mix(below, above);
+        }
+    }
+
+    /// Records the emitter on `channel` (0-based) as `at_full`, shown at `intensity`.
+    pub(crate) fn set(&mut self, channel: usize, at_full: f32, intensity: f32) {
+        self.at_full[channel] = at_full;
+        self.intensity[channel] = intensity;
+    }
+}
+
+/// Draws `look` over `frame`, which holds the layers below, with their virtual `dimmers`.
+/// Other fixtures are untouched.
 ///
 /// A fixture given a colour has every channel overwritten: colour and dimmer from the look, the
 /// rest at their profile default. A fixture with a dimmer channel gets the look's dimmer there;
 /// one without has its colour channels scaled by it.
 ///
 /// A fixture given only a dimmer keeps everything below but its intensity: its dimmer channel
-/// is set, or without one the colour from below is scaled by the dimmer. With nothing below it
-/// stays dark.
-pub fn render(rig: &Rig, look: &Look, frame: &mut Frame) {
+/// is set, or without one its virtual dimmer, which shows the colour from below at full at that
+/// level. With nothing below it stays dark.
+pub fn render(rig: &Rig, look: &Look, frame: &mut Frame, dimmers: &mut VirtualDimmers) {
     for fixture in &rig.fixtures {
         let Some(fixture_look) = look.fixtures.get(&fixture.name) else {
             continue;
@@ -149,21 +190,24 @@ pub fn render(rig: &Rig, look: &Look, frame: &mut Frame) {
                 fixture_look.rgbw,
                 |_: &Pixel| color,
                 frame,
+                dimmers,
             ),
-            None => dim_fixture(fixture, fixture_look.dimmer, frame),
+            None => dim_fixture(fixture, fixture_look.dimmer, frame, dimmers),
         }
     }
 }
 
-/// Sets the intensity of a fixture over the colour `frame` gives it: its dimmer channel, or
-/// without one its colour channels scaled by `dimmer`.
-fn dim_fixture(fixture: &Fixture, dimmer: f32, frame: &mut Frame) {
+/// Sets the intensity of a fixture over the colour below: its dimmer channel, or without one
+/// its virtual dimmer.
+fn dim_fixture(fixture: &Fixture, dimmer: f32, frame: &mut Frame, dimmers: &mut VirtualDimmers) {
     let start = fixture.address - 1;
     match fixture.dimmer {
         Some(offset) => frame[start + offset] = to_dmx(dimmer),
         None => {
-            for offset in colour_channels(fixture) {
-                scale(&mut frame[start + offset], dimmer);
+            for channel in colour_channels(fixture).map(|offset| start + offset) {
+                let at_full = dimmers.at_full[channel];
+                dimmers.set(channel, at_full, dimmer);
+                frame[channel] = to_dmx(at_full * dimmer);
             }
         }
     }
@@ -185,13 +229,14 @@ fn scale(value: &mut u8, factor: f32) {
 
 /// Draws one fixture over `frame`: every channel at its profile default, then `dimmer` and
 /// each pixel's colour. A fixture with a dimmer channel gets `dimmer` there; one without has
-/// its colour channels scaled by it.
+/// its colour channels scaled by it, which its virtual dimmer records.
 fn draw_fixture(
     fixture: &Fixture,
     dimmer: f32,
     rgbw: RgbwMode,
     colour: impl Fn(&Pixel) -> Rgb,
     frame: &mut Frame,
+    dimmers: &mut VirtualDimmers,
 ) {
     let start = fixture.address - 1;
     for (offset, channel) in fixture.channels.iter().enumerate() {
@@ -205,7 +250,7 @@ fn draw_fixture(
         None => dimmer,
     };
     for pixel in &fixture.pixels {
-        draw_pixel(
+        let emitted = draw_pixel(
             pixel.channels,
             start,
             colour(pixel),
@@ -213,11 +258,31 @@ fn draw_fixture(
             colour_scale,
             frame,
         );
+        if fixture.dimmer.is_none() {
+            record_virtual_dimmer(start, emitted, colour_scale, dimmers);
+        }
     }
 }
 
-/// Writes `colour`, scaled by `scale`, to a pixel's emitters at `channels` from `start`.
-/// `rgbw` only applies to a pixel with a white emitter.
+/// Records a pixel of a fixture without a dimmer channel, drawn as `emitted` at `intensity`.
+pub(crate) fn record_virtual_dimmer(
+    start: usize,
+    emitted: Emitted,
+    intensity: f32,
+    dimmers: &mut VirtualDimmers,
+) {
+    for (offset, at_full) in emitted {
+        if let Some(offset) = offset {
+            dimmers.set(start + offset, at_full, intensity);
+        }
+    }
+}
+
+/// A pixel's emitters, as offsets from its fixture's start, and their levels at full.
+pub(crate) type Emitted = [(Option<usize>, f32); 4];
+
+/// Writes `colour`, scaled by `scale`, to a pixel's emitters at `channels` from `start`, and
+/// returns their levels at full. `rgbw` only applies to a pixel with a white emitter.
 pub(crate) fn draw_pixel(
     channels: PixelChannels,
     start: usize,
@@ -225,7 +290,7 @@ pub(crate) fn draw_pixel(
     rgbw: RgbwMode,
     scale: f32,
     frame: &mut Frame,
-) {
+) -> Emitted {
     let mode = match channels.white {
         Some(_) => rgbw,
         None => RgbwMode::Saturated,
@@ -242,11 +307,19 @@ pub(crate) fn draw_pixel(
             frame[start + offset] = to_dmx(level * scale);
         }
     }
+    emitters
 }
 
 /// Scales the intensity `frame` gives `fixtures` by `factor` (0–1), as a look's dimmer does:
-/// the dimmer channel of a fixture with one, the colour channels of one without.
-pub fn scale_intensity(rig: &Rig, fixtures: &BTreeSet<String>, factor: f32, frame: &mut Frame) {
+/// the dimmer channel of a fixture with one, the colour channels and virtual dimmer of one
+/// without.
+pub fn scale_intensity(
+    rig: &Rig,
+    fixtures: &BTreeSet<String>,
+    factor: f32,
+    frame: &mut Frame,
+    dimmers: &mut VirtualDimmers,
+) {
     for fixture in rig
         .fixtures
         .iter()
@@ -256,8 +329,9 @@ pub fn scale_intensity(rig: &Rig, fixtures: &BTreeSet<String>, factor: f32, fram
         match fixture.dimmer {
             Some(offset) => scale(&mut frame[start + offset], factor),
             None => {
-                for offset in colour_channels(fixture) {
-                    scale(&mut frame[start + offset], factor);
+                for channel in colour_channels(fixture).map(|offset| start + offset) {
+                    scale(&mut frame[channel], factor);
+                    dimmers.intensity[channel] *= factor;
                 }
             }
         }
@@ -267,7 +341,6 @@ pub fn scale_intensity(rig: &Rig, fixtures: &BTreeSet<String>, factor: f32, fram
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DMX_CHANNELS;
     use crate::fixture::{Attribute, Channel};
     use crate::rig::{Fixture, Pixel};
 
@@ -342,10 +415,89 @@ mod tests {
         look.set(show, target, &LookSettings::from_pairs(&pairs)?)
     }
 
+    /// `look` over `below`, drawn straight to DMX.
     fn rendered(show: &Show, look: &Look, below: Frame) -> Frame {
         let mut frame = below;
-        render(&show.rig, look, &mut frame);
+        render(&show.rig, look, &mut frame, &mut VirtualDimmers::of(&below));
         frame
+    }
+
+    /// Each look over the ones before it, from darkness, as cue layers stack.
+    fn stacked(show: &Show, looks: &[&[(&str, &[&str])]]) -> Frame {
+        let mut frame = [0; DMX_CHANNELS];
+        let mut dimmers = VirtualDimmers::of(&frame);
+        for entries in looks {
+            let mut look = Look::default();
+            for (target, pairs) in *entries {
+                set(show, &mut look, target, pairs).unwrap();
+            }
+            render(&show.rig, &look, &mut frame, &mut dimmers);
+        }
+        frame
+    }
+
+    /// The par's dimmer, red, green, blue, and the wash's red, green, blue.
+    fn par_and_wash(frame: Frame) -> [u8; 7] {
+        [
+            frame[9], frame[10], frame[11], frame[12], frame[19], frame[20], frame[21],
+        ]
+    }
+
+    const PINK_AT_60: &[(&str, &[&str])] = &[
+        ("par", &["color=pink", "dimmer=60%"]),
+        ("wash", &["color=pink", "dimmer=60%"]),
+    ];
+
+    #[test]
+    fn a_dimmer_alone_shows_the_colour_below_at_its_level_on_both_kinds_of_fixture() {
+        let show = par_show();
+        let full: &[(&str, &[&str])] = &[("par", &["dimmer=100%"]), ("wash", &["dimmer=100%"])];
+        let half: &[(&str, &[&str])] = &[("par", &["dimmer=50%"]), ("wash", &["dimmer=50%"])];
+
+        assert_eq!(
+            par_and_wash(stacked(&show, &[PINK_AT_60])),
+            [153, 255, 128, 128, 153, 77, 77],
+            "pink at 60%: on the dimmer channel, or the colour scaled"
+        );
+        assert_eq!(
+            par_and_wash(stacked(&show, &[PINK_AT_60, full])),
+            [255, 255, 128, 128, 255, 128, 128],
+            "brought to full alike"
+        );
+        assert_eq!(
+            par_and_wash(stacked(&show, &[PINK_AT_60, half])),
+            [128, 255, 128, 128, 128, 64, 64],
+            "to 50% alike, not 50% of the 60%"
+        );
+    }
+
+    #[test]
+    fn a_dimmer_alone_brings_a_scene_back_out_of_a_blackout() {
+        let show = par_show();
+        let blackout: &[(&str, &[&str])] = &[("par", &["dimmer=0%"]), ("wash", &["dimmer=0%"])];
+        let full: &[(&str, &[&str])] = &[("par", &["dimmer=100%"]), ("wash", &["dimmer=100%"])];
+
+        assert_eq!(
+            par_and_wash(stacked(&show, &[PINK_AT_60, blackout])),
+            [0, 255, 128, 128, 0, 0, 0]
+        );
+        assert_eq!(
+            par_and_wash(stacked(&show, &[PINK_AT_60, blackout, full])),
+            [255, 255, 128, 128, 255, 128, 128]
+        );
+    }
+
+    #[test]
+    fn a_dim_colour_at_full_stays_as_written() {
+        let show = par_show();
+        let grey: &[(&str, &[&str])] = &[("wash", &["color=#404040"])];
+        let full: &[(&str, &[&str])] = &[("wash", &["dimmer=100%"])];
+
+        assert_eq!(par_and_wash(stacked(&show, &[grey]))[4..], [64, 64, 64]);
+        assert_eq!(
+            par_and_wash(stacked(&show, &[grey, full]))[4..],
+            [64, 64, 64]
+        );
     }
 
     #[test]

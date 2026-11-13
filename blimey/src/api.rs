@@ -15,7 +15,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use blimey_engine::colour::Rgb;
 use blimey_engine::cue::resolve_look;
-use blimey_engine::look::{self, FixtureLook, Look};
+use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
 use blimey_engine::{Frame, Show};
@@ -434,7 +434,9 @@ impl TimedLook {
             *shown = None;
             return;
         }
-        look::render(rig, &active.look, frame);
+        // Above the master, on the frame as output: the colour below is that frame's DMX.
+        let mut below = VirtualDimmers::of(frame);
+        look::render(rig, &active.look, frame, &mut below);
     }
 }
 
