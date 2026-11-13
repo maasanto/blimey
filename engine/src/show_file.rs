@@ -79,9 +79,14 @@ pub fn write(show_dir: &Path, file: &str, content: Value) -> io::Result<()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = show_dir.join(file);
-    let existing = fs::read_to_string(&path).unwrap_or_default();
-    write_atomically(&path, &format!("{}{yaml}", leading_comment(&existing)))
-        .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
+    let in_file =
+        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(in_file(error)),
+    };
+    write_atomically(&path, &format!("{}{yaml}", leading_comment(&existing))).map_err(in_file)
 }
 
 /// The comment lines at the top of a file, such as a note on what still needs checking.
@@ -174,6 +179,20 @@ mod tests {
         assert!(error.to_string().contains("overlap"), "{error}");
 
         assert_eq!(fs::read_to_string(show.join(RIG_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_reported_rather_than_losing_its_header() {
+        let show = fossile_copy("unreadable");
+        let content = read(&show, RIG_FILE).unwrap();
+        let mut before = b"# Notes \xff on the rig\n".to_vec();
+        before.extend(fs::read(show.join(RIG_FILE)).unwrap());
+        fs::write(show.join(RIG_FILE), &before).unwrap();
+
+        let error = write(&show, RIG_FILE, content).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(show.join(RIG_FILE)).unwrap(), before);
     }
 
     #[test]
