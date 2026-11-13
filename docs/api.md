@@ -133,6 +133,26 @@ cues:
     release: 1s          # optional, default 0
     layer_2:             # optional
       { shape: circle, effect: pulse, blend: add, params: { color: white, width: 0.1 } }
+  43:
+    name: chorus-build
+    type: pixel
+    release: 1s
+    layers:              # bottom first, instead of shape, effect, params and layer_2
+      - area: { x: 0, y: 0, width: 0.5, height: 1 }
+        shape: fill
+        params: { color: warm-white }
+      - area: { x: 0.5, y: 0, width: 0.5, height: 1 }
+        shape: bar
+        effect: chase
+        params: { color: amber, width: 0.25, speed: 1 bar }
+        blend: over
+      - area: { x: 0, y: 0.65, width: 1, height: 0.35 }
+        shape: fill
+        effect: sparkle
+        params: { color: steel-blue, width: 0.4, speed: 2 beats }
+        level: 60%
+        blend: add
+        mute: [inner-wash]
 ```
 
 - `safe_look`, `values` and `target` use the [look](#looks) keys.
@@ -145,7 +165,7 @@ cues:
     - `target: { all-wash: dimmer }` scales the intensity the layers below give those fixtures by the pattern's level (their dimmer channel, or their colour channels without one): dark between hits, so put a scene under it for colour. Velocity sets how deep it cuts: 127 goes dark between hits, 64 halfway. On release the fixtures fade back to the layers below.
     - `target: { all-wash: { color: amber } }` takes look settings, as a swell's `target`: the level is how much of that look shows over the layers below. Every entry of one target is either `dimmer` or look settings.
     - `target: { bridge-chase: intensity }` drives the intensity of the song's pixel cues of that name, as `dimmer` drives fixtures: see [intensity links](#intensity-links).
-  - `pixel` draws a preset `shape` on the canvas, animated by an `effect`, at every pixel of every fixture and grid. It fades in over `fade_in` from note-on and out over `release` from note-off. See [pixel cues](#pixel-cues).
+  - `pixel` draws layers of preset `shape`s, each in an area of the canvas and animated by an `effect`, at every pixel of every fixture and grid. It fades in over `fade_in` from note-on and out over `release` from note-off. See [pixel cues](#pixel-cues).
 
 ### Pixel cues
 
@@ -157,22 +177,23 @@ The effect is worked out in RGB at each pixel's canvas position, then converted 
 | --- | --- | --- |
 | `color` | Palette name or `#rrggbb`: the lit colour | white |
 | `background` | Palette name or `#rrggbb`: where the shape isn't lit | black |
-| `width` | Above 0, up to 1, of the canvas: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
+| `width` | Above 0, up to 1, of the layer's area: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
 | `speed` | Duration of one cycle, any unit; beats and bars follow the tempo | `1 bar` |
 | `direction` | `left-to-right` (as seen from the audience: stage right to stage left), `right-to-left`, `bottom-to-top` (floor up), `top-to-bottom` | `left-to-right` |
 | `phase` | Offset in cycles: shifts a moving effect in time, a static shape along its travel | 0 |
 | `curve` | A pulse's level over one cycle, any swell curve | `sine` |
 
-Shapes, each with a position along its travel from 0 to 1:
+Shapes, each with a position along its travel from 0 to 1, in the layer's area as if it were the whole canvas:
 
 | Shape | Lit |
 | --- | --- |
 | `bar` | A band `width` wide across the direction, centred on the position |
 | `sweep` | Everything from the start edge up to the position: a wipe |
-| `circle` | A ring `width` thick around the canvas centre, at the position as a fraction of the distance to the corners: growing for `left-to-right` and `bottom-to-top`, shrinking for the other two |
-| `split` | The canvas split into halves mirrored about the centre line across the direction, with a bar `width` wide in each: the two bars travel from the centre out to the edges for `left-to-right` and `bottom-to-top`, from the edges in for the other two |
+| `circle` | A ring `width` thick around the area's centre, at the position as a fraction of the distance to the corners: growing for `left-to-right` and `bottom-to-top`, shrinking for the other two |
+| `split` | The area split into halves mirrored about the centre line across the direction, with a bar `width` wide in each: the two bars travel from the centre out to the edges for `left-to-right` and `bottom-to-top`, from the edges in for the other two |
 | `gradient` | A ramp from `background` to `color` along the direction, scrolled by the position |
-| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down. Cells at the same position along the direction, a fixture's at its centre, light together: two grids hung one above the other step left to right as one |
+| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down. Cells at the same position along the direction, a fixture's at its centre, light together: two grids hung one above the other step left to right as one. It steps through the cells with a pixel in the layer's area, muted ones left out |
+| `fill` | The whole area |
 
 Effects, each repeating once per `speed`, counted from the note:
 
@@ -186,7 +207,20 @@ Effects, each repeating once per `speed`, counted from the note:
 
 Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, `wave` is `gradient` with `move`, and `strobe` is `pulse` with a square curve such as `{ points: [[0, 1], [0.2, 1], [0.21, 0]] }`. `noise` has no equivalent; `sparkle` is the closest.
 
-`layer_2` takes its own `shape`, `effect` and `params`, plus `blend`: `max` (the brighter of the two per emitter, the default), `add` (the sum, clipped at full) or `mask` (layer 1 shows only where layer 2's shape is lit, as much as it is). Layer 2's sparkle differs from layer 1's under the same seed.
+**Layers.** `layers` stacks 1 to 8 layers, bottom first. Each takes its own `shape`, `effect` and `params`, plus:
+
+| Key | Value | Default |
+| --- | --- | --- |
+| `area` | `{ x, y, width, height }` in canvas units, as a grid's `canvas`: (`x`, `y`) is the bottom-left corner, `y` 0 the floor. The layer draws on the pixels inside it, edges included; the shape runs in the area's own 0–1 space, so `width` and `direction` are relative to it | the whole canvas |
+| `level` | A percentage that scales the layer, as a scene's `dimmer` | `100%` |
+| `blend` | How the layer meets the ones below it, inside its area: `max` (the brighter per emitter), `add` (the sum, clipped at full), `mask` (the layers below show only where this layer's shape is lit, as much as it is), or `over` (this layer covers the ones below as much as it is lit, so a lit pixel replaces them and a dark one lets them show; with a `background`, it covers its whole area) | `max` |
+| `mute` | Fixtures, grids or groups the layer leaves to the layers below | none |
+
+Pixels no layer lights are dark: the cue still drives them, as a single-layer cue does. Each layer's sparkle differs from the others' under the same `seed`. Outside its area, and on what it mutes, a layer changes nothing, a `mask` included.
+
+The cue is refused at load, with its line, for an area with no width or height (`layer 1: area { x: 0.5, y: 0, width: 0, height: 1 } is empty: width and height must be above 0`) or past the canvas (`… leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`. A layer's own `swell` or `pattern` (plan §16) is refused for now, as any unknown key.
+
+**The older form.** Instead of `layers`, a cue can give one layer's `shape`, `effect` and `params` at its top and an optional `layer_2` with its own, plus `blend`: the same two layers over the whole canvas, rendering the same frames.
 
 ### Intensity links
 
@@ -357,7 +391,7 @@ Reads and replaces a whole show file. `<file>` is a path in the show folder: `ri
 1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader. A song is judged by loading the whole show as it would be with the new content in place, the same checks as at start-up, so a song broken on disk can be fixed through this endpoint. Either refusal is a `422` naming the problem and the file at fault, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/tell-me.yaml: program 3 already selects song "other"`, and leaves the file untouched. A new song whose name differs from an existing one only by case is refused with `409`: macOS would write it over the other.
 2. The file is written in canonical form. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form, so an edit changes only the lines it touches.
    - `rig.yaml`: block-style YAML with fields in a fixed order.
-   - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition, a pixel cue's `params` and `layer_2` too) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.
+   - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition, a pixel cue's `params`, `layer_2` and `layers`, with each layer's `area`, too) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`. Another mapping in a list starts on its dash's line: `- area: { x: 0, y: 0, width: 0.5, height: 1 }`.
 3. The write is atomic: a crash leaves the old file or the new one, never half of one.
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
@@ -435,6 +469,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 
 - The grid is RGB and fills the canvas.
 - `frames` are 8 moments evenly over one cycle of layer 1's `speed`, from the note, with beats at 120 BPM.
+- Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
 

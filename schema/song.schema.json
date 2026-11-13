@@ -28,10 +28,13 @@
       "oneOf": [{ "$ref": "#/$defs/scene" }, { "$ref": "#/$defs/swell" }, { "$ref": "#/$defs/pattern" }, { "$ref": "#/$defs/pixel" }]
     },
     "pixel": {
-      "description": "A preset shape animated by an effect over every pixel of every fixture and grid, in RGB, then converted per fixture. Fades in from note-on, scaled by velocity; fades out from note-off. Up to two layers.",
+      "description": "Layers of preset shapes animated by effects over every pixel of every fixture and grid, in RGB, then converted per fixture. Fades in from note-on, scaled by velocity; fades out from note-off. Either layers, or one layer at the top of the cue (shape, effect, params) and an optional layer_2.",
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "type"],
+      "dependentSchemas": {
+        "layers": { "properties": { "shape": false, "effect": false, "params": false, "layer_2": false } }
+      },
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "type": { "const": "pixel" },
@@ -51,10 +54,44 @@
           }
         },
         "rgbw": { "description": "How RGBW pixels show the colour. Defaults to saturated.", "enum": ["saturated", "white-rich"] },
-        "seed": { "description": "Fixes sparkle's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 }
+        "seed": { "description": "Fixes sparkle's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 },
+        "layers": {
+          "description": "1 to 8 layers, bottom first, each blended over the ones below it. Pixels no layer lights are dark.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/pixelLayer" }
+        }
       }
     },
-    "pixelShape": { "description": "Defaults to bar.", "enum": ["bar", "sweep", "circle", "split", "gradient", "one-by-one"] },
+    "pixelLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "description": "The rectangle of the canvas the layer draws on, in canvas units: (x, y) is its bottom-left corner, y 0 the floor. The shape runs inside it: width and direction are relative to the area. Defaults to the whole canvas.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "width", "height"],
+          "properties": {
+            "x": { "type": "number", "minimum": 0, "maximum": 1 },
+            "y": { "type": "number", "minimum": 0, "maximum": 1 },
+            "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+          }
+        },
+        "shape": { "$ref": "#/$defs/pixelShape" },
+        "effect": { "$ref": "#/$defs/pixelEffect" },
+        "params": { "$ref": "#/$defs/pixelParams" },
+        "level": { "description": "Scales the layer, as a scene's dimmer. Defaults to 100%.", "type": "string", "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%$" },
+        "blend": {
+          "description": "How the layer meets the ones below it, inside its area: max (the brighter, per emitter), add (the sum, clipped), mask (the layers below show only where this one is lit) or over (this one covers them as much as it is lit; with a background, fully). Defaults to max.",
+          "enum": ["max", "add", "mask", "over"]
+        },
+        "mute": { "description": "Fixtures, grids or groups the layer leaves to the layers below. The engine checks the names.", "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "pixelShape": { "description": "Defaults to bar.", "enum": ["bar", "sweep", "circle", "split", "gradient", "one-by-one", "fill"] },
     "pixelEffect": { "description": "Defaults to static.", "enum": ["static", "move", "pulse", "chase", "sparkle"] },
     "pixelParams": {
       "type": "object",
@@ -62,7 +99,7 @@
       "properties": {
         "color": { "description": "Palette name or #rrggbb. Defaults to white.", "type": "string" },
         "background": { "description": "Where the shape isn't lit. Palette name or #rrggbb. Defaults to black.", "type": "string" },
-        "width": { "description": "0-1 of the canvas: thickness of a bar or ring, step of a chase. Defaults to 1.", "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "width": { "description": "0-1 of the canvas, or of the layer's area: thickness of a bar or ring, step of a chase. Defaults to 1.", "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
         "speed": { "description": "One cycle of the effect. Defaults to 1 bar.", "$ref": "#/$defs/duration" },
         "direction": { "description": "As seen from the audience; left-to-right is stage right to stage left. Defaults to left-to-right.", "enum": ["left-to-right", "right-to-left", "bottom-to-top", "top-to-bottom"] },
         "phase": { "description": "Offset in cycles. Defaults to 0.", "type": "number" },
