@@ -200,7 +200,7 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 ## Recording and soak
 
-`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, or with `--until-stop` at the first Stop after a Start or Continue. `--artnet <dump>` also records the ArtDmx packets received on UDP 6454 for one universe (`--artnet-universe`, default 0) to a [frame dump](frame-dump.md) on the same timeline: one line per packet, so times are not on the 25 ms grid.
+`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, SIGTERM or SIGHUP (the terminal closing), or with `--until-stop` at the first Stop after a Start or Continue. The files are rewritten atomically every 5 s and at the end, so a crash or `kill -9` loses at most the last 5 s. `--artnet <dump>` also records the ArtDmx packets received on UDP 6454 for one universe (`--artnet-universe`, 15-bit port-address, default 0) to a [frame dump](frame-dump.md) on the same timeline: one line per packet, so times are not on the 25 ms grid. If the capture fails mid-take, the MIDI keeps recording, and `record` reports the dump as incomplete and exits 1.
 
 `blimey soak <setlist>` plays a setlist's songs back to back, 2 s apart and each starting on a frame, looped for `--hours` (default 4), through the same render loop as `run`. A setlist is a YAML file, paths relative to it:
 
@@ -210,14 +210,14 @@ songs:                                   # played in this order, then again
   - recordings/tell-me.mid
 ```
 
-In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen`, `--artnet`, `--edit`), or with `--emulated-enttec` through the real driver to an emulated box on a pseudo terminal. `--accelerated` runs on a fake clock with no outputs, as fast as the machine renders. It prints a report, writes it to `claude-artifacts/soak/<setlist>-<mode>-<unix time>.txt` and exits 1 if a check fails:
+In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen`, `--artnet`, `--edit`), or with `--emulated-enttec` through the real driver to an emulated box on a pseudo terminal. `--accelerated` runs on a fake clock with no outputs, as fast as the machine renders. It prints a report, writes it to `--report <file>` (by default a new `soak-<setlist>-<mode>-<unix time>-<process id>.txt` in the current folder) and exits 1 if a check fails:
 
 | Check | Measured | Passes when |
 | --- | --- | --- |
-| frames | Frames sent a frame period (25 ms) or more after their deadline, plus frames the emulated box never received | None |
+| frames | Frames sent a frame period (25 ms) or more after their deadline, plus frames the emulated box never received; fails too if the box stopped reading, naming the error | None |
 | jitter | How late each frame went out after its deadline: p50, p99 and max, in 0.1 ms steps | p99 under 5 ms |
-| drift | Each song's frames, from the third pass on, against the same song in the second pass (the first starts from a fresh engine) | None differ |
-| memory | Process RSS from `ps`, about 20 times over the run | Peak after the first pass is at most 1 MiB above RSS at its end |
+| drift | Each song's frames, from the third pass on, against the same song in the second pass (the first starts from a fresh engine); the last song counts if it played to its end | None differ |
+| memory | Process RSS, read from the kernel about 20 times over the run | Peak after the first pass is at most 1 MiB above RSS at its end |
 
 It needs at least three passes. Memory is flat when it stays within 1 MiB: the engine keeps nothing from one frame to the next, so what remains is allocator noise, while a leak of 8 bytes a frame passes 1 MiB within an hour and of 1 byte a frame within 8 hours.
 

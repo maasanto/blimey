@@ -66,4 +66,4 @@ blimey soak shows/fossile/setlist.yaml --hours 100 --accelerated      # minutes,
 blimey soak shows/fossile/setlist.yaml --hours 4 --emulated-enttec    # on the M1, unattended
 ```
 
-The real-time run takes the full 4 hours; add `--listen 127.0.0.1:7340` to watch it, or replace `--emulated-enttec` with `--dmx-port …` to drive the real box. Reports land in `claude-artifacts/soak/`; attach the M1 one to the go/no-go decision.
+The real-time run takes the full 4 hours; add `--listen 127.0.0.1:7340` to watch it, or replace `--emulated-enttec` with `--dmx-port …` to drive the real box. Each run writes its report to a new `soak-….txt` in the current folder (or `--report <file>`); attach the M1 one to the go/no-go decision.
