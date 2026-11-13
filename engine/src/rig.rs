@@ -575,8 +575,11 @@ impl PixelGrid {
         }
         let size = colour_order.channels_per_pixel;
         let mut first = address - 1;
-        let mut pixels = Vec::with_capacity(columns * rows);
-        for index in 0..columns * rows {
+        // No capacity up front: a typo such as `rows: 100000` must reach the universe check below
+        // rather than overflow or exhaust memory here.
+        let count = columns.saturating_mul(rows);
+        let mut pixels = Vec::new();
+        for index in 0..count {
             if first + size > DMX_CHANNELS {
                 universe = match universe {
                     Universe::ArtNet(port_address) if port_address < MAX_ARTNET_UNIVERSE => {
@@ -591,7 +594,7 @@ impl PixelGrid {
                     Universe::Enttec => {
                         return Err(format!(
                             "{} pixels from address {address} do not fit in the Enttec universe; pixel {} would start past channel {DMX_CHANNELS}. Use output: artnet for a grid this size",
-                            columns * rows,
+                            count,
                             index + 1
                         ));
                     }
@@ -863,6 +866,18 @@ mod tests {
             error("columns: 2, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0.5, y: 0, width: 0.6 }")
                 .ends_with("leaves the 0-1 stage canvas")
         );
+        for size in [
+            "columns: 100000, rows: 100000",
+            "columns: 4294967296, rows: 4294967296",
+        ] {
+            assert!(
+                error(&format!(
+                    "{size}, colour_order: RGB, output: artnet, universe: 0, address: 1, canvas: {{ x: 0, y: 0 }}"
+                ))
+                .ends_with("runs past Art-Net's last universe"),
+                "{size}"
+            );
+        }
     }
 
     #[test]
