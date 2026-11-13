@@ -13,12 +13,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
 use blimey_engine::cue::resolve_look;
 use blimey_engine::look::{self, FixtureLook, Look};
+use blimey_engine::pixel::{self, PixelScene};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
-use blimey_engine::{Frame, Show};
+use blimey_engine::{Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -90,6 +92,13 @@ struct Tempo {
     bpm: serde_json::Number,
 }
 
+/// A pixel cue to preview, animated at its song's tempo.
+#[derive(Deserialize)]
+struct PixelPreview {
+    song: String,
+    cue: Value,
+}
+
 #[derive(Deserialize)]
 struct PostedMidi {
     message: Vec<u8>,
@@ -119,6 +128,8 @@ pub fn routes(api: Api) -> Router {
         .route("/api/undo", post(undo))
         .route("/api/redo", post(redo))
         .route("/api/preview", put(set_preview).delete(clear_preview))
+        .route("/api/preview/pixel", put(set_pixel_preview))
+        .route("/api/pixel-thumbnail", post(render_thumbnail))
         .route("/api/midi", post(inject_midi))
         .route("/api/fixtures/{name}/test", post(test_fixture))
         .with_state(api)
@@ -301,9 +312,60 @@ async fn set_preview(State(api): State<Api>, values: JsonBody) -> Response {
     });
     match look {
         Ok(look) => {
-            api.preview.show(look);
+            api.preview.show(Overlay::Look(look));
             StatusCode::NO_CONTENT.into_response()
         }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let preview = json_body(content)
+        .and_then(|content| body::<PixelPreview>(content, "send { song, cue }, cue a pixel cue"))
+        .and_then(|preview| {
+            let show = Show::load(&api.show_dir)?;
+            let Some(song) = show.songs.iter().find(|song| song.name == preview.song) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no song {:?} in the show", preview.song),
+                ));
+            };
+            let scene = PixelScene::parse(&show, preview.cue)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            Ok(Overlay::Pixel {
+                scene: Box::new(scene),
+                clock: ClockFollower::new(song.tempo(), song.time_signature),
+            })
+        });
+    match preview {
+        Ok(overlay) => {
+            api.preview.show(overlay);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+/// Works in show mode too: it renders on a sample grid and changes nothing.
+async fn render_thumbnail(State(api): State<Api>, content: JsonBody) -> Response {
+    let frames = json_body(content).and_then(|cue| {
+        let show = Show::load(&api.show_dir)?;
+        pixel::thumbnail(&show, cue)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    });
+    match frames {
+        Ok(frames) => Json(json!({
+            "columns": pixel::THUMBNAIL_SIDE,
+            "rows": pixel::THUMBNAIL_SIDE,
+            "frames": frames
+                .iter()
+                .map(|colours| colours.iter().map(|colour| colour.to_hex()).collect())
+                .collect::<Vec<Vec<String>>>(),
+        }))
+        .into_response(),
         Err(error) => error_response(&error),
     }
 }
@@ -372,9 +434,9 @@ async fn test_fixture(State(api): State<Api>, Path(name): Path<String>) -> Respo
         },
         ..FixtureLook::default()
     };
-    api.test_flash.show(Look {
+    api.test_flash.show(Overlay::Look(Look {
         fixtures: BTreeMap::from([(name, white)]),
-    });
+    }));
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -395,8 +457,18 @@ fn error_response(error: &io::Error) -> Response {
     (status, Json(json!({ "error": error.to_string() }))).into_response()
 }
 
-/// A look the UI puts above every layer for `lifetime`, counted on engine time from the first
-/// frame drawn after it is shown.
+/// What the UI puts above every layer: a look, or a pixel scene animated from the first frame
+/// it is drawn on, at its song's tempo.
+pub enum Overlay {
+    Look(Look),
+    Pixel {
+        scene: Box<PixelScene>,
+        clock: ClockFollower,
+    },
+}
+
+/// An overlay the UI puts above every layer for `lifetime`, counted on engine time from the
+/// first frame drawn after it is shown.
 #[derive(Clone)]
 pub struct TimedLook {
     lifetime: Duration,
@@ -404,8 +476,11 @@ pub struct TimedLook {
 }
 
 struct Shown {
-    look: Look,
+    overlay: Overlay,
     until: Option<Duration>,
+    /// When a pixel scene started animating: kept while pixel scenes replace each other, so
+    /// moving a slider or the builder's refresh doesn't restart the animation.
+    started: Option<Duration>,
 }
 
 impl TimedLook {
@@ -416,16 +491,32 @@ impl TimedLook {
         }
     }
 
-    /// Shows `look`, or shows it for another `lifetime`.
-    fn show(&self, look: Look) {
-        *lock(&self.shown) = Some(Shown { look, until: None });
+    /// Shows `overlay`, or shows it for another `lifetime`.
+    fn show(&self, overlay: Overlay) {
+        let mut shown = lock(&self.shown);
+        let started = match (&*shown, &overlay) {
+            (
+                Some(Shown {
+                    overlay: Overlay::Pixel { .. },
+                    started,
+                    ..
+                }),
+                Overlay::Pixel { .. },
+            ) => *started,
+            _ => None,
+        };
+        *shown = Some(Shown {
+            overlay,
+            until: None,
+            started,
+        });
     }
 
     fn clear(&self) {
         *lock(&self.shown) = None;
     }
 
-    pub fn apply(&self, rig: &Rig, at: Duration, frame: &mut Frame) {
+    pub fn apply(&self, rig: &Rig, at: Duration, out: &mut Universes) {
         let mut shown = lock(&self.shown);
         let Some(active) = shown.as_mut() else {
             return;
@@ -434,7 +525,13 @@ impl TimedLook {
             *shown = None;
             return;
         }
-        look::render(rig, &active.look, frame);
+        match &active.overlay {
+            Overlay::Look(look) => look::render(rig, look, &mut out.enttec),
+            Overlay::Pixel { scene, clock } => {
+                let started = clock.moment(*active.started.get_or_insert(at));
+                scene.draw(rig, clock, started, at, 1.0, out);
+            }
+        }
     }
 }
 
@@ -455,21 +552,146 @@ mod tests {
         look.set(&show, "rgb-par", &red).unwrap();
         let preview = TimedLook::new(PREVIEW_LIFETIME);
         let red_at = |at: Duration| {
-            let mut frame = [0; 512];
-            preview.apply(&show.rig, at, &mut frame);
-            frame[4]
+            let mut out = Universes {
+                enttec: [0; 512],
+                artnet: Default::default(),
+            };
+            preview.apply(&show.rig, at, &mut out);
+            out.enttec[4]
         };
         let second = Duration::from_secs(1);
 
-        preview.show(look.clone());
+        preview.show(Overlay::Look(look.clone()));
         assert_eq!(red_at(10 * second), 255, "timed from the first frame drawn");
         assert_eq!(red_at(14 * second), 255);
         assert_eq!(red_at(15 * second), 0, "lapsed after PREVIEW_LIFETIME");
         assert_eq!(red_at(16 * second), 0);
 
-        preview.show(look);
+        preview.show(Overlay::Look(look));
         assert_eq!(red_at(17 * second), 255, "a new PUT shows it again");
         preview.clear();
         assert_eq!(red_at(17 * second), 0);
+    }
+
+    /// `POST /api/pixel-thumbnail` with `cue`: its status and JSON body.
+    fn thumbnail(cue: Value) -> (StatusCode, Value) {
+        let api = Api {
+            show_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/shows/cues").into(),
+            mode: Mode::Show,
+            rig: Arc::new(watch::Sender::new(Rig::default())),
+            test_flash: TimedLook::new(TEST_FLASH_LENGTH),
+            preview: TimedLook::new(PREVIEW_LIFETIME),
+            midi: std::sync::mpsc::channel().0,
+            history: Arc::default(),
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let response = render_thumbnail(State(api), Ok(Json(cue))).await;
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice(&body).unwrap())
+        })
+    }
+
+    #[test]
+    fn a_thumbnail_renders_one_cycle_on_the_sample_grid_with_the_shows_palette() {
+        let cue = |effect: &str| json!({ "name": "t", "type": "pixel", "effect": effect, "params": { "color": "red", "width": 0.25, "speed": "1 bar" } });
+
+        let (status, held) = thumbnail(cue("static"));
+        assert_eq!(status, StatusCode::OK, "{held}");
+        assert_eq!(
+            (held["columns"].as_u64(), held["rows"].as_u64()),
+            (Some(12), Some(12))
+        );
+        let frames = held["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 8);
+        let red = |frame: &Value, index: usize| frame[index] == "#ff0000";
+        let top_row: Vec<usize> = (0..12).filter(|column| red(&frames[0], *column)).collect();
+        assert_eq!(
+            top_row,
+            [4, 5, 6, 7],
+            "a quarter-canvas bar mid-way, in the palette's red"
+        );
+        assert!(
+            frames.iter().all(|frame| frame == &frames[0]),
+            "static holds still"
+        );
+
+        let (_, chased) = thumbnail(cue("chase"));
+        let first_lit = |frame: &Value| (0..12).find(|column| red(frame, *column));
+        let steps: Vec<Option<usize>> = chased["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(first_lit)
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                Some(0),
+                Some(0),
+                Some(3),
+                Some(3),
+                Some(6),
+                Some(6),
+                Some(9),
+                Some(9)
+            ],
+            "four steps of a quarter over the cycle"
+        );
+
+        let (status, refused) = thumbnail(json!({ "name": "t", "type": "scene", "values": {} }));
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused["error"], "expected a pixel cue, with type pixel");
+        let (status, refused) = thumbnail(
+            json!({ "name": "t", "type": "pixel", "params": { "speed": "100000000000000000000 bars" } }),
+        );
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused["error"], "speed is too long to render a cycle of");
+    }
+
+    #[test]
+    fn a_pixel_preview_draws_on_art_net_grids_and_keeps_moving_when_shown_again() {
+        let rig = Rig::parse(
+            "fixtures:\n  - { name: wall, type: pixel-grid, columns: 4, rows: 1, colour_order: RGB, output: artnet, universe: 3, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n",
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        // A bar a column wide, gliding left to right once a second.
+        let overlay = || {
+            Overlay::Pixel {
+            scene: Box::new(
+                PixelScene::parse(
+                    &Show::default(),
+                    json!({ "name": "glide", "type": "pixel", "effect": "move", "params": { "color": "#ff0000", "width": 0.25, "speed": "1s" } }),
+                )
+                .unwrap(),
+            ),
+            clock: ClockFollower::new(120.0, Default::default()),
+        }
+        };
+        let preview = TimedLook::new(PREVIEW_LIFETIME);
+        let lit_column = |at: Duration| {
+            let mut out = Universes {
+                enttec: [0; 512],
+                artnet: rig.artnet_frames(),
+            };
+            preview.apply(&rig, at, &mut out);
+            (0..4)
+                .filter(|column| out.artnet[&3][column * 3] > 0)
+                .collect::<Vec<_>>()
+        };
+        let millis = Duration::from_millis;
+
+        preview.show(overlay());
+        assert_eq!(lit_column(millis(10_000)), [0], "starts on its first frame");
+        assert_eq!(lit_column(millis(10_375)), [1]);
+        preview.show(overlay());
+        assert_eq!(
+            lit_column(millis(10_625)),
+            [2],
+            "a new PUT doesn't restart it"
+        );
     }
 }

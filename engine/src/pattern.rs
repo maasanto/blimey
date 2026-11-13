@@ -11,7 +11,7 @@ use serde_yaml_ng::Mapping;
 
 use crate::Show;
 use crate::clock_follower::{ClockFollower, Moment};
-use crate::cue::{INSTANT, resolve_look};
+use crate::cue::{INSTANT, PixelCues, resolve_intensity, resolve_look};
 use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{Level, Look};
@@ -61,6 +61,9 @@ pub enum PatternTarget {
     /// `{ all-wash: { color: red } }`: the level is how much of the look shows over the layers
     /// below, as a swell's curve is.
     Look(Look),
+    /// `{ bridge-chase: intensity }`: the level scales the intensity of the pixel cues on these
+    /// notes, dark between hits.
+    Intensity(BTreeSet<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +80,7 @@ impl PatternEntry {
         self,
         show: &Show,
         time_signature: TimeSignature,
+        pixel_cues: &PixelCues,
     ) -> Result<Pattern, String> {
         let beats_per_bar = time_signature.beats_per_bar();
         let bars = match self.length {
@@ -94,7 +98,7 @@ impl PatternEntry {
             })
             .collect::<Result<_, _>>()?;
         Ok(Pattern {
-            target: resolve_target(show, &self.target)?,
+            target: resolve_target(show, &self.target, pixel_cues)?,
             name: self.name,
             beats,
             hits,
@@ -134,7 +138,14 @@ impl HitEntry {
     }
 }
 
-fn resolve_target(show: &Show, target: &Mapping) -> Result<PatternTarget, String> {
+fn resolve_target(
+    show: &Show,
+    target: &Mapping,
+    pixel_cues: &PixelCues,
+) -> Result<PatternTarget, String> {
+    if let Some(notes) = resolve_intensity(target, pixel_cues) {
+        return notes.map(PatternTarget::Intensity);
+    }
     if target
         .values()
         .all(|value| value.as_str() == Some("dimmer"))
@@ -152,7 +163,7 @@ fn resolve_target(show: &Show, target: &Mapping) -> Result<PatternTarget, String
     }
     if target.values().any(|value| value.is_string()) {
         return Err(
-            "target: give either `dimmer` or look settings such as { color: red } to every fixture or group"
+            "target: give either `dimmer` or look settings such as { color: red } to every fixture or group, or `intensity` to every pixel cue"
                 .into(),
         );
     }
@@ -398,7 +409,7 @@ mod tests {
                 )
             ))
             .unwrap_err(),
-            "line 4: cue 42: target: give either `dimmer` or look settings such as { color: red } to every fixture or group"
+            "line 4: cue 42: target: give either `dimmer` or look settings such as { color: red } to every fixture or group, or `intensity` to every pixel cue"
         );
     }
 }

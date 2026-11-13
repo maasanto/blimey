@@ -141,14 +141,32 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
             .into_iter()
             .map(|(note, cue)| {
                 let cue_type = cue["type"].as_str().unwrap_or_default().to_owned();
-                (
-                    note,
-                    in_order(cue, &schema["$defs"][cue_type]["properties"]),
-                )
+                let cue = in_order(cue, &schema["$defs"][&cue_type]["properties"]);
+                match cue_type.as_str() {
+                    "pixel" => (note, pixel_layers_in_order(cue, schema)),
+                    _ => (note, cue),
+                }
             })
             .collect();
     }
     in_order(Value::Object(song), &schema["properties"])
+}
+
+/// A pixel cue's `params`, and its `layer_2` with that layer's `params`, in schema order too,
+/// so a file doesn't depend on the order the builder set them in.
+fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
+    let params_in_order = |layer: &mut Value| {
+        if let Some(params) = layer.get_mut("params") {
+            *params = in_order(params.take(), &schema["$defs"]["pixelParams"]["properties"]);
+        }
+    };
+    params_in_order(&mut cue);
+    if let Some(layer_2) = cue.get_mut("layer_2") {
+        let layer_2_properties = &schema["$defs"]["pixel"]["properties"]["layer_2"]["properties"];
+        *layer_2 = in_order(layer_2.take(), layer_2_properties);
+        params_in_order(layer_2);
+    }
+    cue
 }
 
 /// An object's keys in the order of `properties`; keys it doesn't list follow as given.
@@ -693,6 +711,29 @@ mod tests {
                    wash-1: { color: \"#ff8000\" }\n      \
                    all-wash: { dimmer: 50% }\n",
             "look entries keep their order: a later one wins"
+        );
+    }
+
+    #[test]
+    fn a_pixel_cues_params_and_layer_2_are_written_in_schema_order_whatever_order_they_came_in() {
+        let show = fossile_copy("pixel-order");
+        let params = json!({ "speed": "1 bar", "width": 0.5, "color": "amber" });
+        let cue = json!({
+            "seed": 7,
+            "layer_2": { "blend": "add", "params": params, "shape": "bar" },
+            "params": params,
+            "type": "pixel",
+            "name": "two-layer",
+        });
+
+        save_cue(&show, "tell-me", 50, None, cue).unwrap();
+
+        let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        assert!(
+            written.ends_with(
+                "  50:\n    name: two-layer\n    type: pixel\n    params: { color: amber, width: 0.5, speed: 1 bar }\n    layer_2:\n      shape: bar\n      params: { color: amber, width: 0.5, speed: 1 bar }\n      blend: add\n    seed: 7\n"
+            ),
+            "{written}"
         );
     }
 

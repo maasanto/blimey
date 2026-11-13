@@ -2,6 +2,7 @@
 //! active cues, the master dimmer and the live parameters. Renders it in layer order: legacy,
 //! then cues, then the master dimmer.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -26,8 +27,6 @@ const MASTER_CONTROLLER: u8 = 7;
 const FIRST_LIVE_PARAMETER: u8 = 20;
 pub const LIVE_PARAMETERS: usize = 8;
 const MIDI_DATA_MAX: f32 = 127.0;
-/// Reaper's default tempo, for a song without `bpm` when no MIDI clock arrives.
-const DEFAULT_BPM: f32 = 120.0;
 
 pub(crate) struct Playback {
     legacy: Frame,
@@ -161,10 +160,8 @@ impl Playback {
     fn select_song(&mut self, show: &Show, program: u8, at: Duration) {
         let song = show.songs.iter().find(|song| song.program == program);
         self.song = song.map(|song| song.name.clone());
-        self.clock = song.map(|song| {
-            let bpm = song.bpm.unwrap_or(DEFAULT_BPM);
-            ClockFollower::started_at(at, f64::from(bpm), song.time_signature)
-        });
+        self.clock =
+            song.map(|song| ClockFollower::started_at(at, song.tempo(), song.time_signature));
         self.cues.clear();
         self.safe_look = false;
     }
@@ -254,7 +251,7 @@ impl Playback {
         look::render(&show.rig, look, &mut output.enttec);
         // The builder's metronome: an edited `bpm` takes over at once.
         if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
-            clock.set_song_bpm(at, f64::from(song.bpm.unwrap_or(DEFAULT_BPM)));
+            clock.set_song_bpm(at, song.tempo());
         }
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
             apply_master(&show.rig, self.master, &mut output);
@@ -273,12 +270,27 @@ impl Playback {
                     .is_none_or(|release| faded_out(cue, release) < 1.0)
             })
         });
+        let opacity = |active: &ActiveCue, cue: &Cue| match &active.released {
+            None => cue.opacity(clock, active.started, at),
+            Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
+        };
+        // Swells and patterns on a pixel cue's intensity darken it, as a dimmer pattern darkens
+        // its fixtures, and draw nothing themselves. Several on one pixel cue multiply.
+        let mut intensity_scales: BTreeMap<u8, f32> = BTreeMap::new();
+        for active in &self.cues {
+            let cue = &song.cues[&active.note];
+            for note in cue.intensity_targets().into_iter().flatten() {
+                let darkened = opacity(active, cue) * active.intensity;
+                *intensity_scales.entry(*note).or_insert(1.0) *= 1.0 - darkened;
+            }
+        }
         for active in self.layered(song) {
             let cue = &song.cues[&active.note];
-            let opacity = match &active.released {
-                None => cue.opacity(clock, active.started, at),
-                Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
-            };
+            if cue.intensity_targets().is_some() {
+                continue;
+            }
+            let opacity = opacity(active, cue);
+            let intensity = active.intensity * intensity_scales.get(&active.note).unwrap_or(&1.0);
             // Only pixel cues draw on Art-Net: the others get no copy of it to blend back.
             let mut lit = Universes {
                 enttec: output.enttec,
@@ -287,14 +299,7 @@ impl Playback {
                     _ => ArtNetFrames::new(),
                 },
             };
-            cue.draw(
-                &show.rig,
-                clock,
-                active.started,
-                at,
-                active.intensity,
-                &mut lit,
-            );
+            cue.draw(&show.rig, clock, active.started, at, intensity, &mut lit);
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
             crossfade(&mut output.enttec, &lit.enttec, opacity);
