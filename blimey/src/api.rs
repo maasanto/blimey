@@ -681,6 +681,19 @@ mod tests {
             "four steps of a quarter over the cycle"
         );
 
+        let (status, layered) = thumbnail(json!({ "name": "t", "type": "pixel", "layers": [
+            { "area": { "x": 0, "y": 0, "width": 0.5, "height": 1 }, "shape": "fill", "params": { "color": "red" } },
+        ] }));
+        assert_eq!(status, StatusCode::OK, "{layered}");
+        let lit: Vec<bool> = (0..12)
+            .map(|column| red(&layered["frames"][0], column))
+            .collect();
+        assert_eq!(
+            lit,
+            [[true; 6], [false; 6]].concat(),
+            "a layer fills its area"
+        );
+
         let (status, refused) = thumbnail(json!({ "name": "t", "type": "scene", "values": {} }));
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(refused["error"], "expected a pixel cue, with type pixel");
