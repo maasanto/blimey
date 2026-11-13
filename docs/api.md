@@ -215,11 +215,16 @@ A look sets colour, dimmer and RGBW mode per fixture, by fixture or group name. 
 
 | Key | Value | Unset means |
 | --- | --- | --- |
-| `color` | Palette name, or `#rrggbb` | Black for a fixture not yet set; otherwise unchanged |
+| `color` | Palette name, or `#rrggbb` | The colour from the layers below, for a fixture not yet set; otherwise unchanged |
 | `dimmer` | Percentage, `0%`–`100%` | 100% for a fixture not yet set; otherwise unchanged |
 | `rgbw` | `saturated` (white off) or `white-rich` (the part common to R, G and B goes to white) | `saturated` |
 
-The look renders above the legacy layer (plan §5): every channel of a fixture in the look comes from the look, with channels it doesn't drive at their profile default. Fixtures the look doesn't mention keep the legacy values. A fixture with a dimmer channel gets the look's dimmer there; a fixture without one, like the Wild Wash in 16ch, has its colour channels scaled by it.
+The look renders above the layers below it (plan §5). Fixtures it doesn't mention keep their values from below.
+
+- A fixture given a colour takes every channel from the look, with channels the look doesn't drive at their profile default. A fixture with a dimmer channel gets the look's dimmer there; a fixture without one, like the Wild Wash in 16ch, has its colour channels scaled by it.
+- A fixture given only a dimmer keeps everything below but its intensity. A fixture with a dimmer channel gets the look's dimmer there, over the colour below. A fixture without one has the colour from below scaled by the dimmer: 100% is the colour as it is below, 50% half of it, so it can dim that colour but not brighten it. With nothing below, there is no colour to light and the fixture stays dark. `rgbw` has no effect, as the colour below is already converted.
+
+This applies wherever looks are used: scene `values`, swell `target`, a pattern's look target, the `safe_look`, `fire --set` and the builder's preview. A scene or swell fades from the layers below toward that look, so `chorus-swell`'s `{ all-wash: { dimmer: 100% } }` brightens the scene under it on fixtures with a dimmer channel, and holds its colour on those without.
 
 ## CLI
 

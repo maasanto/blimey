@@ -365,11 +365,11 @@ async fn test_fixture(State(api): State<Api>, Path(name): Path<String>) -> Respo
         ));
     }
     let white = FixtureLook {
-        color: Rgb {
+        color: Some(Rgb {
             red: 1.0,
             green: 1.0,
             blue: 1.0,
-        },
+        }),
         ..FixtureLook::default()
     };
     api.test_flash.show(Look {

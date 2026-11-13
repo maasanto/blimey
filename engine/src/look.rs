@@ -54,16 +54,19 @@ impl TryFrom<String> for Level {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FixtureLook {
-    pub color: Rgb,
+    /// `None` keeps the colour the layers below give the fixture, so a look of only a dimmer
+    /// brightens or dims what is underneath.
+    pub color: Option<Rgb>,
     pub dimmer: f32,
     pub rgbw: RgbwMode,
 }
 
 impl Default for FixtureLook {
-    /// Dimmer full and colour black, so setting just a colour lights the fixture.
+    /// Dimmer full and the colour from below, so setting just a colour lights the fixture and
+    /// setting just a dimmer keeps its colour.
     fn default() -> Self {
         FixtureLook {
-            color: Rgb::default(),
+            color: None,
             dimmer: 1.0,
             rgbw: RgbwMode::default(),
         }
@@ -92,7 +95,7 @@ impl Look {
             .transpose()?;
         for fixture in show.rig.resolve(target)? {
             let look = self.fixtures.entry(fixture.name.clone()).or_default();
-            if let Some(color) = color {
+            if color.is_some() {
                 look.color = color;
             }
             if let Some(Level(dimmer)) = settings.dimmer {
@@ -117,24 +120,59 @@ pub(crate) fn colour(show: &Show, name: &str) -> Result<Rgb, String> {
         .ok_or_else(|| format!("no colour {name:?} in palettes.yaml, and not a #rrggbb value"))
 }
 
-/// Draws `look` over `frame`. Every channel of a fixture in the look is overwritten: colour
-/// and dimmer from the look, the rest at their profile default. Other fixtures are untouched.
+/// Draws `look` over `frame`, which holds the layers below. Other fixtures are untouched.
 ///
-/// A fixture with a dimmer channel gets the look's dimmer there; one without has its
-/// colour channels scaled by it.
+/// A fixture given a colour has every channel overwritten: colour and dimmer from the look, the
+/// rest at their profile default. A fixture with a dimmer channel gets the look's dimmer there;
+/// one without has its colour channels scaled by it.
+///
+/// A fixture given only a dimmer keeps everything below but its intensity: its dimmer channel
+/// is set, or without one the colour from below is scaled by the dimmer. With nothing below it
+/// stays dark.
 pub fn render(rig: &Rig, look: &Look, frame: &mut Frame) {
     for fixture in &rig.fixtures {
-        if let Some(fixture_look) = look.fixtures.get(&fixture.name) {
-            let colour = |_: &Pixel| fixture_look.color;
-            draw_fixture(
+        let Some(fixture_look) = look.fixtures.get(&fixture.name) else {
+            continue;
+        };
+        match fixture_look.color {
+            Some(color) => draw_fixture(
                 fixture,
                 fixture_look.dimmer,
                 fixture_look.rgbw,
-                colour,
+                |_: &Pixel| color,
                 frame,
-            );
+            ),
+            None => dim_fixture(fixture, fixture_look.dimmer, frame),
         }
     }
+}
+
+/// Sets the intensity of a fixture over the colour `frame` gives it: its dimmer channel, or
+/// without one its colour channels scaled by `dimmer`.
+fn dim_fixture(fixture: &Fixture, dimmer: f32, frame: &mut Frame) {
+    let start = fixture.address - 1;
+    match fixture.dimmer {
+        Some(offset) => frame[start + offset] = to_dmx(dimmer),
+        None => {
+            for offset in colour_channels(fixture) {
+                scale(&mut frame[start + offset], dimmer);
+            }
+        }
+    }
+}
+
+/// Offsets from the fixture's address of every pixel's colour emitters.
+fn colour_channels(fixture: &Fixture) -> impl Iterator<Item = usize> + '_ {
+    fixture.pixels.iter().flat_map(|pixel| {
+        let channels = pixel.channels;
+        [channels.red, channels.green, channels.blue, channels.white]
+            .into_iter()
+            .flatten()
+    })
+}
+
+fn scale(value: &mut u8, factor: f32) {
+    *value = (f32::from(*value) * factor).round() as u8;
 }
 
 /// Draws one fixture over `frame`: every channel at its profile default, then `dimmer` and
@@ -208,19 +246,10 @@ pub fn scale_intensity(rig: &Rig, fixtures: &BTreeSet<String>, factor: f32, fram
     {
         let offsets: Vec<usize> = match fixture.dimmer {
             Some(offset) => vec![offset],
-            None => fixture
-                .pixels
-                .iter()
-                .flat_map(|pixel| {
-                    let channels = pixel.channels;
-                    [channels.red, channels.green, channels.blue, channels.white]
-                })
-                .flatten()
-                .collect(),
+            None => colour_channels(fixture).collect(),
         };
         for offset in offsets {
-            let value = &mut frame[fixture.address - 1 + offset];
-            *value = (f32::from(*value) * factor).round() as u8;
+            scale(&mut frame[fixture.address - 1 + offset], factor);
         }
     }
 }
@@ -232,33 +261,26 @@ mod tests {
     use crate::fixture::{Attribute, Channel};
     use crate::rig::{Fixture, Pixel};
 
-    /// One RGBW par at DMX 10: dimmer, red, green, blue, white, then a shutter that must
-    /// sit at 255 to open.
-    fn par_show() -> Show {
-        let channel = |name: &str, attribute, default| Channel {
+    fn channel(name: &str, attribute: Option<Attribute>, default: u8) -> Channel {
+        Channel {
             name: name.into(),
             attribute,
             pixel: None,
             default,
-        };
-        let channels = vec![
-            channel("Dimmer", Some(Attribute::Dimmer), 0),
-            channel("Red", Some(Attribute::Red), 0),
-            channel("Green", Some(Attribute::Green), 0),
-            channel("Blue", Some(Attribute::Blue), 0),
-            channel("White", Some(Attribute::White), 0),
-            channel("Shutter", None, 255),
-        ];
+        }
+    }
+
+    fn fixture(name: &str, address: usize, channels: Vec<Channel>) -> Fixture {
         let mode = crate::fixture::Mode {
-            name: "6ch".into(),
+            name: "mode".into(),
             channels: channels.clone(),
         };
         let (dimmer, pixel_channels) = mode.layout().unwrap();
-        let par = Fixture {
-            name: "par".into(),
-            profile: "par".into(),
-            mode: "6ch".into(),
-            address: 10,
+        Fixture {
+            name: name.into(),
+            profile: name.into(),
+            mode: "mode".into(),
+            address,
             channels,
             dimmer,
             pixels: vec![Pixel {
@@ -266,10 +288,37 @@ mod tests {
                 y: 0.5,
                 channels: pixel_channels[0],
             }],
-        };
+        }
+    }
+
+    /// One RGBW par at DMX 10: dimmer, red, green, blue, white, then a shutter that must
+    /// sit at 255 to open. And at DMX 20, an RGB wash with no dimmer channel, as the Wild Wash
+    /// in 16ch.
+    fn par_show() -> Show {
+        let par = fixture(
+            "par",
+            10,
+            vec![
+                channel("Dimmer", Some(Attribute::Dimmer), 0),
+                channel("Red", Some(Attribute::Red), 0),
+                channel("Green", Some(Attribute::Green), 0),
+                channel("Blue", Some(Attribute::Blue), 0),
+                channel("White", Some(Attribute::White), 0),
+                channel("Shutter", None, 255),
+            ],
+        );
+        let wash = fixture(
+            "wash",
+            20,
+            vec![
+                channel("Red", Some(Attribute::Red), 0),
+                channel("Green", Some(Attribute::Green), 0),
+                channel("Blue", Some(Attribute::Blue), 0),
+            ],
+        );
         Show {
             rig: Rig {
-                fixtures: vec![par],
+                fixtures: vec![par, wash],
                 groups: BTreeMap::from([("everything".into(), vec!["par".into()])]),
                 ..Rig::default()
             },
@@ -320,6 +369,60 @@ mod tests {
 
         assert_eq!(frame[9..15], [255, 255, 128, 128, 0, 255]);
         assert_eq!((frame[8], frame[15]), (7, 7));
+    }
+
+    #[test]
+    fn a_dimmer_alone_sets_the_dimmer_channel_over_the_colour_below() {
+        let show = par_show();
+        let mut look = Look::default();
+        let mut below = [0; DMX_CHANNELS];
+        // The par at 30%, pink, its shutter open.
+        below[9..15].copy_from_slice(&[77, 255, 128, 128, 0, 255]);
+
+        set(&show, &mut look, "par", &["dimmer=100%"]).unwrap();
+
+        assert_eq!(
+            rendered(&show, &look, below)[9..15],
+            [255, 255, 128, 128, 0, 255]
+        );
+        assert_eq!(
+            rendered(&show, &look, [0; DMX_CHANNELS])[9..15],
+            [255, 0, 0, 0, 0, 0],
+            "nothing below: no colour to light"
+        );
+    }
+
+    #[test]
+    fn a_dimmer_alone_scales_the_colour_below_on_a_fixture_without_a_dimmer_channel() {
+        let show = par_show();
+        let mut look = Look::default();
+        let mut below = [0; DMX_CHANNELS];
+        below[19..22].copy_from_slice(&[200, 100, 0]);
+
+        set(&show, &mut look, "wash", &["dimmer=50%"]).unwrap();
+        assert_eq!(rendered(&show, &look, below)[19..22], [100, 50, 0]);
+
+        set(&show, &mut look, "wash", &["dimmer=100%"]).unwrap();
+        assert_eq!(
+            rendered(&show, &look, below),
+            below,
+            "the colour as it is below"
+        );
+        assert_eq!(rendered(&show, &look, [0; DMX_CHANNELS]), [0; DMX_CHANNELS]);
+    }
+
+    #[test]
+    fn a_dimmer_after_a_colour_in_the_same_look_keeps_that_colour() {
+        let show = par_show();
+        let mut look = Look::default();
+
+        set(&show, &mut look, "wash", &["color=pink"]).unwrap();
+        set(&show, &mut look, "wash", &["dimmer=50%"]).unwrap();
+
+        assert_eq!(
+            rendered(&show, &look, [0; DMX_CHANNELS])[19..22],
+            [128, 64, 64]
+        );
     }
 
     #[test]
