@@ -83,6 +83,32 @@ test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine
   expect(raised.y, 'wash-2 (y 0.5) is drawn above wash-1 (y 0.2)').toBeLessThan(below.y - 0.25 * stage.height);
 });
 
+test('a drag that saves nothing leaves fixtures draggable', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine();
+  const rigFile = path.join(show, 'rig.yaml');
+  await page.goto(`${url}#front`);
+  const stage = await page.getByRole('img', { name: 'Front view' }).locator('rect.stage').boundingBox();
+  const pixel = page.locator('[data-fixture="wash-2"] circle').first();
+  const dragRight = async (fraction) => {
+    const from = centre(await pixel.boundingBox());
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + fraction * stage.width, from.y, { steps: 5 });
+    await page.mouse.up();
+  };
+  const wash2X = () => Number(readFileSync(rigFile, 'utf8').match(/- name: wash-2\n(?:.*\n){3}  canvas:\n    x: ([\d.]+)/)[1]);
+
+  // Against the right edge: x is 1 - width.
+  await dragRight(0.9);
+  await expect.poll(wash2X).toBe(0.875);
+  await expect.poll(async () => Number(await pixel.getAttribute('cx'))).toBeCloseTo((0.875 + 0.125 / 8) * 1600, 1);
+  // Further right clamps back to the same x, so nothing is saved.
+  await dragRight(0.05);
+  await dragRight(-0.1);
+
+  await expect.poll(wash2X).toBe(0.775);
+});
+
 test('the page reconnects after an engine restart', async ({ page, startEngine }) => {
   const first = await startEngine();
   await page.goto(`${first.url}#monitor`);
