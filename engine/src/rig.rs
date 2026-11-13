@@ -14,6 +14,9 @@ use crate::{ArtNetFrames, DMX_CHANNELS, Frame, Universe};
 
 /// Art-Net port-addresses are 15 bits.
 pub const MAX_ARTNET_UNIVERSE: u16 = 0x7FFF;
+/// The most Art-Net universes the pixel grids may use in all: four times the plan's load
+/// target of 8, so a typo in a grid's size can't stall the 40 Hz render.
+pub const MAX_GRID_UNIVERSES: usize = 32;
 
 /// `rig.yaml` as written. Field order here is the canonical order in the file. It is read with
 /// each fixture as plain YAML, to tell profiled fixtures from pixel grids by `type` (see
@@ -245,6 +248,13 @@ pub struct Rig {
 /// step together despite rounding.
 const LINE_KEYS_PER_CANVAS: f32 = 10_000.0;
 
+/// `usage` is how many universes are asked for, e.g. "the pixel grids use 40".
+fn too_many_universes(usage: &str) -> String {
+    format!(
+        "{usage} Art-Net universes; pixel grids may use at most {MAX_GRID_UNIVERSES} in all, so the render keeps up at 40 Hz"
+    )
+}
+
 /// A canvas position (0–1) as a line, in 1/10000ths of the canvas.
 pub fn line_key(position: f32) -> i32 {
     (position * LINE_KEYS_PER_CANVAS).round() as i32
@@ -323,6 +333,12 @@ impl Rig {
                 Universe::Enttec => None,
             })
             .collect();
+        if universes.len() > MAX_GRID_UNIVERSES {
+            return Err(too_many_universes(&format!(
+                "the pixel grids use {}",
+                universes.len()
+            )));
+        }
         rig.artnet_universes = universes.into_iter().collect();
         let positions: Vec<(f32, f32)> = rig
             .fixtures
@@ -575,13 +591,20 @@ impl PixelGrid {
         }
         let size = colour_order.channels_per_pixel;
         let mut first = address - 1;
-        // No capacity up front: a typo such as `rows: 100000` must reach the universe check below
-        // rather than overflow or exhaust memory here.
+        // No capacity up front: a typo such as `rows: 100000` must reach the universe checks
+        // below rather than overflow or exhaust memory here.
         let count = columns.saturating_mul(rows);
         let mut pixels = Vec::new();
+        let mut universes_used = 1;
         for index in 0..count {
             if first + size > DMX_CHANNELS {
+                universes_used += 1;
                 universe = match universe {
+                    Universe::ArtNet(_) if universes_used > MAX_GRID_UNIVERSES => {
+                        return Err(too_many_universes(&format!(
+                            "{count} pixels need more than"
+                        )));
+                    }
                     Universe::ArtNet(port_address) if port_address < MAX_ARTNET_UNIVERSE => {
                         Universe::ArtNet(port_address + 1)
                     }
@@ -874,10 +897,38 @@ mod tests {
                 error(&format!(
                     "{size}, colour_order: RGB, output: artnet, universe: 0, address: 1, canvas: {{ x: 0, y: 0 }}"
                 ))
-                .ends_with("runs past Art-Net's last universe"),
+                .ends_with("pixel grids may use at most 32 in all, so the render keeps up at 40 Hz"),
                 "{size}"
             );
         }
+        assert_eq!(
+            error(
+                "columns: 1, rows: 2, colour_order: RGB, output: artnet, universe: 32767, address: 510, canvas: { x: 0, y: 0 }"
+            ),
+            "fixture \"grid\": pixel 2 runs past Art-Net's last universe"
+        );
+    }
+
+    #[test]
+    fn the_grids_may_use_at_most_32_art_net_universes_in_all() {
+        // 170 RGB pixels fill a universe: a 170 × 16 grid uses 16.
+        let rig = |grids: usize| {
+            let fixtures: String = (0..grids)
+                .map(|index| {
+                    format!(
+                        "  - {{ name: grid-{index}, type: pixel-grid, columns: 170, rows: 16, colour_order: RGB, output: artnet, universe: {}, address: 1, canvas: {{ x: 0, y: 0 }} }}\n",
+                        index * 16
+                    )
+                })
+                .collect();
+            Rig::parse(&format!("fixtures:\n{fixtures}"), Path::new("."))
+        };
+
+        assert_eq!(rig(2).unwrap().artnet_universes.len(), 32);
+        assert_eq!(
+            rig(3).unwrap_err(),
+            "the pixel grids use 48 Art-Net universes; pixel grids may use at most 32 in all, so the render keeps up at 40 Hz"
+        );
     }
 
     #[test]
