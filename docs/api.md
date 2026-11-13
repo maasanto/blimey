@@ -395,6 +395,16 @@ Plays one MIDI message as if it came in from the MIDI port, to audition cues wit
 
 `message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the look preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
+### Curve levels: `POST /api/envelope`
+
+The levels a curve plays, for the builder to draw what the engine will play. The body is a curve as in a song file (a swell's `curve`, a hit's `shape`) and how many levels to return, from 2 to 1001:
+
+```json
+{ "curve": { "points": [[0, 0], [0.5, 1], [1, 0.3]] }, "samples": 5 }
+```
+
+It returns `{ "levels": [0, 0.5, 1, 0.65, 0.3] }`: the level, 0–1, at `samples` evenly spaced points from the start of the curve to its end. A curve the engine would refuse at load is a `422` with the same message. It changes nothing, so it works in show mode too.
+
 ### Fixture test: `POST /api/fixtures/<name>/test`
 
 Lights the fixture full white for one second, above every other layer, on every output (`204`). Edit mode only.
@@ -442,7 +452,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
   "dmx": [0, 10, 255, "… 512 values"],
   "pixels": { "wash-1": ["#000aff", "#000aff", "#000aff", "#000aff"] },
   "song": "tell-me",
-  "cues": [{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false }],
+  "cues": [{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }],
   "master": 1.0,
   "live_parameters": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
@@ -452,7 +462,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
 - `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `song`: the selected song's name, or `null`.
-- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off.
+- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off. `beats` is the musical time since the cue started, at the frame's time and tempo; for a pattern it counts from the bar line its loop starts on, so it is negative while the loop waits for it.
 - `master`: the master dimmer, 0–1.
 - `live_parameters`: CC 20–27 on channel 2, as 0–1.
 
