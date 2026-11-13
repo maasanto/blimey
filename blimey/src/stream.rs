@@ -95,7 +95,7 @@ impl StreamSink {
                 test_flash: test_flash.clone(),
                 preview: preview.clone(),
                 midi: inject_midi,
-                last_save: Default::default(),
+                history: Default::default(),
             }))
             .fallback(ui::serve);
         server.spawn(async move {

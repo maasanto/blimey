@@ -271,8 +271,29 @@ fn write_locked(show_dir: &Path, file: &str, content: Value) -> io::Result<Save>
     Ok(Save {
         file: file.into(),
         before,
-        after,
+        after: Some(after),
     })
+}
+
+/// Creates `songs/<name>.yaml` from `content`, through the same checks and canonical write as
+/// `write`. Refused with `AlreadyExists` if the show has a song of that name, in any case, so a
+/// new song never replaces one.
+pub fn create_song(show_dir: &Path, name: &str, content: Value) -> io::Result<Save> {
+    let file = format!("{SONGS_DIR}/{name}.yaml");
+    if writable(&file).is_err() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("song name {name:?} must be letters, digits, - and _"),
+        ));
+    }
+    let _writing = writing();
+    if existing(&show_dir.join(&file))?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{file}: the show already has song {name:?}; pick another name"),
+        ));
+    }
+    write_locked(show_dir, &file, content)
 }
 
 /// `content` as the canonical YAML to write, or why it is refused.
@@ -407,13 +428,12 @@ fn edit_song(
     write_locked(show_dir, &file, content)
 }
 
-/// A write, with what the file held before it so that it can be undone.
-#[derive(Debug)]
+/// A change to one show file: its text before and after, `None` where there was no file.
+#[derive(Debug, Clone)]
 pub struct Save {
     file: String,
-    /// `None` when the write created the file.
     before: Option<String>,
-    after: String,
+    after: Option<String>,
 }
 
 impl Save {
@@ -422,12 +442,13 @@ impl Save {
     }
 
     /// Puts back what the file held before this save, byte for byte, after the same checks as a
-    /// write; removes it if the save created it. Refused with `ResourceBusy` if the file has
-    /// changed since, as undoing would lose that change. A refused undo can be tried again.
-    pub fn undo(&self, show_dir: &Path) -> io::Result<()> {
+    /// write; removes it if the save created it. Returns the change it made, whose undo redoes
+    /// the save. Refused with `ResourceBusy` if the file has changed since, as undoing would lose
+    /// that change.
+    pub fn undo(&self, show_dir: &Path) -> io::Result<Save> {
         let _writing = writing();
         let path = show_dir.join(&self.file);
-        if existing(&path)?.as_deref() != Some(self.after.as_str()) {
+        if existing(&path)? != self.after {
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
                 format!(
@@ -436,18 +457,92 @@ impl Save {
                 ),
             ));
         }
-        let Some(before) = &self.before else {
-            return fs::remove_file(&path).map_err(|error| in_path(&path, error));
-        };
-        let content = serde_yaml_ng::from_str(before).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{}: {error}", self.file),
-            )
-        })?;
-        checked(show_dir, &self.file, content)?;
-        write_atomically(&path, before).map_err(|error| in_path(&path, error))
+        match &self.before {
+            None => fs::remove_file(&path).map_err(|error| in_path(&path, error))?,
+            Some(before) => {
+                let content = serde_yaml_ng::from_str(before).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{}: {error}", self.file),
+                    )
+                })?;
+                checked(show_dir, &self.file, content)?;
+                write_atomically(&path, before).map_err(|error| in_path(&path, error))?;
+            }
+        }
+        Ok(Save {
+            file: self.file.clone(),
+            before: self.after.clone(),
+            after: self.before.clone(),
+        })
     }
+}
+
+/// How many saves `History` keeps to undo.
+pub const HISTORY_LENGTH: usize = 50;
+
+/// The saves made through the API since the engine started, to undo one at a time, newest
+/// first, and redo what was undone. Kept in memory only: a restart clears it. A new save clears
+/// what could be redone.
+#[derive(Debug, Default)]
+pub struct History {
+    /// Oldest first, at most `HISTORY_LENGTH`.
+    undo: Vec<Save>,
+    /// The changes undo made, latest last; undoing one redoes its save.
+    redo: Vec<Save>,
+}
+
+impl History {
+    pub fn record(&mut self, save: Save) {
+        self.redo.clear();
+        self.push_undo(save);
+    }
+
+    /// Undoes the latest save and returns its file. A refused undo stays in the history, to
+    /// try again once the file is put back.
+    pub fn undo(&mut self, show_dir: &Path) -> io::Result<String> {
+        let save = self
+            .undo
+            .last()
+            .ok_or_else(|| nothing_to("undo", "no save since the engine started"))?;
+        let undone = save.undo(show_dir)?;
+        self.undo.pop();
+        let file = undone.file.clone();
+        self.redo.push(undone);
+        Ok(file)
+    }
+
+    /// Redoes the latest undo and returns its file. A refused redo stays in the history.
+    pub fn redo(&mut self, show_dir: &Path) -> io::Result<String> {
+        let undone = self
+            .redo
+            .last()
+            .ok_or_else(|| nothing_to("redo", "no undo since the last save"))?;
+        let redone = undone.undo(show_dir)?;
+        self.redo.pop();
+        let file = redone.file.clone();
+        self.push_undo(redone);
+        Ok(file)
+    }
+
+    /// How many undos and redos are available.
+    pub fn steps(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
+    }
+
+    fn push_undo(&mut self, save: Save) {
+        if self.undo.len() == HISTORY_LENGTH {
+            self.undo.remove(0);
+        }
+        self.undo.push(save);
+    }
+}
+
+fn nothing_to(action: &str, why: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("nothing to {action}: {why}"),
+    )
 }
 
 /// The file's text, or `None` if there is no such file.
@@ -656,6 +751,137 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "songs/tell-me.yaml: program 3 already selects song \"other\""
+        );
+    }
+
+    fn text(show: &Path, file: &str) -> Option<String> {
+        fs::read_to_string(show.join(file)).ok()
+    }
+
+    #[test]
+    fn the_history_undoes_and_redoes_saves_across_files_newest_first() {
+        let show = fossile_copy("history");
+        let (song_0, rig_0) = (text(&show, TELL_ME), text(&show, RIG_FILE));
+        let mut history = History::default();
+        let cue = json!({ "name": "new", "type": "scene", "values": {} });
+
+        history.record(create_song(&show, "encore", json!({ "program": 9 })).unwrap());
+        let encore = text(&show, "songs/encore.yaml");
+        history.record(save_cue(&show, "tell-me", 50, None, cue).unwrap());
+        let song_1 = text(&show, TELL_ME);
+        let mut rig = read(&show, RIG_FILE).unwrap();
+        rig["fixtures"][0]["canvas"]["x"] = 0.4.into();
+        history.record(write(&show, RIG_FILE, rig).unwrap());
+        assert_eq!(history.steps(), (3, 0));
+
+        assert_eq!(history.undo(&show).unwrap(), RIG_FILE);
+        assert_eq!(text(&show, RIG_FILE), rig_0);
+        assert_eq!(history.undo(&show).unwrap(), TELL_ME);
+        assert_eq!(text(&show, TELL_ME), song_0);
+        assert_eq!(history.undo(&show).unwrap(), "songs/encore.yaml");
+        assert_eq!(text(&show, "songs/encore.yaml"), None);
+        assert_eq!(history.steps(), (0, 3));
+        assert_eq!(
+            history.undo(&show).unwrap_err().to_string(),
+            "nothing to undo: no save since the engine started"
+        );
+
+        assert_eq!(history.redo(&show).unwrap(), "songs/encore.yaml");
+        assert_eq!(text(&show, "songs/encore.yaml"), encore);
+        assert_eq!(history.redo(&show).unwrap(), TELL_ME);
+        assert_eq!(text(&show, TELL_ME), song_1);
+        assert_eq!(history.steps(), (2, 1));
+
+        history.record(set_bpm(&show, "tell-me", 100.into()).unwrap());
+        assert_eq!(
+            history.steps(),
+            (3, 0),
+            "a new save drops what could be redone"
+        );
+    }
+
+    #[test]
+    fn a_refused_undo_stays_in_the_history() {
+        let show = fossile_copy("history-refused");
+        let before = text(&show, TELL_ME).unwrap();
+        let mut history = History::default();
+        history.record(set_bpm(&show, "tell-me", 100.into()).unwrap());
+        let saved = text(&show, TELL_ME).unwrap();
+
+        fs::write(show.join(TELL_ME), format!("{saved}# by hand\n")).unwrap();
+        let error = history.undo(&show).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
+        assert_eq!(history.steps(), (1, 0));
+
+        fs::write(show.join(TELL_ME), saved).unwrap();
+        history.undo(&show).unwrap();
+        assert_eq!(text(&show, TELL_ME).unwrap(), before);
+    }
+
+    #[test]
+    fn the_history_keeps_the_latest_saves_only() {
+        let show = fossile_copy("history-bound");
+        let mut history = History::default();
+
+        for bpm in 1..=HISTORY_LENGTH + 2 {
+            history.record(set_bpm(&show, "tell-me", bpm.into()).unwrap());
+        }
+        for _ in 0..HISTORY_LENGTH {
+            history.undo(&show).unwrap();
+        }
+
+        assert_eq!(history.steps(), (0, HISTORY_LENGTH));
+        assert_eq!(
+            read(&show, TELL_ME).unwrap()["bpm"],
+            2,
+            "the oldest two saves were dropped"
+        );
+    }
+
+    #[test]
+    fn a_new_song_is_refused_on_a_taken_name_or_program_and_never_replaces_one() {
+        let show = fossile_copy("create-song");
+        let before = text(&show, TELL_ME);
+        let refusal = |name: &str, program: u8| {
+            let error = create_song(&show, name, json!({ "program": program })).unwrap_err();
+            (error.kind(), error.to_string())
+        };
+
+        assert_eq!(
+            refusal("tell-me", 9),
+            (
+                io::ErrorKind::AlreadyExists,
+                "songs/tell-me.yaml: the show already has song \"tell-me\"; pick another name"
+                    .into()
+            )
+        );
+        assert_eq!(refusal("Tell-Me", 9).0, io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            refusal("encore", 3),
+            (
+                io::ErrorKind::InvalidData,
+                "songs/tell-me.yaml: program 3 already selects song \"encore\"".into()
+            )
+        );
+        assert_eq!(
+            refusal("en core", 9),
+            (
+                io::ErrorKind::InvalidData,
+                "song name \"en core\" must be letters, digits, - and _".into()
+            )
+        );
+        assert_eq!(text(&show, TELL_ME), before);
+        assert_eq!(text(&show, "songs/encore.yaml"), None);
+
+        create_song(
+            &show,
+            "encore",
+            json!({ "program": 9, "bpm": 100, "time_signature": "6/8" }),
+        )
+        .unwrap();
+        assert_eq!(
+            text(&show, "songs/encore.yaml").unwrap(),
+            "program: 9\nbpm: 100\ntime_signature: 6/8\n"
         );
     }
 
