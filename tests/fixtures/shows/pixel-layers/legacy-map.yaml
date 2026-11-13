@@ -1,0 +1,3 @@
+# Channel-1 note 60 drives the par's strobe channel (DMX 5).
+ranges:
+  - { first_note: 60, last_note: 60, address: 5 }

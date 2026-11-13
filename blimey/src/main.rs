@@ -4,7 +4,10 @@ mod enttec;
 mod event_log;
 mod hot_reload;
 mod midi_input;
+mod record;
+mod recorder;
 mod service;
+mod soak;
 mod state;
 mod stream;
 mod ui;
@@ -21,8 +24,8 @@ use blimey_engine::look::{Look, LookSettings};
 use blimey_engine::ofl::import_ofl;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
-    CueEvent, DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource, MonotonicClock,
-    Show, ShowSource, Status, first_difference, format_dump, parse_dump,
+    ArtNetFrames, CueEvent, DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource,
+    MonotonicClock, Show, ShowSource, Status, first_difference, format_dump, parse_dump,
 };
 use clap::{Args, Parser, Subcommand};
 use serialport::SerialPortType;
@@ -30,10 +33,12 @@ use serialport::SerialPortType;
 use crate::api::Mode;
 use crate::artnet::ArtNet;
 use crate::enttec::EnttecPro;
-use crate::event_log::EventLog;
+use crate::enttec::emulator::EmulatedEnttec;
 use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
-use crate::state::{Resumed, StateFile};
+use crate::recorder::Recorder;
+use crate::soak::{Setlist, Soak};
+use crate::state::Resumed;
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
 #[derive(Parser)]
@@ -68,6 +73,57 @@ enum Command {
         /// (events.log). Default: ~/Library/Application Support/Blimey
         #[arg(long)]
         state_dir: Option<PathBuf>,
+    },
+    /// Record what arrives on a MIDI port, such as Reaper playing a song over the IAC bus, to a
+    /// Standard MIDI File for `blimey replay`, clock, Start and Stop included. Time 0 is the
+    /// first message. Stops on Ctrl-C.
+    Record {
+        out: PathBuf,
+        /// MIDI input to record: the first port whose name contains this text.
+        #[arg(long, default_value = "IAC")]
+        midi_port: String,
+        /// Also stop at the first MIDI Stop after a Start or Continue: when Reaper stops.
+        #[arg(long)]
+        until_stop: bool,
+        /// Also capture the Art-Net received on UDP 6454, such as EMU's output, to this frame
+        /// dump on the same timeline as the MIDI, on the 25 ms frame grid (docs/migration.md).
+        /// Keeps only the universes --show outputs on.
+        #[arg(long, value_name = "DUMP", requires = "show")]
+        artnet: Option<PathBuf>,
+        /// The show the Art-Net is captured for: its pixel grids' universes are kept as
+        /// Art-Net, any other universe but the Enttec one is ignored.
+        #[arg(long, value_name = "SHOW_DIR", requires = "artnet")]
+        show: Option<PathBuf>,
+        /// The Art-Net universe that stands for the Enttec box in the dump: the 15-bit
+        /// port-address. Defaults to 0, unless a pixel grid uses 0: then the grid keeps it.
+        #[arg(
+            long,
+            value_parser = clap::value_parser!(u16).range(..=i64::from(artnet::MAX_UNIVERSE)),
+            requires = "artnet",
+        )]
+        artnet_universe: Option<u16>,
+    },
+    /// Loop a setlist of recorded songs against its show for hours, then report dropped
+    /// frames, drift, frame-time jitter and memory. Exits with status 1 if a check fails.
+    Soak {
+        /// YAML file: `show: <folder>` and `songs: [<file.mid>, …]`, relative to the file.
+        setlist: PathBuf,
+        #[arg(long, default_value_t = 4.0)]
+        hours: f64,
+        /// Write the report to this file. Default: a new
+        /// soak-<setlist>-<mode>-<unix time>-<process id>.txt in the current folder.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Simulate on a fake clock as fast as the machine renders, with no outputs: 100 hours
+        /// of show in minutes.
+        #[arg(long, conflicts_with_all = ["emulated_enttec", "dmx_port", "listen", "artnet"])]
+        accelerated: bool,
+        /// Send DMX through the real driver to an emulated Enttec box on a pseudo terminal,
+        /// and count the frames it receives.
+        #[arg(long, conflicts_with = "dmx_port")]
+        emulated_enttec: bool,
+        #[command(flatten)]
+        outputs: Outputs,
     },
     /// List MIDI input ports and serial ports.
     Devices,
@@ -153,7 +209,7 @@ impl Outputs {
                 .listen
                 .map(|address| StreamSink::start(address, show_dir, rig, mode))
                 .transpose()?,
-            artnet: self.artnet.start()?,
+            artnet: self.artnet.start(rig)?,
         })
     }
 }
@@ -170,21 +226,44 @@ struct ArtNetMirror {
         value_parser = artnet::parse_node,
     )]
     artnet: Option<SocketAddrV4>,
-    /// Art-Net universe the mirror sends on: the 15-bit port-address, from 0.
+    /// Art-Net universe the mirror sends on: the 15-bit port-address, from 0. Defaults to 0,
+    /// unless a pixel grid uses 0: then the grid keeps it and the output isn't mirrored.
     #[arg(
         long,
-        default_value_t = 0,
         value_parser = clap::value_parser!(u16).range(..=i64::from(artnet::MAX_UNIVERSE)),
         requires = "artnet",
     )]
-    artnet_universe: u16,
+    artnet_universe: Option<u16>,
 }
 
 impl ArtNetMirror {
-    fn start(&self) -> io::Result<Option<ArtNet>> {
-        self.artnet
-            .map(|node| ArtNet::new(node, self.artnet_universe))
-            .transpose()
+    /// Opens the Art-Net output, which also carries `rig`'s pixel grids on Art-Net universes.
+    // ponytail: checked against the rig at start only; a hot reload that adds grids isn't rechecked.
+    fn start(&self, rig: &Rig) -> io::Result<Option<ArtNet>> {
+        let grid_universes = &rig.artnet_universes;
+        let Some(node) = self.artnet else {
+            if !grid_universes.is_empty() {
+                eprintln!(
+                    "blimey: pixel grids use Art-Net universes {grid_universes:?} but --artnet is not set: they get no output"
+                );
+            }
+            return Ok(None);
+        };
+        let mirror = self
+            .mirror_universe(grid_universes)
+            .map_err(io::Error::other)?;
+        if mirror.is_none() {
+            eprintln!(
+                "blimey: not mirroring the output: a pixel grid uses Art-Net universe {}; pass --artnet-universe to mirror on another",
+                artnet::DEFAULT_ENTTEC_UNIVERSE
+            );
+        }
+        ArtNet::new(node, mirror).map(Some)
+    }
+
+    /// Where the output is mirrored, given the universes the grids use.
+    fn mirror_universe(&self, grid_universes: &[u16]) -> Result<Option<u16>, String> {
+        artnet::enttec_universe(self.artnet_universe, grid_universes)
     }
 }
 
@@ -215,6 +294,35 @@ fn main() -> ExitCode {
             outputs,
             state_dir,
         } => run(&show_dir, &midi_port, &outputs, state_dir),
+        Command::Record {
+            out,
+            midi_port,
+            until_stop,
+            artnet,
+            show,
+            artnet_universe,
+        } => record(
+            &out,
+            &midi_port,
+            until_stop,
+            artnet.as_deref().zip(show.as_deref()),
+            artnet_universe,
+        ),
+        Command::Soak {
+            setlist,
+            hours,
+            report,
+            accelerated,
+            emulated_enttec,
+            outputs,
+        } => soak(
+            &setlist,
+            hours,
+            report,
+            accelerated,
+            emulated_enttec,
+            &outputs,
+        ),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
@@ -283,23 +391,14 @@ fn run(
     outputs: &Outputs,
     state_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    if !outputs.any() {
-        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
-    }
-    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
-    fs::create_dir_all(&state_dir).map_err(|error| format!("{}: {error}", state_dir.display()))?;
-    let mut shows = outputs.shows(show_dir)?;
-    let state = StateFile::open(&state_dir);
-    let resume = state.saved().resume_events(shows.current());
-    let mut log =
-        EventLog::open(&state_dir).map_err(|error| format!("{}: {error}", state_dir.display()))?;
-    let saved = state.saved();
-    log.start(
-        show_dir,
-        outputs.mode().name(),
-        saved.song.as_deref(),
-        saved.master,
-    );
+    let mut shows = check_run(show_dir, outputs)?;
+    let state_dir = state_dir.or_else(|| {
+        state::default_dir()
+            .map_err(|error| eprintln!("state: {error}; running without saved state or event log"))
+            .ok()
+    });
+    let recorder = Recorder::start(state_dir.as_deref(), show_dir, outputs.mode().name());
+    let resume = recorder.saved().resume_events(shows.current());
     let mut clock = MonotonicClock::default();
     let midi = MidiInput::connect(midi_port, clock)?;
     let output = outputs.start(show_dir, &shows.current().rig)?;
@@ -316,22 +415,104 @@ fn run(
         &mut midi,
         shows,
         &Look::default(),
-        &mut Recorded { output, log, state },
+        &mut Recorded { output, recorder },
         u32::MAX,
     )?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// Checks `run_args` as `blimey run` would, then installs the launch agent for them.
+/// `artnet` is the dump to capture Art-Net to, and the show it is captured for.
+fn record(
+    out: &Path,
+    midi_port: &str,
+    until_stop: bool,
+    artnet: Option<(&Path, &Path)>,
+    artnet_universe: Option<u16>,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let artnet = artnet
+        .map(|(dump, show_dir)| {
+            let grid_universes = Show::load(show_dir)?.rig.artnet_universes;
+            let enttec_universe = artnet::enttec_universe(artnet_universe, &grid_universes)?;
+            Ok::<_, Box<dyn Error>>(record::ArtNetRecording {
+                dump,
+                enttec_universe,
+                grid_universes,
+            })
+        })
+        .transpose()?;
+    record::record(
+        out,
+        &record::Recording {
+            midi_port,
+            until_stop,
+            artnet,
+        },
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn soak(
+    setlist: &Path,
+    hours: f64,
+    report: Option<PathBuf>,
+    accelerated: bool,
+    emulated_enttec: bool,
+    outputs: &Outputs,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let setlist = Setlist::load(setlist)?;
+    let mut shows = outputs.shows(&setlist.show_dir)?;
+    let device = emulated_enttec.then(EmulatedEnttec::plug_in).transpose()?;
+    let mut output = outputs.start(&setlist.show_dir, &shows.current().rig)?;
+    if let Some(device) = &device {
+        output.dmx = Some(EnttecPro::new(device.path()));
+    }
+    let soak = Soak {
+        setlist: &setlist,
+        hours,
+        accelerated,
+        output,
+        device: device.as_ref(),
+        report,
+    };
+    let passed = if accelerated {
+        soak.run(&mut FakeClock::default(), shows)?
+    } else {
+        soak.run(&mut MonotonicClock::default(), shows)?
+    };
+    Ok(if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// What `run` refuses to start without: somewhere to send frames, and a show that loads.
+/// Returns the show to play.
+fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+    if !outputs.any() {
+        return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
+    }
+    Ok(outputs.shows(show_dir)?)
+}
+
+/// Checks `run_args` as `blimey run` would at start, so launchd never restarts an engine that
+/// exits at once, then installs the launch agent for them.
 fn install_service(run_args: &[String], dry_run: bool) -> Result<ExitCode, Box<dyn Error>> {
     let command = ["blimey", "run"]
         .into_iter()
         .chain(run_args.iter().map(String::as_str));
     let parsed = Command::try_parse_from(command).unwrap_or_else(|error| error.exit());
-    let Command::Run { state_dir, .. } = parsed else {
+    let Command::Run {
+        show_dir,
+        outputs,
+        state_dir,
+        ..
+    } = parsed
+    else {
         unreachable!("parsed as `run`");
     };
-    let state_dir = state_dir.map_or_else(state::default_dir, Ok)?;
+    check_run(&show_dir, &outputs)?;
+    let state_dir = std::path::absolute(state_dir.map_or_else(state::default_dir, Ok)?)?;
     let plist = service::plist(
         &std::env::current_exe()?,
         run_args,
@@ -409,7 +590,7 @@ fn fire(
     eprintln!("blimey: holding the look; Ctrl-C to stop");
     blimey_engine::run(
         &mut MonotonicClock::default(),
-        &mut NoMidi,
+        &mut StreamedMidi::new(NoMidi, output.stream.as_ref()),
         shows,
         &look,
         &mut output,
@@ -418,7 +599,7 @@ fn fire(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `fire` listens to no MIDI: the look alone drives the output.
+/// `fire` listens to no MIDI port; with `--listen`, MIDI posted to the API still plays.
 struct NoMidi;
 
 impl MidiSource for NoMidi {
@@ -439,7 +620,7 @@ impl DmxSink for LiveOutput {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
         let mut frame = *frame;
         if let Some(stream) = &self.stream {
-            stream.apply_test_flash(at, &mut frame);
+            stream.apply_overlays(at, &mut frame);
         }
         if let Some(dmx) = &mut self.dmx {
             dmx.send(at, &frame)?;
@@ -449,6 +630,16 @@ impl DmxSink for LiveOutput {
         }
         if let Some(artnet) = &mut self.artnet {
             artnet.send(at, &frame)?;
+        }
+        Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
+        if let Some(stream) = &mut self.stream {
+            stream.send_artnet(universes)?;
+        }
+        if let Some(artnet) = &mut self.artnet {
+            artnet.send_artnet(universes)?;
         }
         Ok(())
     }
@@ -464,8 +655,7 @@ impl DmxSink for LiveOutput {
 /// restart.
 struct Recorded {
     output: LiveOutput,
-    log: EventLog,
-    state: StateFile,
+    recorder: Recorder,
 }
 
 impl DmxSink for Recorded {
@@ -473,17 +663,21 @@ impl DmxSink for Recorded {
         self.output.send(at, frame)
     }
 
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
+        self.output.send_artnet(universes)
+    }
+
     fn status(&mut self, status: &Status) {
-        self.state.record(status);
+        self.recorder.status(status);
         self.output.status(status);
     }
 
     fn midi(&mut self, event: &MidiEvent) {
-        self.log.midi(event);
+        self.recorder.midi(event);
     }
 
     fn cue(&mut self, event: &CueEvent) {
-        self.log.cue(event);
+        self.recorder.cue(event);
     }
 }
 
@@ -503,4 +697,72 @@ fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<d
         None => print!("{yaml}"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn record_takes_art_net_universes_up_to_15_bits_like_run() {
+        let record = |universe: &str| {
+            Command::try_parse_from([
+                "blimey",
+                "record",
+                "take.mid",
+                "--artnet",
+                "emu.dump",
+                "--show",
+                "shows/fossile",
+                "--artnet-universe",
+                universe,
+            ])
+        };
+
+        assert!(record("32767").is_ok());
+        assert!(record("32768").is_err());
+        assert!(
+            Command::try_parse_from(["blimey", "record", "take.mid", "--artnet", "emu.dump"])
+                .is_err(),
+            "the capture needs the show whose universes it keeps"
+        );
+    }
+
+    const WALL_ON_ART_NET_3: &str = "fixtures:\n  - { name: wall, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, output: artnet, universe: 3, address: 1, canvas: { x: 0.5, y: 0.5 } }\n";
+
+    #[test]
+    fn the_live_stream_previews_grids_on_art_net() {
+        let rig = Rig::parse(WALL_ON_ART_NET_3, Path::new(".")).unwrap();
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let stream = StreamSink::start(address, &std::env::temp_dir(), &rig, Mode::Show).unwrap();
+        let mut output = LiveOutput {
+            dmx: None,
+            stream: Some(stream),
+            artnet: None,
+        };
+        let mut universe = [0; 512];
+        universe[0] = 255;
+
+        output
+            .send_artnet(&ArtNetFrames::from([(3, universe)]))
+            .unwrap();
+        output.send(Duration::ZERO, &[0; 512]).unwrap();
+
+        let frame = output.stream.unwrap().latest_frame();
+        assert_eq!(frame["pixels"]["wall"], serde_json::json!(["#ff0000"]));
+    }
+
+    #[test]
+    fn grids_keep_universe_0_unless_the_mirror_is_put_there_on_purpose() {
+        let mirror = |universe: Option<u16>| ArtNetMirror {
+            artnet: Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, artnet::PORT)),
+            artnet_universe: universe,
+        };
+
+        assert_eq!(mirror(None).mirror_universe(&[]), Ok(Some(0)));
+        assert_eq!(mirror(None).mirror_universe(&[0, 1]), Ok(None));
+        assert_eq!(mirror(Some(5)).mirror_universe(&[0, 1]), Ok(Some(5)));
+        assert!(mirror(Some(1)).mirror_universe(&[0, 1]).is_err());
+    }
 }

@@ -12,7 +12,7 @@ const LEGACY_MAP_FILE: &str = "legacy-map.yaml";
 pub(crate) const RIG_FILE: &str = "rig.yaml";
 const PALETTES_FILE: &str = "palettes.yaml";
 pub(crate) const PROFILES_DIR: &str = "fixtures";
-const SONGS_DIR: &str = "songs";
+pub(crate) const SONGS_DIR: &str = "songs";
 
 /// A show folder (plan §6), loaded and validated.
 #[derive(Debug, Default)]
@@ -29,6 +29,17 @@ pub struct Show {
 
 impl Show {
     pub fn load(dir: &Path) -> io::Result<Self> {
+        Self::load_as_written(dir, None, None)
+    }
+
+    /// The show as it would load after a write: with `rig` instead of `rig.yaml`, and with
+    /// `songs/<name>.yaml` holding `yaml`, given as `(name, yaml)`, whatever the files hold now
+    /// or whether they exist.
+    pub(crate) fn load_as_written(
+        dir: &Path,
+        rig: Option<Rig>,
+        song: Option<(&str, &str)>,
+    ) -> io::Result<Self> {
         if !dir.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -38,14 +49,12 @@ impl Show {
                 ),
             ));
         }
-        let rig = load_optional(&dir.join(RIG_FILE), |yaml| {
-            Rig::parse(yaml, &dir.join(PROFILES_DIR))
-        })?;
-        Self::load_with_rig(dir, rig)
-    }
-
-    /// The show in `dir` with `rig` instead of its `rig.yaml`: checks a rig before it is saved.
-    pub(crate) fn load_with_rig(dir: &Path, rig: Rig) -> io::Result<Self> {
+        let rig = match rig {
+            Some(rig) => rig,
+            None => load_optional(&dir.join(RIG_FILE), |yaml| {
+                Rig::parse(yaml, &dir.join(PROFILES_DIR))
+            })?,
+        };
         let mut show = Self {
             legacy: load_optional(&dir.join(LEGACY_MAP_FILE), |yaml| {
                 LegacyMap::parse(yaml).map_err(|error| error.to_string())
@@ -54,7 +63,7 @@ impl Show {
             palettes: load_optional(&dir.join(PALETTES_FILE), parse_palettes)?,
             songs: Vec::new(),
         };
-        show.songs = load_songs(&dir.join(SONGS_DIR), &show)?;
+        show.songs = load_songs(&dir.join(SONGS_DIR), &show, song)?;
         Ok(show)
     }
 }

@@ -12,7 +12,7 @@ use crate::fixture::Attribute;
 use crate::look::{self, Look};
 use crate::rig::Rig;
 use crate::song::Song;
-use crate::{DMX_CHANNELS, Frame, MidiEvent, Show};
+use crate::{ArtNetFrames, DMX_CHANNELS, Frame, MidiEvent, Show, Universe, Universes};
 
 /// Status bytes on channel 2 (cues, song select, master, live parameters).
 const CUE_NOTE_OFF: u8 = 0x81;
@@ -37,7 +37,7 @@ pub(crate) struct Playback {
     clock: Option<ClockFollower>,
     /// Whether panic put the safe look up; it stays until the next song select.
     safe_look: bool,
-    /// Lowest first: a cue fired later draws over the earlier ones.
+    /// In firing order; `layered` gives the drawing order.
     cues: Vec<ActiveCue>,
     master: f32,
     live_parameters: [f32; LIVE_PARAMETERS],
@@ -109,6 +109,21 @@ impl Default for Playback {
             cue_events: Vec::new(),
         }
     }
+}
+
+/// The channel-2 MIDI that takes a fresh engine to the song with `program` and to `master`
+/// (0–1): its Program Change, then CC 7 unless the master is at full, where it starts.
+/// Cues are not part of it: after a restart the engine waits for the next one.
+pub fn resume_messages(program: Option<u8>, master: f32) -> Vec<Vec<u8>> {
+    let mut messages = Vec::new();
+    if let Some(program) = program {
+        messages.push(vec![CUE_PROGRAM_CHANGE, program]);
+    }
+    if master < 1.0 {
+        let value = (master.clamp(0.0, 1.0) * MIDI_DATA_MAX).round() as u8;
+        messages.push(vec![CUE_CONTROL_CHANGE, MASTER_CONTROLLER, value]);
+    }
+    messages
 }
 
 impl Playback {
@@ -231,15 +246,22 @@ impl Playback {
 
     /// The frame due at `at`, with `look` (from `blimey fire`) between legacy and cues.
     /// Drops cues that have finished fading out.
-    pub fn render(&mut self, show: &Show, look: &Look, at: Duration) -> Frame {
-        let mut frame = self.legacy;
-        look::render(&show.rig, look, &mut frame);
+    pub fn render(&mut self, show: &Show, look: &Look, at: Duration) -> Universes {
+        let mut output = Universes {
+            enttec: self.legacy,
+            artnet: show.rig.artnet_frames(),
+        };
+        look::render(&show.rig, look, &mut output.enttec);
+        // The builder's metronome: an edited `bpm` takes over at once.
+        if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
+            clock.set_song_bpm(at, f64::from(song.bpm.unwrap_or(DEFAULT_BPM)));
+        }
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
-            apply_master(&show.rig, self.master, &mut frame);
-            return frame;
+            apply_master(&show.rig, self.master, &mut output);
+            return output;
         };
         if self.safe_look {
-            look::render(&show.rig, &song.safe_look, &mut frame);
+            look::render(&show.rig, &song.safe_look, &mut output.enttec);
         }
         let faded_out =
             |cue: &Cue, release: &Release| clock.progress(cue.release(), release.at, at) as f32;
@@ -251,32 +273,47 @@ impl Playback {
                     .is_none_or(|release| faded_out(cue, release) < 1.0)
             })
         });
-        for active in &self.cues {
+        for active in self.layered(song) {
             let cue = &song.cues[&active.note];
             let opacity = match &active.released {
                 None => cue.opacity(clock, active.started, at),
                 Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
             };
-            let mut lit = frame;
-            cue.draw(&show.rig, active.intensity, &mut lit);
+            // Only pixel cues draw on Art-Net: the others get no copy of it to blend back.
+            let mut lit = Universes {
+                enttec: output.enttec,
+                artnet: match cue {
+                    Cue::Pixel(_) => output.artnet.clone(),
+                    _ => ArtNetFrames::new(),
+                },
+            };
+            cue.draw(
+                &show.rig,
+                clock,
+                active.started,
+                at,
+                active.intensity,
+                &mut lit,
+            );
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
-            for (below, above) in frame.iter_mut().zip(lit) {
-                let blended = f32::from(*below) + (f32::from(above) - f32::from(*below)) * opacity;
-                *below = blended.round() as u8;
+            crossfade(&mut output.enttec, &lit.enttec, opacity);
+            for (universe, lit) in &lit.artnet {
+                crossfade(output.frame_mut(Universe::ArtNet(*universe)), lit, opacity);
             }
         }
-        apply_master(&show.rig, self.master, &mut frame);
-        frame
+        apply_master(&show.rig, self.master, &mut output);
+        output
     }
 
     pub fn status(&self, show: &Show) -> Status {
         let song = self.song(show);
         Status {
             song: song.map(|song| song.name.clone()),
-            cues: self
-                .cues
-                .iter()
+            cues: song
+                .map(|song| self.layered(song))
+                .unwrap_or_default()
+                .into_iter()
                 .filter_map(|active| {
                     let cue = song?.cues.get(&active.note)?;
                     Some(CueStatus {
@@ -291,15 +328,34 @@ impl Playback {
             live_parameters: self.live_parameters,
         }
     }
+
+    /// Active cues, lowest layer first (plan §5): scene, swell and pattern cues, then pixel
+    /// cues, each in the order they were fired.
+    fn layered(&self, song: &Song) -> Vec<&ActiveCue> {
+        let mut cues: Vec<&ActiveCue> = self.cues.iter().collect();
+        cues.sort_by_key(|active| matches!(song.cues.get(&active.note), Some(Cue::Pixel(_))));
+        cues
+    }
+}
+
+/// Moves each channel of `below` towards `above` by `opacity` (0–1).
+fn crossfade(below: &mut Frame, above: &Frame, opacity: f32) {
+    for (below, above) in below.iter_mut().zip(above) {
+        let blended = f32::from(*below) + (f32::from(*above) - f32::from(*below)) * opacity;
+        *below = blended.round() as u8;
+    }
 }
 
 /// Scales intensity channels by `master`: dimmer channels, the colour channels of fixtures
-/// without a dimmer, and channels no fixture claims (legacy-only). Other channels, such as a
-/// shutter, keep their value.
-fn apply_master(rig: &Rig, master: f32, frame: &mut Frame) {
+/// without a dimmer, and channels no fixture claims (legacy-only and pixel grids, every
+/// Art-Net channel included). Other channels, such as a shutter, keep their value.
+fn apply_master(rig: &Rig, master: f32, output: &mut Universes) {
     if master >= 1.0 {
         return;
     }
+    let scale = |value: &mut u8| *value = (f32::from(*value) * master).round() as u8;
+    output.artnet.values_mut().flatten().for_each(scale);
+    let frame = &mut output.enttec;
     let mut is_intensity = [true; DMX_CHANNELS];
     for fixture in &rig.fixtures {
         for (offset, channel) in fixture.channels.iter().enumerate() {
@@ -312,7 +368,7 @@ fn apply_master(rig: &Rig, master: f32, frame: &mut Frame) {
     }
     for (value, scaled) in frame.iter_mut().zip(is_intensity) {
         if scaled {
-            *value = (f32::from(*value) * master).round() as u8;
+            scale(value);
         }
     }
 }
@@ -330,7 +386,7 @@ mod tests {
     }
 
     /// Plays `events` on an engine that has been running for `uptime`, frame by frame.
-    fn render_after(show: &Show, events: &[MidiEvent], uptime: Duration) -> Vec<Frame> {
+    fn render_after(show: &Show, events: &[MidiEvent], uptime: Duration) -> Vec<Universes> {
         let mut playback = Playback::default();
         let mut pending = events.iter().peekable();
         let last = events.last().map_or(Duration::ZERO, |event| event.at);

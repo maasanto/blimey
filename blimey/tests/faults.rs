@@ -93,10 +93,29 @@ fn wait_for(device: &EmulatedEnttec, wanted: Option<[u8; 4]>) -> Duration {
     panic!("no frame with DMX 1-4 = {wanted:?} within {PATIENCE:?}; last frame: {last:?}");
 }
 
+/// Waits until `state.json` in `state_dir` holds song 1 at half master, and returns how long
+/// that took. The engine saves it on a background thread, a few milliseconds after the frame.
+fn wait_for_saved_state(state_dir: &Path) -> Duration {
+    let started = Instant::now();
+    let is_saved = || {
+        let text = fs::read_to_string(state_dir.join("state.json")).ok()?;
+        let state: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let master = state["master"].as_f64()?;
+        Some(state["song"] == "first" && (master - 64.0 / 127.0).abs() < 1e-6)
+    };
+    while started.elapsed() < PATIENCE {
+        if is_saved() == Some(true) {
+            return started.elapsed();
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    panic!("state.json never held song 1 at half master within {PATIENCE:?}");
+}
+
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
-    let device = EmulatedEnttec::plug_in();
+    let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("kill");
     let mut reaper = reaper(&port_name);
     let engine = Engine::start(&device, &port_name, &state_dir);
@@ -105,6 +124,8 @@ fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
         send(&mut reaper, message);
     }
     wait_for(&device, Some(BLUE_AT_HALF));
+    // A crash before the save loses the change (docs/api.md): kill only once it is saved.
+    let saved = wait_for_saved_state(&state_dir);
 
     drop(engine);
     let restarted = Instant::now();
@@ -115,7 +136,9 @@ fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
     send(&mut reaper, &BLUE_SNAP);
     let next_cue = wait_for(&device, Some(BLUE_AT_HALF));
 
-    eprintln!("restart to first frame: {first_frame:?}; next cue on output after {next_cue:?}");
+    eprintln!(
+        "state saved {saved:?} after the frame; restart to first frame: {first_frame:?}; next cue on output after {next_cue:?}"
+    );
     assert!(
         first_frame < RESTART_TARGET,
         "first frame after {first_frame:?}"
@@ -130,8 +153,25 @@ fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
 
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
+fn engine_runs_without_its_state_folder() {
+    let device = EmulatedEnttec::plug_in().unwrap();
+    let (port_name, scratch_dir) = scratch("state");
+    let not_a_folder = scratch_dir.join("a-file");
+    fs::write(&not_a_folder, "").unwrap();
+    let mut reaper = reaper(&port_name);
+    let _engine = Engine::start(&device, &port_name, &not_a_folder);
+    wait_for(&device, None);
+    send(&mut reaper, &SELECT_SONG);
+    send(&mut reaper, &BLUE_SNAP);
+
+    wait_for(&device, Some(BLUE_AT_FULL));
+    fs::remove_dir_all(scratch_dir).unwrap();
+}
+
+#[test]
+#[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
-    let device = EmulatedEnttec::plug_in();
+    let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("midi");
     let mut first_port = reaper(&port_name);
     let _engine = Engine::start(&device, &port_name, &state_dir);
@@ -160,7 +200,7 @@ fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn engine_resumes_output_when_the_serial_port_drops_and_comes_back() {
-    let mut device = EmulatedEnttec::plug_in();
+    let mut device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("serial");
     let mut reaper = reaper(&port_name);
     let _engine = Engine::start(&device, &port_name, &state_dir);
@@ -171,7 +211,7 @@ fn engine_resumes_output_when_the_serial_port_drops_and_comes_back() {
 
     device.unplug();
     thread::sleep(Duration::from_millis(500));
-    device.plug_back_in();
+    device.plug_back_in().unwrap();
     let back = wait_for(&device, Some(BLUE_AT_FULL));
 
     eprintln!("output back {back:?} after replug");

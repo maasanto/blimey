@@ -32,9 +32,33 @@ The engine refuses to load a rig where:
 - two fixtures' channel ranges overlap (`fixtures "wash-a" (DMX 1-16) and "wash-b" (DMX 16-31) overlap`),
 - a fixture runs past channel 512,
 - a fixture name appears twice, a group lists an unknown fixture, or a group shares a fixture's name,
-- the profile or mode doesn't exist.
+- the profile or mode doesn't exist,
+- a pixel grid doesn't fit its output (see below).
 
 **Canvas.** Fixtures sit on a normalised 2D canvas, 0–1 on both axes, which is the stage as the audience sees it: a front view, not a plan from above. `x` runs from the left edge (0) to the right edge (1) as seen from the audience: x = 0 is stage right, x = 1 is stage left. `y` runs from the floor (0) up to the top of the stage picture (1). A fixture's pixels sit on one row at height `y`, spread evenly across `width` starting at `x`, in pixel order: pixel *i* of *n* is at `x + width × (i + 0.5) / n`. A single-pixel fixture can omit `width`.
+
+**Pixel grids.** Any RGB or RGBW grid is a fixture of `type: pixel-grid`, with no profile. A column is a grid with one column.
+
+```yaml
+fixtures:
+  - name: back-grid
+    type: pixel-grid
+    columns: 16
+    rows: 8
+    colour_order: RGB          # each pixel's emitters in DMX order: R, G, B and optional W, e.g. GRB, RGBW, WRGB
+    wiring: serpentine         # optional: row-by-row (default) or serpentine
+    start_corner: bottom-left  # optional: top-left (default), top-right, bottom-left, bottom-right
+    output: artnet             # optional: enttec (default) or artnet
+    universe: 2                # Art-Net port-address of the first pixel; only, and required, for artnet
+    address: 1                 # 1-based DMX start address in that universe
+    canvas: { x: 0.2, y: 0.5, width: 0.6, height: 0.4 }
+```
+
+- Positions are in the front view from the audience: x 0 is stage right and 1 stage left; y 0 is the floor and 1 the top. `canvas` is the rectangle the grid fills, its bottom-left corner at (`x`, `y`). Pixels sit at the centres of `columns` × `rows` equal cells.
+- `start_corner` is where the first pixel is, as seen from the audience. The chain runs along rows: `row-by-row` starts every row on the start corner's side, `serpentine` runs each row back the way the previous one came. With `start_corner: bottom-left`, row 1 of the wiring is the bottom row.
+- One universe holds 170 RGB or 128 RGBW pixels. A pixel that doesn't fit in the rest of its universe starts the next Art-Net universe at channel 1. An `enttec` grid must fit in the Enttec universe, shared with the other fixtures: anything bigger needs `output: artnet`.
+- Only pixel cues drive grids. Looks, scenes, swells and patterns can't name them yet, and groups can't list them.
+- The engine refuses a grid that overflows the Enttec universe or Art-Net universe 32767, an `artnet` grid without `universe`, an `enttec` grid with one, a bad colour order, and channels that overlap another fixture or grid in the same universe (`fixtures "a" (Art-Net universe 4, DMX 1-6) and "b" (Art-Net universe 4, DMX 4-9) overlap`).
 
 ### palettes.yaml
 
@@ -96,6 +120,18 @@ cues:
       - { at: 1,   shape: ramp-up, length: 0.5 beats, level: 100% }
       - { at: 2,   shape: sine,    length: 0.5 beats, level: 80% }
       - { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 100% }
+  40:
+    name: bridge-chase
+    type: pixel
+    shape: bar           # optional, default bar
+    effect: chase        # optional, default static
+    params: { color: amber, width: 0.2, speed: 1 bar, direction: left-to-right }
+    seed: 7              # optional, default 0
+    rgbw: white-rich     # optional, default saturated
+    fade_in: 500ms       # optional, default 0
+    release: 1s          # optional, default 0
+    layer_2:             # optional
+      { shape: circle, effect: pulse, blend: add, params: { color: white, width: 0.1 } }
 ```
 
 - `safe_look`, `values` and `target` use the [look](#looks) keys.
@@ -107,6 +143,48 @@ cues:
     - Start: the loop starts on the next bar line after note-on, so a note just before a bar line waits for it. A note up to one MIDI clock tick (1/24 beat) after a bar line starts it at once, in step with that bar line. That window absorbs MIDI jitter and a note placed on the bar but counted a tick late; it is 18–27 ms at 140–92 BPM, under one frame, so the first hit loses at most a frame of light. Bar lines follow Reaper's bar position from the MIDI clock, or count from the song select without one.
     - `target: { all-wash: dimmer }` scales the intensity the layers below give those fixtures by the pattern's level (their dimmer channel, or their colour channels without one): dark between hits, so put a scene under it for colour. Velocity sets how deep it cuts: 127 goes dark between hits, 64 halfway. On release the fixtures fade back to the layers below.
     - `target: { all-wash: { color: amber } }` takes look settings, as a swell's `target`: the level is how much of that look shows over the layers below. Every entry of one target is either `dimmer` or look settings.
+  - `pixel` draws a preset `shape` on the canvas, animated by an `effect`, at every pixel of every fixture and grid. It fades in over `fade_in` from note-on and out over `release` from note-off. See [pixel cues](#pixel-cues).
+
+### Pixel cues
+
+The effect is worked out in RGB at each pixel's canvas position, then converted per fixture: RGBW pixels follow `rgbw` (`saturated` or `white-rich`, as in looks). Velocity is the cue's intensity: it goes on the dimmer channel of fixtures that have one, and scales the colour of the others. A pixel cue writes only what it drives: the colour emitters of fixtures and grids, and the dimmer channel of a fixture whose pixels it draws. Fixtures without colour emitters, and other channels such as a shutter or strobe, keep the layers below. A frame depends only on the time and beats since the note, and on `seed`.
+
+`params`, all optional:
+
+| Key | Value | Default |
+| --- | --- | --- |
+| `color` | Palette name or `#rrggbb`: the lit colour | white |
+| `background` | Palette name or `#rrggbb`: where the shape isn't lit | black |
+| `width` | Above 0, up to 1, of the canvas: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
+| `speed` | Duration of one cycle, any unit; beats and bars follow the tempo | `1 bar` |
+| `direction` | `left-to-right` (as seen from the audience: stage right to stage left), `right-to-left`, `bottom-to-top` (floor up), `top-to-bottom` | `left-to-right` |
+| `phase` | Offset in cycles: shifts a moving effect in time, a static shape along its travel | 0 |
+| `curve` | A pulse's level over one cycle, any swell curve | `sine` |
+
+Shapes, each with a position along its travel from 0 to 1:
+
+| Shape | Lit |
+| --- | --- |
+| `bar` | A band `width` wide across the direction, centred on the position |
+| `sweep` | Everything from the start edge up to the position: a wipe |
+| `circle` | A ring `width` thick around the canvas centre, at the position as a fraction of the distance to the corners: growing for `left-to-right` and `bottom-to-top`, shrinking for the other two |
+| `split` | The canvas split into halves mirrored about the centre line across the direction, with a bar `width` wide in each: the two bars travel from the centre out to the edges for `left-to-right` and `bottom-to-top`, from the edges in for the other two |
+| `gradient` | A ramp from `background` to `color` along the direction, scrolled by the position |
+| `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down. Cells at the same position along the direction, a fixture's at its centre, light together: two grids hung one above the other step left to right as one |
+
+Effects, each repeating once per `speed`, counted from the note:
+
+| Effect | Does |
+| --- | --- |
+| `static` | Holds the shape mid-travel; `phase` moves it |
+| `move` | Glides the shape along its travel |
+| `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width` |
+| `pulse` | Holds the shape mid-travel, its level following `curve` |
+| `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. `seed` fixes the pattern |
+
+Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, `wave` is `gradient` with `move`, and `strobe` is `pulse` with a square curve such as `{ points: [[0, 1], [0.2, 1], [0.21, 0]] }`. `noise` has no equivalent; `sparkle` is the closest.
+
+`layer_2` takes its own `shape`, `effect` and `params`, plus `blend`: `max` (the brighter of the two per emitter, the default), `add` (the sum, clipped at full) or `mask` (layer 1 shows only where layer 2's shape is lit, as much as it is). Layer 2's sparkle differs from layer 1's under the same seed.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
@@ -126,9 +204,9 @@ What the MIDI does (plan §5). Output depends only on the show and the MIDI rece
 
 Fades run from the note's timestamp, not from the next frame.
 
-**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`. When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top.
+**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`; an edited `bpm` sets the pace from the next frame, without moving musical time (the builder's metronome). When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top, except that pixel cues always draw above the others.
 
-Layers, lowest first: legacy notes, the safe look after panic, cues, then the master dimmer. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no fixture uses (legacy-only). Other channels, such as a shutter, keep their value.
+Layers, lowest first (plan §5): legacy notes, the safe look after panic, scene, swell and pattern cues, pixel cues, then the master dimmer. Within the cue and pixel layers, a cue fired later draws over earlier ones. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no profiled fixture uses (legacy-only, and pixel grids, on every Art-Net universe too). Other channels, such as a shutter, keep their value.
 
 ## Looks
 
@@ -157,6 +235,8 @@ blimey run <show> … [--state-dir <folder>]                         # where sta
 blimey service install [--dry-run] <run arguments>                  # keep `blimey run <run arguments>` going under launchd
 blimey service uninstall
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
+blimey record <out.mid> [--midi-port IAC] [--until-stop] [--artnet <emu.dump> --show <show> [--artnet-universe <n>]]
+blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run outputs>]
 ```
 
 `validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
@@ -165,20 +245,20 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 
 `run` survives losing its devices: a MIDI port that is missing at start, disappears or comes back as a new port with the same name is reconnected within about half a second, and an Enttec box that is unplugged is reopened on every frame until it is back. Both are reported on stderr.
 
-`fire` goes through the same render loop as `blimey run`, with no MIDI input. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed, reloading the show in edit mode; the look keeps applying to the fixtures it names.
+`fire` goes through the same render loop as `blimey run`, with no MIDI port; with `--listen` in edit mode, MIDI posted to `POST /api/midi` still plays. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed, reloading the show in edit mode; the look keeps applying to the fixtures it names.
 
 `--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
 
-**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses edits and fixture tests with `403`. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may save show files and test fixtures. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
+**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, cue edits, undo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
-`--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
+`--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. The same node also gets every Art-Net universe the rig's pixel grids use, one packet each per frame, blackout included; each universe numbers its packets on its own. If a grid uses universe 0 and `--artnet-universe` isn't given, the grid keeps universe 0 and the Enttec frame isn't mirrored (the engine says so on stderr): give `--artnet-universe` to mirror it elsewhere. An `--artnet-universe` that is also a grid's universe is refused. Without `--artnet`, a rig with Art-Net grids starts with a warning that they get no output. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
 ## State, event log and service
 
-`run` keeps two files in its state folder, `~/Library/Application Support/Blimey/` unless `--state-dir` says otherwise. Nothing goes in the show folder.
+`run` keeps two files in its state folder, `~/Library/Application Support/Blimey/` unless `--state-dir` says otherwise. Nothing goes in the show folder. Both are diagnostics, written on a background thread: a state folder the engine can't create or write is reported on stderr, and the show runs without them.
 
-- `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
-- `events.log`: one JSON object per line, for post-gig diagnosis. Each line is written as it happens, unbuffered, so a crash loses nothing logged before it. Past 10 MB it rotates to `events.log.1`, up to `events.log.4`.
+- `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. The background thread saves a change a few milliseconds after the frame that shows it; a crash inside that window resumes the state from before the change. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
+- `events.log`: one JSON object per line, for post-gig diagnosis. Each line is written unbuffered as soon as the writer gets it, so a crash loses at most the lines still queued. Past 10 MB it rotates to `events.log.1`, up to `events.log.4`; if rotating fails, logging carries on in `events.log`.
 
 ```json
 {"master":0.5,"mode":"show","show":"shows/fossile","song":"tell-me","time_ms":1794470400000,"type":"start"}
@@ -192,26 +272,112 @@ blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
 - `cue`: a cue started (note-on) or released (note-off, or a retrigger fading out the previous instance). Panic and song select drop cues without a `release` line.
 - `at_ms` is engine time, as in the stream; `time_ms` is wall-clock time, in milliseconds since 1970. `jq '.time_ms / 1000 | todate'` reads it.
 
-`blimey service install <run arguments>` checks the arguments as `run` would, then writes the launch agent `~/Library/LaunchAgents/app.blimey.engine.plist` and starts it. launchd starts the engine at login and restarts it within a second whenever it exits. Relative paths are taken from the folder the command ran in, and the engine's stdout and stderr go to `engine.log` in the state folder. Installing again replaces the agent; `--dry-run` prints the plist instead. `blimey service uninstall` stops and removes it.
+`blimey service install <run arguments>` makes the checks `run` makes at start (an output is given, the show loads), so launchd never keeps restarting an engine that exits at once. It then writes the launch agent `~/Library/LaunchAgents/app.blimey.engine.plist` and starts it. launchd starts the engine at login and restarts it within a second whenever it exits. Relative paths are taken from the folder the command ran in, and the engine's stdout and stderr go to `engine.log` in the state folder. Installing again replaces the agent; `--dry-run` prints the plist instead. `blimey service uninstall` stops and removes it, even if it wasn't running.
 
-`scripts/fault-injection.sh [kill|midi|serial]` (macOS) checks recovery against the real binary, an emulated Enttec box on a pty and a virtual CoreMIDI port: killing the engine mid-song, dropping the MIDI port, unplugging the box.
+`scripts/fault-injection.sh [kill|midi|serial|state]` (macOS) checks recovery against the real binary, an emulated Enttec box on a pty and a virtual CoreMIDI port: killing the engine mid-song, dropping the MIDI port, unplugging the box, starting with an unusable state folder.
+
+## Recording and soak
+
+`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, SIGTERM or SIGHUP (the terminal closing), or with `--until-stop` at the first Stop after a Start or Continue. The files are saved every 5 s and at the end (the MIDI file rewritten atomically, the dump appended to), so a crash or `kill -9` loses at most the last 5 s. `--artnet <dump> --show <show>` also records the ArtDmx packets received on UDP 6454 to a [frame dump](frame-dump.md) on the same timeline and 25 ms frame grid as `blimey replay`'s, laid out like it, so the two compare line by line:
+
+- the Enttec stand-in, `--artnet-universe` (15-bit port-address), is written as plain channels. It is chosen as `run --artnet` chooses its mirror: universe 0 by default, unless one of the show's pixel grids uses 0, in which case the grid keeps it. Naming a grid's universe is refused.
+- the show's pixel-grid universes are written as `<universe>:<channel>=<value>`;
+- any other universe is ignored, such as a desk elsewhere on the network.
+
+Frame N holds the latest values received by N × 25 ms, a short packet leaving the rest of its universe at 0. A frame with no packet gets no line. Packets before the first MIDI message only set the values the first frame starts from. If the capture fails mid-take, the MIDI keeps recording, and `record` reports the dump as incomplete and exits 1.
+
+`blimey soak <setlist>` plays a setlist's songs back to back, 2 s apart and each starting on a frame, looped for `--hours` (default 4), through the same render loop as `run`. A setlist is a YAML file, paths relative to it:
+
+```yaml
+show: .                                  # the show folder
+songs:                                   # played in this order, then again
+  - recordings/tell-me.mid
+```
+
+In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen`, `--artnet`, `--edit`), or with `--emulated-enttec` through the real driver to an emulated box on a pseudo terminal. `--accelerated` runs on a fake clock with no outputs, as fast as the machine renders. It prints a report, writes it to `--report <file>` (by default a new `soak-<setlist>-<mode>-<unix time>-<process id>.txt` in the current folder) and exits 1 if a check fails:
+
+| Check | Measured | Passes when |
+| --- | --- | --- |
+| frames | Frames sent a frame period (25 ms) or more after their deadline, plus frames the emulated box never received; fails too if the box stopped reading, naming the error | None |
+| jitter | How late each frame went out after its deadline: p50, p99 and max, in 0.1 ms steps | p99 under 5 ms |
+| drift | Each song's frames, from the third pass on, against the same song in the second pass (the first starts from a fresh engine); the last song counts if it played to its end | None differ |
+| memory | Process RSS, read from the kernel about 20 times over the run | Peak after the first pass is at most 1 MiB above RSS at its end |
+
+It needs at least three passes. Memory is flat when it stays within 1 MiB: the engine keeps nothing from one frame to the next, so what remains is allocator noise, while a leak of 8 bytes a frame passes 1 MiB within an hour and of 1 byte a frame within 8 hours.
 
 ## HTTP API
 
-Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file or fixture), `403` (show mode), `422` (content refused) or `500`.
+Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, a song name that differs from another only by case, a cue changed since it was loaded, or a file changed since the save to undo), `422` (content refused, or a request body not in the shape documented) or `500`.
+
+**One write path.** Every endpoint that changes a show file, `PUT /api/show/<file>` and the song endpoints below alike, goes through the engine's one writer: it validates, writes atomically and keeps canonical formatting, as described for `PUT /api/show/<file>`. Each save can be undone.
+
+### Show summary: `GET /api/show`
+
+What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each.
+
+```json
+{ "palettes": { "deep-blue": "#0028ff" }, "songs": [{ "name": "tell-me", "program": 3 }] }
+```
 
 ### Show files: `GET` and `PUT /api/show/<file>`
 
-The one path through which the UI, and later agents, change show files. `<file>` is a path in the show folder; today only `rig.yaml`. The body of both is the file's content as JSON, in the shape of its schema.
+Reads and replaces a whole show file. `<file>` is a path in the show folder: `rig.yaml` or `songs/<name>.yaml`, a name of letters, digits, `-` and `_`. The body of both is the file's content as JSON, in the shape of its schema, keys in file order (a look's entries apply in order).
 
-`PUT` replaces the file (`204` on success):
+`PUT` replaces the file, or creates a song (`204` on success):
 
-1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader, the same checks as at start-up. Either refusal is a `422` naming the problem, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1`, and leaves the file untouched.
-2. The file is written in canonical form: block-style YAML with fields in a fixed order. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form.
+1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader. A song is judged by loading the whole show as it would be with the new content in place, the same checks as at start-up, so a song broken on disk can be fixed through this endpoint. Either refusal is a `422` naming the problem and the file at fault, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/tell-me.yaml: program 3 already selects song "other"`, and leaves the file untouched. A new song whose name differs from an existing one only by case is refused with `409`: macOS would write it over the other.
+2. The file is written in canonical form. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form, so an edit changes only the lines it touches.
+   - `rig.yaml`: block-style YAML with fields in a fixed order.
+   - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.
 3. The write is atomic: a crash leaves the old file or the new one, never half of one.
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
 To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
+
+### Cues: `PUT` and `DELETE /api/songs/<song>/cues/<note>`
+
+Each reads, edits and writes `songs/<song>.yaml` under one lock, so no other save lands in between, then writes it as `PUT /api/show/<file>` does.
+
+`PUT` saves one cue on a channel-2 note (`204`):
+
+```json
+{ "cue": { "name": "verse-blue", "type": "scene", "fade_in": "2s", "values": { "all-wash": { "color": "deep-blue" } } },
+  "replaces": { "note": 37, "cue": { "name": "verse", "type": "scene", "values": {} } } }
+```
+
+- `cue` is the cue as in the song file.
+- `replaces`, when editing a cue, is its note and the cue as it was loaded; the cue moves from that note to `<note>`. Omit it, or send `null`, for a new cue.
+- Refused, leaving the file untouched:
+  - a note that another cue already uses, with `409`: `songs/tell-me.yaml: note 36 already fires cue "verse-blue"; pick a free note, or edit that cue`. The engine never merges or overwrites a cue it wasn't asked to replace;
+  - a replaced cue that changed since it was loaded, with `409`, or is no longer there, with `404`, so a stale editor never overwrites someone else's change.
+
+`DELETE` removes the cue on `<note>` (`204`; `404` if there is none).
+
+### Metronome tempo: `PUT /api/songs/<song>/bpm`
+
+Sets the song's `bpm`, the tempo for beats and bars when no MIDI clock comes in, leaving the rest of the file as it is (`204`). The body is `{ "bpm": 92 }`. It goes under the same lock as the cue endpoints and takes effect from the next frame.
+
+### Undo: `POST /api/undo`
+
+Undoes the last save made through the API since the engine started, whichever file it was: `PUT /api/show/<file>` or any song endpoint above. The previous content goes back byte for byte, comments and formatting included, after the same checks as a write; a file the save created is removed. Returns `{ "file": "songs/tell-me.yaml" }`.
+
+One level only: a second undo, or one before any save, is a `404`. If the file has changed since the save (by hand, say), undo is refused with `409` rather than lose that change. A refused undo can be tried again, once the file is put back as the save left it.
+
+### Look preview: `PUT` and `DELETE /api/preview`
+
+`PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. Nothing is saved.
+
+It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves no look on stage. `DELETE`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
+
+### MIDI: `POST /api/midi`
+
+Plays one MIDI message as if it came in from the MIDI port, to audition cues without Reaper (`204`):
+
+```json
+{ "message": [145, 36, 127] }
+```
+
+`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the look preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
 ### Fixture test: `POST /api/fixtures/<name>/test`
 
@@ -238,6 +404,9 @@ Server to client only, one JSON object per text message. Every message has a `ty
       "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"]
     }
   ],
+  "grids": [
+    { "name": "back-grid", "pixels": [{ "x": 0.21875, "y": 0.525 }, "…"] }
+  ],
   "groups": { "all-wash": ["wash-1", "wash-2", "wash-3", "wash-4"] }
 }
 ```
@@ -245,7 +414,8 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `protocol` is bumped only by a breaking change to this stream.
 - `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
-- `pixels` are canvas positions, in pixel order.
+- `pixels` are canvas positions, in pixel order; for a grid, in wiring order.
+- `grids`: the rig's [pixel grids](#rigyaml), apart from `fixtures` since they have no profile, mode or single address.
 
 ### `frame`: the output, after each rendered frame
 
@@ -264,7 +434,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 
 - `at_ms`: engine time when the frame was output, in milliseconds.
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
-- `pixels`: per fixture, the colour each pixel shows, in the same order as the `rig` message. It is computed from `dmx` (white added to R, G and B, then the dimmer channel applied), so the preview always matches the output.
+- `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `song`: the selected song's name, or `null`.
 - `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off.
 - `master`: the master dimmer, 0–1.
@@ -281,4 +451,4 @@ The engine renders at 40 Hz. A slow client skips frames and always gets the late
 - `at_ms`: engine time the message arrived, on the same clock as `frame`.
 - `message`: the raw bytes, status byte first.
 
-Sent by `run` only, in arrival order, before the frame they affect. MIDI clock ticks (`F8`) and active sensing (`FE`) are left out; Start, Stop, Continue and Song Position are sent. A client more than 256 messages behind skips the oldest.
+Sent for MIDI from the port (`run`) and from `POST /api/midi`, in arrival order, before the frame they affect. MIDI clock ticks (`F8`) and active sensing (`FE`) are left out; Start, Stop, Continue and Song Position are sent. A client more than 256 messages behind skips the oldest.

@@ -1,0 +1,12 @@
+# An 8×8 RGB grid on the Enttec universe, filling the canvas: serpentine from the bottom left
+# (as seen from the audience), GRB emitters.
+fixtures:
+  - name: grid
+    type: pixel-grid
+    columns: 8
+    rows: 8
+    colour_order: GRB
+    wiring: serpentine
+    start_corner: bottom-left
+    address: 1
+    canvas: { x: 0, y: 0, width: 1, height: 1 }

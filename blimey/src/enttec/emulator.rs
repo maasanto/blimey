@@ -4,7 +4,7 @@
 //! Self-contained, so the fault-injection tests (`tests/faults.rs`) include it too. It reads
 //! the protocol from the specification, not from the driver it tests.
 
-use std::io::{ErrorKind, Read};
+use std::io::{self, ErrorKind, Read};
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,6 +26,8 @@ pub struct EmulatedEnttec {
     /// Stable device path, like `/dev/cu.usbserial-EN…`, pointing at the current pty.
     link: PathBuf,
     frames: Arc<Mutex<Vec<Frame>>>,
+    /// Why the device stopped reading, if it did.
+    failure: Arc<Mutex<Option<String>>>,
     connection: Option<Connection>,
 }
 
@@ -37,16 +39,22 @@ struct Connection {
 }
 
 impl EmulatedEnttec {
-    pub fn plug_in() -> Self {
+    pub fn plug_in() -> io::Result<Self> {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mut device = Self {
             link: std::env::temp_dir().join(format!("blimey-enttec-{}-{id}", process::id())),
             frames: Arc::default(),
+            failure: Arc::default(),
             connection: None,
         };
-        device.plug_back_in();
-        device
+        device.plug_back_in()?;
+        Ok(device)
+    }
+
+    /// Why the device stopped reading frames, if it did: a pty read error.
+    pub fn failure(&self) -> Option<String> {
+        self.failure.lock().unwrap().clone()
     }
 
     pub fn path(&self) -> String {
@@ -55,6 +63,11 @@ impl EmulatedEnttec {
 
     pub fn frames(&self) -> Vec<Frame> {
         self.frames.lock().unwrap().clone()
+    }
+
+    /// The frames received since the last call, forgotten by the device: for long runs.
+    pub fn take_received(&self) -> Vec<Frame> {
+        std::mem::take(&mut *self.frames.lock().unwrap())
     }
 
     pub fn wait_for_frames(&self, count: usize, patience: Duration) -> Vec<Frame> {
@@ -69,27 +82,43 @@ impl EmulatedEnttec {
     pub fn unplug(&mut self) {
         if let Some(connection) = self.connection.take() {
             connection.stop.store(true, Ordering::Relaxed);
-            connection.reader.join().unwrap();
+            let _ = connection.reader.join();
         }
         let _ = fs::remove_file(&self.link);
     }
 
     /// A fresh pty behind the same device path, as when the box is replugged.
-    pub fn plug_back_in(&mut self) {
-        let (mut master, slave) = TTYPort::pair().unwrap();
-        master.set_timeout(Duration::from_millis(10)).unwrap();
+    pub fn plug_back_in(&mut self) -> io::Result<()> {
+        let in_pty = |error: serialport::Error| {
+            io::Error::other(format!(
+                "cannot open a pty for the emulated Enttec: {error}"
+            ))
+        };
+        let (mut master, slave) = TTYPort::pair().map_err(in_pty)?;
+        master
+            .set_timeout(Duration::from_millis(10))
+            .map_err(in_pty)?;
+        let slave_name = slave
+            .name()
+            .ok_or_else(|| io::Error::other("the emulated Enttec's pty has no name"))?;
         let _ = fs::remove_file(&self.link);
-        symlink(slave.name().unwrap(), &self.link).unwrap();
+        symlink(slave_name, &self.link)?;
         let stop = Arc::new(AtomicBool::new(false));
         let reader = thread::spawn({
-            let (stop, frames) = (stop.clone(), self.frames.clone());
-            move || record_frames(&mut master, &stop, &frames)
+            let (stop, frames, failure) = (stop.clone(), self.frames.clone(), self.failure.clone());
+            move || {
+                if let Err(error) = record_frames(&mut master, &stop, &frames) {
+                    eprintln!("emulated Enttec: read failed: {error}; no more frames");
+                    *failure.lock().unwrap() = Some(error.to_string());
+                }
+            }
         });
         self.connection = Some(Connection {
             stop,
             reader,
             _slave: slave,
         });
+        Ok(())
     }
 }
 
@@ -99,17 +128,24 @@ impl Drop for EmulatedEnttec {
     }
 }
 
-fn record_frames(master: &mut TTYPort, stop: &AtomicBool, frames: &Mutex<Vec<Frame>>) {
+fn record_frames(
+    master: &mut TTYPort,
+    stop: &AtomicBool,
+    frames: &Mutex<Vec<Frame>>,
+) -> io::Result<()> {
     let mut received = Vec::new();
     let mut chunk = [0; 4096];
     while !stop.load(Ordering::Relaxed) {
         match master.read(&mut chunk) {
             Ok(count) => received.extend_from_slice(&chunk[..count]),
-            Err(error) if error.kind() == ErrorKind::TimedOut => continue,
-            Err(error) => panic!("emulated Enttec read failed: {error}"),
+            Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::Interrupted) => {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
         frames.lock().unwrap().extend(take_frames(&mut received));
     }
+    Ok(())
 }
 
 /// Removes every complete packet from `received` and returns the DMX frames among them.
