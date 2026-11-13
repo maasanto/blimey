@@ -333,25 +333,13 @@ impl LayerEntry {
 }
 
 fn check_area(area: Canvas) -> Result<(), String> {
-    let Canvas {
-        x,
-        y,
-        width,
-        height,
-    } = area;
-    let described = format!("area {{ x: {x}, y: {y}, width: {width}, height: {height} }}");
+    let Canvas { width, height, .. } = area;
     if !(width > 0.0 && height > 0.0) {
         return Err(format!(
-            "{described} is empty: width and height must be above 0"
+            "area: width {width} and height {height} must both be above 0"
         ));
     }
-    if ![x, y, x + width, y + height]
-        .iter()
-        .all(|value| (0.0..=1.0).contains(value))
-    {
-        return Err(format!("{described} leaves the 0-1 stage canvas"));
-    }
-    Ok(())
+    area.check().map_err(|error| format!("area: {error}"))
 }
 
 /// The fixtures and grids `name` stands for in a `mute` list: itself, or a group's fixtures.

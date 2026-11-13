@@ -328,11 +328,11 @@ mod tests {
         let refused = [
             (
                 "      - { area: { x: 0.5, y: 0, width: 0, height: 1 } }\n",
-                "layer 1: area { x: 0.5, y: 0, width: 0, height: 1 } is empty: width and height must be above 0",
+                "layer 1: area: width 0 and height 1 must both be above 0",
             ),
             (
                 "      - {}\n      - { area: { x: 0.75, y: 0, width: 0.5, height: 1 } }\n",
-                "layer 2: area { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas",
+                "layer 2: area: canvas { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas",
             ),
             (
                 "      - { mute: [inner-wash] }\n",

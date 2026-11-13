@@ -218,7 +218,7 @@ Plan §7's other effect names map onto these: `solid` is `static` with the defau
 
 Pixels no layer lights are dark: the cue still drives them, as a single-layer cue does. Each layer's sparkle differs from the others' under the same `seed`. Outside its area, and on what it mutes, a layer changes nothing, a `mask` included.
 
-The cue is refused at load, with its line, for an area with no width or height (`layer 1: area { x: 0.5, y: 0, width: 0, height: 1 } is empty: width and height must be above 0`) or past the canvas (`… leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`. A layer's own `swell` or `pattern` (plan §16) is refused for now, as any unknown key.
+The cue is refused at load, with its line, for an area with no width or height (`layer 1: area: width 0 and height 1 must both be above 0`) or past the canvas (`layer 2: area: canvas { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`. A layer's own `swell` or `pattern` (plan §16) is refused for now, as any unknown key.
 
 **The older form.** Instead of `layers`, a cue can give one layer's `shape`, `effect` and `params` at its top and an optional `layer_2` with its own, plus `blend`: the same two layers over the whole canvas, rendering the same frames.
 

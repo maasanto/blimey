@@ -690,7 +690,7 @@ impl GridEntry {
 }
 
 impl Canvas {
-    fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         let Canvas {
             x,
             y,
