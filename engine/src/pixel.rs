@@ -205,7 +205,8 @@ pub struct Layer {
     /// A pulse's level over one cycle.
     pub curve: Envelope,
     pub blend: Blend,
-    /// 0–1: scales the layer, as a scene's dimmer does.
+    /// 0–1, how much the layer shows: it dims a `max` or `add` layer, as a scene's dimmer does,
+    /// and fades an `over` or `mask` layer into the ones below. At 0 the layer changes nothing.
     pub level: f32,
     /// The fixtures and grids the layer leaves to the layers below, groups expanded.
     pub mute: BTreeSet<String>,
@@ -709,25 +710,26 @@ impl LayerFrame<'_> {
 }
 
 impl Blend {
-    /// `layer` over `below` where its shape is `lit` (0–1).
+    /// `layer` over `below` where its shape is `lit` (0–1). At a `level` of 0 it leaves `below`
+    /// as it is, whatever the blend.
     fn apply(self, below: Rgb, layer: &Layer, lit: f32) -> Rgb {
         let combine = |combine: fn(f32, f32) -> f32, above: Rgb| Rgb {
             red: combine(below.red, above.red),
             green: combine(below.green, above.green),
             blue: combine(below.blue, above.blue),
         };
-        let dimmed = |colour: Rgb| mix(Rgb::default(), colour, layer.level);
-        let colour = || {
-            let background = layer.background.unwrap_or_default();
-            dimmed(mix(background, layer.color, lit))
-        };
+        let level = layer.level;
+        let colour = mix(layer.background.unwrap_or_default(), layer.color, lit);
         match self {
-            Blend::Max => combine(f32::max, colour()),
-            Blend::Add => combine(|a, b| (a + b).min(1.0), colour()),
-            Blend::Mask => mix(Rgb::default(), below, lit * layer.level),
+            Blend::Max => combine(f32::max, mix(Rgb::default(), colour, level)),
+            Blend::Add => combine(|a, b| (a + b).min(1.0), mix(Rgb::default(), colour, level)),
+            Blend::Mask => {
+                let let_through = lit * level + (1.0 - level);
+                mix(Rgb::default(), below, let_through)
+            }
             Blend::Over => match layer.background {
-                Some(_) => colour(),
-                None => mix(below, dimmed(layer.color), lit),
+                Some(_) => mix(below, colour, level),
+                None => mix(below, layer.color, lit * level),
             },
         }
     }
@@ -792,13 +794,21 @@ mod tests {
             ("add", None, "100%", 0.5, rgb(0.75, 0.5, 1.0)),
             ("add", None, "100%", 1.0, rgb(1.0, 0.5, 1.0)),
             ("mask", None, "100%", 0.5, rgb(0.125, 0.25, 0.5)),
-            ("mask", None, "50%", 1.0, rgb(0.125, 0.25, 0.5)),
+            ("mask", None, "50%", 0.0, rgb(0.125, 0.25, 0.5)),
+            ("mask", None, "50%", 1.0, below),
             ("over", None, "100%", 1.0, rgb(1.0, 0.0, 0.0)),
             ("over", None, "100%", 0.5, rgb(0.625, 0.25, 0.5)),
             ("over", None, "100%", 0.0, below),
-            ("over", None, "50%", 1.0, rgb(0.5, 0.0, 0.0)),
+            ("over", None, "50%", 1.0, rgb(0.625, 0.25, 0.5)),
             ("over", Some("#0000ff"), "100%", 0.5, rgb(0.5, 0.0, 0.5)),
             ("over", Some("#000000"), "100%", 0.0, rgb(0.0, 0.0, 0.0)),
+            ("over", Some("#000000"), "50%", 0.0, rgb(0.125, 0.25, 0.5)),
+            // At 0% a layer vanishes, so a swell from 0 fades it in.
+            ("max", None, "0%", 1.0, below),
+            ("add", None, "0%", 1.0, below),
+            ("mask", None, "0%", 0.0, below),
+            ("over", None, "0%", 1.0, below),
+            ("over", Some("#000000"), "0%", 0.0, below),
         ];
         for (blend, background, level, lit, expected) in cases {
             let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [{

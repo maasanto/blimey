@@ -212,7 +212,7 @@ Plan §7's other effect names map onto these: `solid` is `static` with the defau
 | Key | Value | Default |
 | --- | --- | --- |
 | `area` | `{ x, y, width, height }` in canvas units, as a grid's `canvas`: (`x`, `y`) is the bottom-left corner, `y` 0 the floor. The layer draws on the pixels inside it, edges included; the shape runs in the area's own 0–1 space, so `width` and `direction` are relative to it | the whole canvas |
-| `level` | A percentage that scales the layer, as a scene's `dimmer` | `100%` |
+| `level` | A percentage, how much the layer shows: it dims a `max` or `add` layer, as a scene's `dimmer`, and fades an `over` or `mask` layer into the ones below. At `0%` the layer changes nothing | `100%` |
 | `blend` | How the layer meets the ones below it, inside its area: `max` (the brighter per emitter), `add` (the sum, clipped at full), `mask` (the layers below show only where this layer's shape is lit, as much as it is), or `over` (this layer covers the ones below as much as it is lit, so a lit pixel replaces them and a dark one lets them show; with a `background`, it covers its whole area) | `max` |
 | `mute` | Fixtures, grids or groups the layer leaves to the layers below | none |
 
