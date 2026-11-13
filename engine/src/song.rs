@@ -111,11 +111,18 @@ pub(crate) fn load_songs(dir: &Path, show: &Show) -> io::Result<Vec<Song>> {
     };
     let mut paths: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "yaml")
-        })
         .collect();
+    // A song saved as .yml would otherwise vanish, and its Program Change select nothing.
+    if let Some(yml) = paths
+        .iter()
+        .find(|path| path.extension() == Some("yml".as_ref()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: rename it to .yaml to load it as a song", yml.display()),
+        ));
+    }
+    paths.retain(|path| path.extension() == Some("yaml".as_ref()));
     paths.sort();
     let mut songs: Vec<Song> = Vec::new();
     for path in paths {
@@ -285,6 +292,22 @@ mod tests {
 
         assert!(
             message.ends_with("b.yaml: program 3 already selects song \"a\""),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_song_saved_as_yml_is_reported_not_skipped() {
+        let dir = std::env::temp_dir().join(format!("blimey-yml-song-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.yaml"), "program: 3\n").unwrap();
+        fs::write(dir.join("intro.yml"), "program: 4\n").unwrap();
+        fs::write(dir.join(".DS_Store"), "").unwrap();
+
+        let message = load_songs(&dir, &show()).unwrap_err().to_string();
+
+        assert!(
+            message.ends_with("intro.yml: rename it to .yaml to load it as a song"),
             "{message}"
         );
     }
