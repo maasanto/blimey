@@ -19,7 +19,10 @@
 
 <script>
   import { engine, request } from './engine.svelte.js';
+  import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
+  import PatternGrid from './PatternGrid.svelte';
+  import SwellEditor from './SwellEditor.svelte';
 
   // Channel 2, where cues and song select live (docs/api.md, Playback).
   const NOTE_ON = 0x91;
@@ -50,6 +53,20 @@
   const values = $derived(Object.fromEntries($state.snapshot(look).map(({ target, settings }) => [target, settings])));
   const isPaused = $derived(JSON.stringify(values) === pausedLook);
   const cues = $derived(Object.entries(song?.cues ?? {}).map(([note, cue]) => ({ note: Number(note), cue })));
+  const barBeats = $derived(beatsPerBar(song?.time_signature));
+  /** How far the cue being edited has played, while its saved version is auditioned. */
+  const editedBeats = $derived(
+    engine.frame?.song === songName
+      ? engine.frame.cues.find((cue) => cue.note === form.replaces?.note && !cue.released)?.beats
+      : undefined,
+  );
+
+  /** What a new cue of each type starts as; scenes take the look above when saved. */
+  const newCue = {
+    scene: () => ({ type: 'scene' }),
+    swell: () => ({ type: 'swell', target: { [targets[0]]: { dimmer: '100%' } }, duration: '4 bars' }),
+    pattern: () => ({ type: 'pattern', length: '1 bar', target: { [targets[0]]: 'dimmer' }, hits: [] }),
+  };
 
   async function attempt(action) {
     error = '';
@@ -202,9 +219,13 @@
   const isPlaying = (note) =>
     engine.frame?.song === songName && engine.frame.cues.some((cue) => cue.note === note && !cue.released);
 
+  const midi = (message) => request('POST', '/api/midi', { message });
+
+  /** Plays the swell being edited again from the top, for a looped audition. */
+  const restartEdited = () => midi([NOTE_ON, form.replaces.note, FULL_VELOCITY]).catch((failure) => (error = failure.message));
+
   /** Fires or releases a saved cue through the engine, as Reaper would. */
   async function audition(note) {
-    const midi = (message) => request('POST', '/api/midi', { message });
     if (isPlaying(note)) return midi([NOTE_OFF, note, 0]);
     if (engine.frame?.song !== songName) {
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
@@ -336,7 +357,19 @@
       <div class="row">
         <label>Note <input type="number" min="0" max="127" bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
-        <span>Type: {form.cue.type}</span>
+        {#if form.replaces === null}
+          <label>
+            Type
+            <select
+              value={form.cue.type}
+              onchange={(event) => (form.cue = { name: form.cue.name, ...newCue[event.currentTarget.value]() })}
+            >
+              {#each Object.keys(newCue) as type (type)}<option>{type}</option>{/each}
+            </select>
+          </label>
+        {:else}
+          <span>Type: {form.cue.type}</span>
+        {/if}
       </div>
       <div class="row">
         {#if FADE_IN_TYPES.includes(form.cue.type)}
@@ -347,6 +380,8 @@
       <p class="hint">
         {#if form.cue.type === 'scene'}
           Saves the look above as this scene. Times take ms, s, beats or bars.
+        {:else if form.cue.type === 'swell' || form.cue.type === 'pattern'}
+          Shape the {form.cue.type} below, then save it. Times take ms, s, beats or bars.
         {:else}
           Keeps the rest of this {form.cue.type} cue as it is; the look above is for scenes.
         {/if}
@@ -360,6 +395,24 @@
 
   <div><FrontView /></div>
 </div>
+
+<fieldset disabled={!editable || !song}>
+  {#key form.replaces?.note}
+    {@const editorProps = {
+      targets,
+      palettes: summary?.palettes,
+      barBeats,
+      beats: editedBeats,
+      canAudition: form.replaces !== null,
+      onaudition: () => attempt(() => audition(form.replaces.note)),
+    }}
+    {#if form.cue.type === 'swell'}
+      <SwellEditor bind:cue={form.cue} {...editorProps} onrestart={restartEdited} />
+    {:else if form.cue.type === 'pattern'}
+      <PatternGrid bind:cue={form.cue} {...editorProps} />
+    {/if}
+  {/key}
+</fieldset>
 
 {#if song}
   <h2>Cues in {songName}</h2>
