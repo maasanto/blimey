@@ -79,10 +79,11 @@
         "type": { "const": "pattern" },
         "length": { "description": "1, 2, 3 or 4 bars.", "type": "string", "pattern": "^[1-4]\\s*bars?$" },
         "target": {
-          "description": "Either fixture or group → dimmer: the level scales their intensity, dark between hits. Or fixture or group → look settings: the level is how much of that look shows.",
+          "description": "Either fixture or group → dimmer: the level scales their intensity, dark between hits. Or fixture or group → look settings: the level is how much of that look shows. Or pixel cue name → intensity: the level scales that cue's intensity.",
           "anyOf": [
             { "type": "object", "additionalProperties": { "const": "dimmer" } },
-            { "$ref": "#/$defs/values" }
+            { "$ref": "#/$defs/values" },
+            { "$ref": "#/$defs/intensity" }
           ]
         },
         "hits": {
@@ -110,7 +111,10 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "type": { "const": "swell" },
-        "target": { "$ref": "#/$defs/values" },
+        "target": {
+          "description": "Fixture or group → look settings: the curve is how much of that look shows. Or pixel cue name → intensity: the curve scales that cue's intensity.",
+          "anyOf": [{ "$ref": "#/$defs/values" }, { "$ref": "#/$defs/intensity" }]
+        },
         "duration": { "$ref": "#/$defs/duration" },
         "curve": { "$ref": "#/$defs/curve" },
         "release": { "$ref": "#/$defs/duration" }
@@ -160,6 +164,12 @@
       "description": "A number then a unit: 500ms, 2s, 0.5 beats, 4 bars. Beats and bars follow the MIDI clock, or the song's bpm without one. Fades and releases default to 0 (instant).",
       "type": "string",
       "pattern": "^[0-9]+(\\.[0-9]+)?\\s*(ms|s|beats?|bars?)$"
+    },
+    "intensity": {
+      "description": "Name of a pixel cue of the same song → intensity. Every pixel cue of that name follows the level. The engine checks the names.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "const": "intensity" }
     },
     "values": {
       "description": "Fixture or group name → look settings, applied in order: a later entry wins on shared fixtures.",

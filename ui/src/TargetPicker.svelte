@@ -1,10 +1,11 @@
 <script>
   /**
    * A cue's `target` with one entry: a fixture or group, and whether the cue drives its dimmer
-   * or its colour. `dimmer` is the entry written for a dimmer target: `{ dimmer: '100%' }` for a
-   * swell, `'dimmer'` for a pattern. A target with more than that is kept as it is.
+   * or its colour, or a pixel cue of the song (`pixelCues`, names) whose intensity it drives.
+   * `dimmer` is the entry written for a dimmer target: `{ dimmer: '100%' }` for a swell,
+   * `'dimmer'` for a pattern. A target with more than that is kept as it is.
    */
-  let { target = $bindable(), targets, palettes, dimmer } = $props();
+  let { target = $bindable(), targets, palettes, dimmer, pixelCues = [] } = $props();
 
   const entries = $derived(Object.entries(target ?? {}));
   const name = $derived(entries[0]?.[0]);
@@ -12,13 +13,21 @@
   const settings = (entry) => (typeof entry === 'object' && entry !== null ? Object.keys(entry).join() : null);
   const drives = $derived.by(() => {
     if (entries.length !== 1) return null;
+    if (value === 'intensity') return 'intensity';
     if (value === 'dimmer' || settings(value) === 'dimmer') return 'dimmer';
     return settings(value) === 'color' ? 'colour' : null;
   });
   const colours = $derived(Object.keys(palettes ?? {}));
+  /** What the Target picker offers: pixel cues for an intensity link, otherwise fixtures and groups. */
+  const named = $derived(drives === 'intensity' ? pixelCues : targets);
 
   function drive(kind) {
-    target = { [name]: kind === 'dimmer' ? structuredClone(dimmer) : { color: colours[0] ?? '#ffffff' } };
+    if (kind === 'intensity') {
+      target = { [pixelCues[0]]: 'intensity' };
+      return;
+    }
+    const fixture = targets.includes(name) ? name : targets[0];
+    target = { [fixture]: kind === 'dimmer' ? structuredClone(dimmer) : { color: colours[0] ?? '#ffffff' } };
   }
 </script>
 
@@ -26,8 +35,8 @@
   <label>
     Target
     <select aria-label="Target" value={name} onchange={(event) => (target = { [event.currentTarget.value]: value })}>
-      {#if !targets.includes(name)}<option>{name}</option>{/if}
-      {#each targets as option (option)}<option>{option}</option>{/each}
+      {#if !named.includes(name)}<option>{name}</option>{/if}
+      {#each named as option (option)}<option>{option}</option>{/each}
     </select>
   </label>
   <label>
@@ -35,6 +44,7 @@
     <select value={drives} onchange={(event) => drive(event.currentTarget.value)}>
       <option value="dimmer">dimmer</option>
       <option value="colour">colour</option>
+      {#if pixelCues.length || drives === 'intensity'}<option value="intensity">pixel cue intensity</option>{/if}
     </select>
   </label>
   {#if drives === 'dimmer' && typeof value === 'object'}
@@ -49,6 +59,9 @@
       />
       <output>{value.dimmer}</output>
     </label>
+  {/if}
+  {#if drives === 'intensity'}
+    <span class="hint">Draws nothing on its own: audition it with {name} playing.</span>
   {/if}
   {#if drives === 'colour'}
     <label>

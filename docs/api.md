@@ -139,16 +139,17 @@ cues:
 - Durations are a number then `ms`, `s`, `beat(s)` or `bar(s)`: `500ms`, `1.5s`, `0.5 beats`, `4 bars`. A beat is a quarter note, as in MIDI clock and Reaper's BPM, so a bar of 6/8 is 3 beats. Beats and bars follow the MIDI clock while they run, tempo changes included; without a clock they run at the song's `bpm`. `fade_in`, `release` and `duration` all accept every unit.
 - Cue types:
   - `scene` holds a look: it fades in over `fade_in` from note-on and out over `release` from note-off.
-  - `swell` reaches its `target` look along `curve` over `duration` from note-on, then holds where the curve ends until note-off, and fades out over `release`. Curves: `ramp-up`, `ramp-down`, `ease-in` (slow start), `sine` (up and back down), `hold` (the target at once), or custom points `{ points: [[0, 0], [0.5, 1], [1, 0.3]] }`: `[time, level]` pairs, both 0–1, times rising, joined by straight lines. The level is how much of the target shows over the layers below, as a scene's fade does.
+  - `swell` reaches its `target` look along `curve` over `duration` from note-on, then holds where the curve ends until note-off, and fades out over `release`. Curves: `ramp-up`, `ramp-down`, `ease-in` (slow start), `sine` (up and back down), `hold` (the target at once), or custom points `{ points: [[0, 0], [0.5, 1], [1, 0.3]] }`: `[time, level]` pairs, both 0–1, times rising, joined by straight lines. The level is how much of the target shows over the layers below, as a scene's fade does. `target: { bridge-chase: intensity }` drives a pixel cue's intensity instead: see [intensity links](#intensity-links).
   - `pattern` plays `hits` in a loop of `length` bars until note-off, then fades out over `release` from where it was at note-off. Each hit plays a `shape` (any swell curve) scaled to `level` over its `length` (beats or bars, at most the pattern's length), from beat `at` of the pattern: 1 to the beats in `length`, in quarter beats. A hit running past the end of the loop carries on into the next pass, and where hits overlap the highest one wins.
     - Start: the loop starts on the next bar line after note-on, so a note just before a bar line waits for it. A note up to one MIDI clock tick (1/24 beat) after a bar line starts it at once, in step with that bar line. That window absorbs MIDI jitter and a note placed on the bar but counted a tick late; it is 18–27 ms at 140–92 BPM, under one frame, so the first hit loses at most a frame of light. Bar lines follow Reaper's bar position from the MIDI clock, or count from the song select without one.
     - `target: { all-wash: dimmer }` scales the intensity the layers below give those fixtures by the pattern's level (their dimmer channel, or their colour channels without one): dark between hits, so put a scene under it for colour. Velocity sets how deep it cuts: 127 goes dark between hits, 64 halfway. On release the fixtures fade back to the layers below.
     - `target: { all-wash: { color: amber } }` takes look settings, as a swell's `target`: the level is how much of that look shows over the layers below. Every entry of one target is either `dimmer` or look settings.
+    - `target: { bridge-chase: intensity }` drives the intensity of the song's pixel cues of that name, as `dimmer` drives fixtures: see [intensity links](#intensity-links).
   - `pixel` draws a preset `shape` on the canvas, animated by an `effect`, at every pixel of every fixture and grid. It fades in over `fade_in` from note-on and out over `release` from note-off. See [pixel cues](#pixel-cues).
 
 ### Pixel cues
 
-The effect is worked out in RGB at each pixel's canvas position, then converted per fixture: RGBW pixels follow `rgbw` (`saturated` or `white-rich`, as in looks). Velocity is the cue's intensity: it goes on the dimmer channel of fixtures that have one, and scales the colour of the others. A pixel cue writes only what it drives: the colour emitters of fixtures and grids, and the dimmer channel of a fixture whose pixels it draws. Fixtures without colour emitters, and other channels such as a shutter or strobe, keep the layers below. A frame depends only on the time and beats since the note, and on `seed`.
+The effect is worked out in RGB at each pixel's canvas position, then converted per fixture: RGBW pixels follow `rgbw` (`saturated` or `white-rich`, as in looks). Velocity is the cue's intensity, scaled by any [intensity link](#intensity-links): it goes on the dimmer channel of fixtures that have one, and scales the colour of the others. A pixel cue writes only what it drives: the colour emitters of fixtures and grids, and the dimmer channel of a fixture whose pixels it draws. Fixtures without colour emitters, and other channels such as a shutter or strobe, keep the layers below. A frame depends only on the time and beats since the note, and on `seed`.
 
 `params`, all optional:
 
@@ -186,6 +187,26 @@ Effects, each repeating once per `speed`, counted from the note:
 Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, `wave` is `gradient` with `move`, and `strobe` is `pulse` with a square curve such as `{ points: [[0, 1], [0.2, 1], [0.21, 0]] }`. `noise` has no equivalent; `sparkle` is the closest.
 
 `layer_2` takes its own `shape`, `effect` and `params`, plus `blend`: `max` (the brighter of the two per emitter, the default), `add` (the sum, clipped at full) or `mask` (layer 1 shows only where layer 2's shape is lit, as much as it is). Layer 2's sparkle differs from layer 1's under the same seed.
+
+### Intensity links
+
+A swell or pattern can drive the intensity of a pixel cue in the same song instead of a look, by naming it with `intensity`:
+
+```yaml
+  38: { name: chase-in, type: swell, target: { bridge-chase: intensity }, duration: 4 bars }
+  42:
+    name: chase-pulse
+    type: pattern
+    length: 1 bar
+    target: { bridge-chase: intensity }
+    hits:
+      - { at: 1, shape: ramp-up, length: 1 beat, level: 100% }
+```
+
+- The keys are pixel cue names; every pixel cue of that name follows. A name no pixel cue has is refused at load: `line 9: cue 42: bridge-chase: no pixel cue of that name in this song`. Every entry of a target that names pixel cues is `intensity`.
+- While the link plays, the pixel cue's intensity is its velocity times the link's level: a swell's curve, a pattern's hits, dark between them. The link's velocity sets how deep it cuts, as for a `dimmer` pattern: 127 follows the level fully, 64 goes halfway. A pattern leaves the pixel cue as it is until its loop starts.
+- On release the link fades out over its `release` and the pixel cue returns to its own intensity. A link with no pixel cue playing does nothing; a pixel cue fired later still follows it. Several links on one pixel cue multiply.
+- The link draws nothing itself, on any fixture.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
@@ -329,7 +350,7 @@ Reads and replaces a whole show file. `<file>` is a path in the show folder: `ri
 1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader. A song is judged by loading the whole show as it would be with the new content in place, the same checks as at start-up, so a song broken on disk can be fixed through this endpoint. Either refusal is a `422` naming the problem and the file at fault, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/tell-me.yaml: program 3 already selects song "other"`, and leaves the file untouched. A new song whose name differs from an existing one only by case is refused with `409`: macOS would write it over the other.
 2. The file is written in canonical form. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form, so an edit changes only the lines it touches.
    - `rig.yaml`: block-style YAML with fields in a fixed order.
-   - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.
+   - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition, a pixel cue's `params` and `layer_2` too) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.
 3. The write is atomic: a crash leaves the old file or the new one, never half of one.
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
@@ -384,6 +405,29 @@ If the file has changed since the save or undo (by hand, say), the step is refus
 `PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. Nothing is saved.
 
 It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves no look on stage. `DELETE`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
+
+### Pixel scene preview: `PUT /api/preview/pixel`
+
+Shows a pixel cue on every output while the builder edits it, in place of the look preview (`204`). The body is the song and the cue as in its file:
+
+```json
+{ "song": "tell-me", "cue": { "name": "bridge-chase", "type": "pixel", "effect": "chase", "params": { "color": "amber", "width": 0.25 } } }
+```
+
+The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, as the look preview does, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it. It lasts, refreshes and clears like the look preview, with which it shares `DELETE /api/preview`; one replaces the other. Nothing is saved.
+
+### Pixel thumbnail: `POST /api/pixel-thumbnail`
+
+Renders a pixel cue, as in its song file, on a sample grid, for the builder's shape and effect pickers. The engine renders it as a song would, so the pickers never re-implement an effect. Colours come from the show's palettes; nothing is saved, and it works in show mode.
+
+```json
+{ "columns": 12, "rows": 12, "frames": [["#000000", "#ff0000", "… 144 colours"], "… 8 frames"] }
+```
+
+- The grid is RGB and fills the canvas.
+- `frames` are 8 moments evenly over one cycle of layer 1's `speed`, from the note, with beats at 120 BPM.
+- Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
+- A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
 
 ### MIDI: `POST /api/midi`
 

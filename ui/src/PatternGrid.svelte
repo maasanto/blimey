@@ -8,7 +8,7 @@
    * audition plays, or null before the first save. `beats` is how far the saved cue's loop has
    * played while it is auditioned (the stream's `beats`); `onaudition` starts or stops that.
    */
-  let { cue = $bindable(), saved, targets, palettes, barBeats, beats, onaudition } = $props();
+  let { cue = $bindable(), saved, targets, pixelCues, palettes, barBeats, beats, onaudition } = $props();
 
   /** Hits sit on quarter beats (docs/api.md). */
   const STEPS_PER_BEAT = 4;
@@ -87,7 +87,7 @@
 <fieldset class="editor">
   <legend>Pattern</legend>
   <div class="row">
-    <TargetPicker bind:target={cue.target} {targets} {palettes} dimmer="dimmer" />
+    <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer="dimmer" />
     <label>
       Bars
       <select value={bars} onchange={(event) => setBars(Number(event.currentTarget.value))}>

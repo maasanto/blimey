@@ -5,17 +5,19 @@
 //! count cycles of their `speed` from the note, and sparkle draws from a hash of the cue's seed,
 //! the pixel's position and the cycle, never from running state.
 
+use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
 use crate::colour::{Rgb, RgbwMode, to_dmx};
-use crate::duration::Length;
+use crate::cue::CueEntry;
+use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{colour, draw_pixel};
 use crate::rig::{Fixture, Rig, line_key};
-use crate::{Show, Universes};
+use crate::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 
 /// Where the shape sits, 0–1 along its travel, for effects that don't move it.
 const REST_POSITION: f64 = 0.5;
@@ -170,6 +172,10 @@ pub struct Layer {
 }
 
 impl PixelEntry {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     pub(crate) fn resolve(self, show: &Show) -> Result<PixelScene, String> {
         let layer_2 = match self.layer_2 {
             Some(entry) => Some((
@@ -226,6 +232,14 @@ impl ParamsEntry {
 }
 
 impl PixelScene {
+    /// A pixel cue as in a song file, `type: pixel` included, its colours from `show`.
+    pub fn parse(show: &Show, cue: serde_json::Value) -> Result<PixelScene, String> {
+        match CueEntry::deserialize(cue).map_err(|error| error.to_string())? {
+            CueEntry::Pixel(entry) => entry.resolve(show),
+            _ => Err("expected a pixel cue, with type pixel".into()),
+        }
+    }
+
     /// Draws the scene at full opacity over `out`, on every fixture and grid of the rig.
     ///
     /// `intensity` (0–1) is the cue's input level, today the note's velocity: it goes on the
@@ -281,6 +295,46 @@ impl PixelScene {
             draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
         }
     }
+}
+
+/// Columns and rows of the square sample grid a thumbnail shows, filling the canvas: the most
+/// RGB pixels that fit the Enttec universe in a square.
+pub const THUMBNAIL_SIDE: usize = 12;
+/// Frames in a thumbnail, evenly over one cycle, as in the preview sheet.
+pub const THUMBNAIL_FRAMES: usize = 8;
+/// The tempo beats and bars run at in a thumbnail: it shows one cycle whatever the speed.
+const THUMBNAIL_BPM: f64 = 120.0;
+
+/// A pixel cue, as in a song file, rendered on a sample grid for the builder's pickers, as
+/// the preview sheet (`examples/pixel_sheet.rs`) renders it: `THUMBNAIL_FRAMES` frames evenly
+/// over one cycle of layer 1, each the grid's colours row by row from the top left as the
+/// audience sees it, at full intensity. `show` gives the palettes.
+pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, String> {
+    let scene = PixelScene::parse(show, cue)?;
+    let rig = Rig::parse(
+        &format!(
+            "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {THUMBNAIL_SIDE}, rows: {THUMBNAIL_SIDE}, colour_order: RGB, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
+        ),
+        Path::new("."),
+    )
+    .expect("the sample grid fits the Enttec universe");
+    let clock = ClockFollower::new(THUMBNAIL_BPM, TimeSignature::default());
+    let started = clock.moment(Duration::ZERO);
+    let second = Duration::from_secs(1);
+    let cycles_per_second = clock.cycles(scene.layer.speed, started, second);
+    let cycle = Duration::try_from_secs_f64(1.0 / cycles_per_second)
+        .map_err(|_| "speed is too long to render a cycle of".to_string())?;
+    let frames = (0..THUMBNAIL_FRAMES).map(|index| {
+        let mut out = Universes {
+            enttec: [0; DMX_CHANNELS],
+            artnet: ArtNetFrames::new(),
+        };
+        let at = cycle.mul_f64(index as f64 / THUMBNAIL_FRAMES as f64);
+        scene.draw(&rig, &clock, started, at, 1.0, &mut out);
+        let (_, colours) = rig.pixel_colours(&out.enttec, &out.artnet).remove(0);
+        colours
+    });
+    Ok(frames.collect())
 }
 
 fn has_emitters(fixture: &Fixture) -> bool {

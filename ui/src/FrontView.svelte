@@ -85,6 +85,22 @@
     return true;
   }
 
+  /** A grid pixel's tile on screen: the spacing between its neighbours, less a gap. */
+  function gridCell(pixels) {
+    const spacing = (positions) => {
+      const sorted = [...new Set(positions)].sort((a, b) => a - b);
+      return Math.min(...sorted.slice(1).map((position, index) => position - sorted[index]));
+    };
+    const width = spacing(pixels.map((pixel) => screenX(pixel.x)));
+    const height = spacing(pixels.map((pixel) => screenY(pixel.y)));
+    // A single row or column takes its spacing from the other way; a single pixel, a fixture's size.
+    const fallback = Math.min(width, height, 2 * PIXEL_RADIUS);
+    return {
+      width: 0.85 * (Number.isFinite(width) ? width : fallback),
+      height: 0.85 * (Number.isFinite(height) ? height : fallback),
+    };
+  }
+
   const offset = (fixture) =>
     drag?.name === fixture.name ? `translate(${drag.dx * WIDTH} ${-drag.dy * HEIGHT})` : undefined;
 </script>
@@ -152,6 +168,27 @@
       </text>
     </g>
   {/each}
+
+  <!-- Grids are placed in rig.yaml by their canvas rectangle, so they don't drag. -->
+  {#each engine.rig?.grids ?? [] as grid (grid.name)}
+    {@const colours = engine.frame?.pixels[grid.name] ?? []}
+    {@const cell = gridCell(grid.pixels)}
+    {@const xs = grid.pixels.map((pixel) => screenX(pixel.x))}
+    {@const bottom = Math.max(...grid.pixels.map((pixel) => screenY(pixel.y)))}
+    <g class="pixel-grid" data-grid={grid.name}>
+      {#each grid.pixels as pixel, index (index)}
+        <rect
+          data-pixel={index}
+          x={screenX(pixel.x) - cell.width / 2}
+          y={screenY(pixel.y) - cell.height / 2}
+          width={cell.width}
+          height={cell.height}
+          fill={colours[index] ?? '#000000'}
+        />
+      {/each}
+      <text x={(Math.min(...xs) + Math.max(...xs)) / 2} y={bottom + cell.height / 2 + 26} class="label">{grid.name}</text>
+    </g>
+  {/each}
 </svg>
 
 <style>
@@ -193,6 +230,11 @@
   circle {
     stroke: #3a3d47;
     stroke-width: 2;
+  }
+
+  .pixel-grid rect {
+    stroke: #23252b;
+    stroke-width: 1;
   }
 
   .label {

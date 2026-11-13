@@ -10,7 +10,7 @@ import readline from 'node:readline';
 import { test as base } from '@playwright/test';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
-const BINARY = process.env.BLIMEY_BIN ?? path.join(ROOT, 'target/debug/blimey');
+export const BINARY = process.env.BLIMEY_BIN ?? path.join(ROOT, 'target/debug/blimey');
 
 /** wash-1 saturated red; wash-4 orange at 60% with its white channels in use; wash-2 and 3 dark. */
 const LOOK = [

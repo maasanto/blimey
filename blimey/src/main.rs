@@ -25,7 +25,7 @@ use blimey_engine::ofl::import_ofl;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
     ArtNetFrames, CueEvent, DmxSink, FakeClock, FakeDmx, Frame, MidiEvent, MidiFile, MidiSource,
-    MonotonicClock, Show, ShowSource, Status, first_difference, format_dump, parse_dump,
+    MonotonicClock, Show, ShowSource, Status, Universes, first_difference, format_dump, parse_dump,
 };
 use clap::{Args, Parser, Subcommand};
 use serialport::SerialPortType;
@@ -210,6 +210,8 @@ impl Outputs {
                 .map(|address| StreamSink::start(address, show_dir, rig, mode))
                 .transpose()?,
             artnet: self.artnet.start(rig)?,
+            artnet_frames: ArtNetFrames::new(),
+            artnet_error: None,
         })
     }
 }
@@ -614,34 +616,46 @@ struct LiveOutput {
     dmx: Option<EnttecPro>,
     stream: Option<StreamSink>,
     artnet: Option<ArtNet>,
+    /// The Art-Net universes of the next frame, held until `send` so the UI's overlays,
+    /// a pixel scene preview among them, draw on them too.
+    artnet_frames: ArtNetFrames,
+    /// The last Art-Net send error, returned by the next `send_artnet` for a wrapping sink to
+    /// count.
+    // ponytail: reported a frame late, and the last frame's never; `DmxSink::send(&Universes)`
+    // would report it on time, a cross-crate change.
+    artnet_error: Option<io::Error>,
 }
 
 impl DmxSink for LiveOutput {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
-        let mut frame = *frame;
+        let mut out = Universes {
+            enttec: *frame,
+            artnet: std::mem::take(&mut self.artnet_frames),
+        };
         if let Some(stream) = &self.stream {
-            stream.apply_overlays(at, &mut frame);
-        }
-        if let Some(dmx) = &mut self.dmx {
-            dmx.send(at, &frame)?;
+            stream.apply_overlays(at, &mut out);
         }
         if let Some(stream) = &mut self.stream {
-            stream.send(at, &frame)?;
+            stream.send_artnet(&out.artnet)?;
         }
         if let Some(artnet) = &mut self.artnet {
-            artnet.send(at, &frame)?;
+            self.artnet_error = artnet.send_artnet(&out.artnet).err();
+        }
+        if let Some(dmx) = &mut self.dmx {
+            dmx.send(at, &out.enttec)?;
+        }
+        if let Some(stream) = &mut self.stream {
+            stream.send(at, &out.enttec)?;
+        }
+        if let Some(artnet) = &mut self.artnet {
+            artnet.send(at, &out.enttec)?;
         }
         Ok(())
     }
 
     fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
-        if let Some(stream) = &mut self.stream {
-            stream.send_artnet(universes)?;
-        }
-        if let Some(artnet) = &mut self.artnet {
-            artnet.send_artnet(universes)?;
-        }
-        Ok(())
+        self.artnet_frames = universes.clone();
+        self.artnet_error.take().map_or(Ok(()), Err)
     }
 
     fn status(&mut self, status: &Status) {
@@ -740,6 +754,8 @@ mod tests {
             dmx: None,
             stream: Some(stream),
             artnet: None,
+            artnet_frames: ArtNetFrames::new(),
+            artnet_error: None,
         };
         let mut universe = [0; 512];
         universe[0] = 255;

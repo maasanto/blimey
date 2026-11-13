@@ -9,7 +9,7 @@
    * auditioned (the stream's `beats`); `onaudition` starts or stops that, `onrestart` plays it
    * again from the top.
    */
-  let { cue = $bindable(), saved, targets, palettes, barBeats, beats, onaudition, onrestart } = $props();
+  let { cue = $bindable(), saved, targets, pixelCues, palettes, barBeats, beats, onaudition, onrestart } = $props();
 
   const WIDTH = 600;
   const HEIGHT = 160;
@@ -99,7 +99,7 @@
 <fieldset class="editor">
   <legend>Swell</legend>
   <div class="row">
-    <TargetPicker bind:target={cue.target} {targets} {palettes} dimmer={{ dimmer: '100%' }} />
+    <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer={{ dimmer: '100%' }} />
   </div>
   <div class="row">
     <label>

@@ -10,11 +10,13 @@ use serde::Deserialize;
 use serde_yaml_ng::Mapping;
 
 use crate::Show;
-use crate::cue::{Cue, CueEntry, resolve_look};
+use crate::cue::{Cue, CueEntry, PixelCues, resolve_look};
 use crate::duration::TimeSignature;
 use crate::look::Look;
 
 const MIDI_DATA_MAX: u8 = 127;
+/// Reaper's default tempo, for a song without `bpm` when no MIDI clock arrives.
+const DEFAULT_BPM: f32 = 120.0;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +47,11 @@ pub struct Song {
 }
 
 impl Song {
+    /// Beats per minute when no MIDI clock arrives: `bpm`, or Reaper's default.
+    pub fn tempo(&self) -> f64 {
+        f64::from(self.bpm.unwrap_or(DEFAULT_BPM))
+    }
+
     /// Parses a song file. `show` holds the rig and palettes its looks name.
     pub fn parse(name: &str, yaml: &str, show: &Show) -> Result<Song, String> {
         let file: SongFile = serde_yaml_ng::from_str(yaml).map_err(|error| error.to_string())?;
@@ -67,13 +74,21 @@ impl Song {
             .unwrap_or_default();
         let safe_look = resolve_look(show, &file.safe_look)
             .map_err(|error| located("safe_look", format!("safe_look: {error}")))?;
+        // Swells and patterns may name any pixel cue of the song, before or after them.
+        let mut pixel_cues = PixelCues::new();
+        for (slot, entry) in &file.cues {
+            if let Some(name) = entry.pixel_name() {
+                pixel_cues.entry(name.into()).or_default().insert(*slot);
+            }
+        }
         let mut cues = BTreeMap::new();
         for (slot, entry) in file.cues {
             let in_cue = |error: String| located(&slot.to_string(), format!("cue {slot}: {error}"));
             if slot > MIDI_DATA_MAX {
                 return Err(in_cue("cue numbers are note numbers, 0-127".into()));
             }
-            cues.insert(slot, entry.resolve(show, time_signature).map_err(in_cue)?);
+            let cue = entry.resolve(show, time_signature, &pixel_cues);
+            cues.insert(slot, cue.map_err(in_cue)?);
         }
         Ok(Song {
             name: name.into(),
@@ -162,6 +177,7 @@ pub(crate) fn load_songs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue::SwellTarget;
     use crate::duration::Length;
     use crate::envelope::Envelope;
     use std::time::Duration;
@@ -217,7 +233,10 @@ mod tests {
         assert_eq!(swell.duration, Length::Bars(4.0));
         assert_eq!(swell.curve, Envelope::EaseIn);
         assert_eq!(swell.release, Length::Beats(0.5));
-        assert_eq!(swell.target.fixtures.len(), 2);
+        let SwellTarget::Look(target) = &swell.target else {
+            panic!("cue 38 targets a look");
+        };
+        assert_eq!(target.fixtures.len(), 2);
         assert_eq!(song.time_signature.beats_per_bar(), 3.0);
     }
 
@@ -272,6 +291,31 @@ mod tests {
         assert_eq!(
             error(&format!("{PIXEL}    params: {{ speed: 0 beats }}\n")),
             "line 4: cue 40: speed must be above 0"
+        );
+    }
+
+    #[test]
+    fn a_swell_or_pattern_names_the_pixel_cues_whose_intensity_it_drives() {
+        const PIXELS: &str = "program: 3\ncues:\n  40: { name: chase, type: pixel }\n  41: { name: chase, type: pixel }\n";
+        let song = Song::parse(
+            "song",
+            &format!(
+                "{PIXELS}  38: {{ name: rise, type: swell, target: {{ chase: intensity }}, duration: 1 bar }}\n"
+            ),
+            &show(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            song.cues[&38].intensity_targets(),
+            Some(&[40, 41].into()),
+            "every pixel cue of that name, before or after it"
+        );
+        assert_eq!(
+            error(&format!(
+                "{PIXELS}  42:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: {{ chaser: intensity }}\n    hits: []\n"
+            )),
+            "line 5: cue 42: chaser: no pixel cue of that name in this song"
         );
     }
 
