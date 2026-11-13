@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test, expect, nextDmx } from './engine.js';
 
@@ -156,14 +156,65 @@ test('undo restores the previous file byte for byte', async ({ page, show, start
 
   // A hand edit since the save blocks the undo, which can be tried again once it is reverted.
   writeFileSync(songFile, `${saved}# a note by hand\n`);
-  await page.getByRole('button', { name: 'Undo last save' }).click();
+  await page.getByRole('button', { name: 'Undo (1)' }).click();
   await expect(page.getByRole('alert')).toContainText('songs/demo.yaml: changed since the save');
   writeFileSync(songFile, saved);
-  await page.getByRole('button', { name: 'Undo last save' }).click();
+  await page.getByRole('button', { name: 'Undo (1)' }).click();
 
   await expect(page.getByText('Undid the last save of songs/demo.yaml.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(handWritten);
   await expect(page.locator('tr[data-note="38"]')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Undo (0)' })).toBeDisabled();
+});
+
+test('a new song takes a cue, and two undos remove the cue then the song', async ({ page, show, startEngine }) => {
+  const demoFile = addSong(show);
+  const demo = readFileSync(demoFile, 'utf8');
+  const encoreFile = path.join(show, 'songs/encore.yaml');
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const songPicker = page.locator('.bar select');
+  const program = page.getByLabel('Program', { exact: true });
+
+  // Taken names and programs are refused by the engine.
+  await page.getByRole('button', { name: 'New song' }).click();
+  await page.getByLabel('Song name').fill('demo');
+  await page.getByRole('button', { name: 'Create song' }).click();
+  await expect(page.getByRole('alert')).toHaveText('songs/demo.yaml: the show already has song "demo"; pick another name');
+  await page.getByLabel('Song name').fill('encore');
+  await program.fill('1');
+  await page.getByRole('button', { name: 'Create song' }).click();
+  await expect(page.getByRole('alert')).toContainText('program 1 already selects song');
+
+  await program.fill('7');
+  await page.getByLabel('Tempo').fill('100');
+  await page.getByRole('button', { name: 'Create song' }).click();
+  await expect(page.getByText('Created song encore.')).toBeVisible();
+  await expect(songPicker).toHaveValue('encore');
+  expect(readFileSync(encoreFile, 'utf8')).toBe('program: 7\nbpm: 100\n');
+
+  await addToLook(page, 'all-wash');
+  await page.getByLabel('Note').fill('36');
+  await page.getByLabel('Name').fill('first-look');
+  await page.getByRole('button', { name: 'Save cue' }).click();
+  await expect(page.locator('tr[data-note="36"]')).toBeVisible();
+  const withCue = readFileSync(encoreFile, 'utf8');
+  expect(withCue).toContain('    name: first-look\n');
+
+  await page.getByRole('button', { name: 'Undo (2)' }).click();
+  await expect(page.locator('tr[data-note="36"]')).toHaveCount(0);
+  expect(readFileSync(encoreFile, 'utf8')).toBe('program: 7\nbpm: 100\n');
+  await page.getByRole('button', { name: 'Undo (1)' }).click();
+  await expect(page.getByText('Undid the last save of songs/encore.yaml.')).toBeVisible();
+  expect(existsSync(encoreFile), 'the song is gone').toBe(false);
+  await expect(songPicker.locator('option')).toHaveText(['demo (program 1)']);
+  expect(readFileSync(demoFile, 'utf8')).toBe(demo);
+
+  // Redo brings both back, as they were.
+  await page.getByRole('button', { name: 'Redo (2)' }).click();
+  await page.getByRole('button', { name: 'Redo (1)' }).click();
+  await expect(page.getByRole('button', { name: 'Redo (0)' })).toBeDisabled();
+  expect(readFileSync(encoreFile, 'utf8')).toBe(withCue);
 });
 
 test('malformed request bodies are refused with 422', async ({ page, show, startEngine }) => {
@@ -195,7 +246,8 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
     page.getByLabel('Fixture or group to add'),
     page.getByLabel('Note'),
     page.getByRole('button', { name: 'Set tempo' }),
-    page.getByRole('button', { name: 'Undo last save' }),
+    page.getByRole('button', { name: 'New song' }),
+    page.getByRole('button', { name: /^Undo/ }),
     page.locator('tr[data-note="38"]').getByRole('button', { name: 'Audition' }),
     page.locator('tr[data-note="38"]').getByRole('button', { name: 'Delete' }),
   ]) {
@@ -206,6 +258,8 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
     page.request.put(`${url}api/songs/demo/cues/40`, { data: { cue: { name: 'x', type: 'scene', values: {} } } }),
     page.request.delete(`${url}api/songs/demo/cues/38`),
     page.request.put(`${url}api/songs/demo/bpm`, { data: { bpm: 90 } }),
+    page.request.post(`${url}api/songs`, { data: { name: 'encore', program: 7 } }),
+    page.request.post(`${url}api/redo`),
     page.request.put(`${url}api/preview`, { data: { 'all-wash': { color: '#ffffff' } } }),
     page.request.post(`${url}api/midi`, { data: { message: [0x91, 38, 127] } }),
     page.request.post(`${url}api/undo`),

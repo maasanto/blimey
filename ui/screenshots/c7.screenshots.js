@@ -34,6 +34,15 @@ test('C7 builder', async ({ page, startEngine }) => {
   await page.locator('tr[data-note="41"]').getByRole('button', { name: 'Audition' }).click();
   await expect(page.locator('tr[data-note="41"]').getByRole('button', { name: 'Release' })).toBeVisible();
   await shoot(page, 'saved-and-auditioning');
+
+  await page.getByRole('button', { name: 'New song' }).click();
+  await page.getByLabel('Song name').fill('encore');
+  await page.getByLabel('Tempo').fill('128');
+  await shoot(page, 'new-song-form');
+
+  await page.getByRole('button', { name: 'Create song' }).click();
+  await expect(page.getByRole('button', { name: 'Undo (2)' })).toBeEnabled();
+  await shoot(page, 'undo-steps');
 });
 
 test('C7 builder in show mode', async ({ page, startEngine }) => {
