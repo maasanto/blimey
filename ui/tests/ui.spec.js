@@ -156,7 +156,9 @@ test('show mode locks positions and fixture tests', async ({ page, show, startEn
   const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
   const refused = await page.request.put(`${url}api/show/rig.yaml`, { data: rig });
   expect(refused.status()).toBe(403);
-  const malformed = await page.request.put(`${url}api/show/rig.yaml`, { data: 'not json' });
-  expect(malformed.status(), 'show mode refuses before reading the body').toBe(403);
+  for (const [method, endpoint] of [['put', 'show/rig.yaml'], ['put', 'preview'], ['post', 'midi']]) {
+    const malformed = await page.request[method](`${url}api/${endpoint}`, { data: 'not json' });
+    expect(malformed.status(), `${endpoint}: show mode refuses before reading the body`).toBe(403);
+  }
   expect(readFileSync(path.join(show, 'rig.yaml'), 'utf8')).toBe(before);
 });
