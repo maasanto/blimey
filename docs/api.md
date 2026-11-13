@@ -345,7 +345,7 @@ The engine keeps the last 50 saves made through the API, across all show files: 
 - Both return the file and the steps left: `{ "file": "songs/tell-me.yaml", "undo": 2, "redo": 1 }`. With nothing to undo or redo, they return `404`.
 - `GET /api/history` returns the steps alone, `{ "undo": 3, "redo": 0 }`. It works in show mode, where the history is always empty.
 
-If the file has changed since the save or undo (by hand, say), it is refused with `409` rather than lose that change. A refused step stays in the history, to try again once the file is put back.
+If the file has changed since the save or undo (by hand, say), the step is refused with `409` rather than lose that change; it stays in the history, to try again once the file is put back. A step whose earlier content no longer passes the checks, such as an undo back to a song that was broken before a fix, never could be made: it is refused with `422` and dropped, so it doesn't block the steps before it.
 
 ### Look preview: `PUT` and `DELETE /api/preview`
 

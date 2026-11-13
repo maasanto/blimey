@@ -2,6 +2,7 @@
 //! the file's JSON Schema and by the engine's own loader, put in canonical YAML form, then
 //! written atomically.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -287,6 +288,8 @@ pub fn create_song(show_dir: &Path, name: &str, content: Value) -> io::Result<Sa
         ));
     }
     let _writing = writing();
+    // Before the existence check, which a case-insensitive file system would answer for the twin.
+    refuse_case_twin(show_dir, &file, name)?;
     if existing(&show_dir.join(&file))?.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -437,14 +440,10 @@ pub struct Save {
 }
 
 impl Save {
-    pub fn file(&self) -> &str {
-        &self.file
-    }
-
     /// Puts back what the file held before this save, byte for byte, after the same checks as a
     /// write; removes it if the save created it. Returns the change it made, whose undo redoes
-    /// the save. Refused with `ResourceBusy` if the file has changed since, as undoing would lose
-    /// that change.
+    /// the save. Refused with `ResourceBusy` if the file has changed since, as this would lose
+    /// that change, or with `InvalidData` if the earlier content no longer passes the checks.
     pub fn undo(&self, show_dir: &Path) -> io::Result<Save> {
         let _writing = writing();
         let path = show_dir.join(&self.file);
@@ -452,7 +451,7 @@ impl Save {
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
                 format!(
-                    "{}: changed since the save; undoing it would lose that change",
+                    "{}: changed since the save; this step would lose that change",
                     self.file
                 ),
             ));
@@ -487,62 +486,69 @@ pub const HISTORY_LENGTH: usize = 50;
 #[derive(Debug, Default)]
 pub struct History {
     /// Oldest first, at most `HISTORY_LENGTH`.
-    undo: Vec<Save>,
-    /// The changes undo made, latest last; undoing one redoes its save.
-    redo: Vec<Save>,
+    undo: VecDeque<Save>,
+    /// The changes undo made, oldest first; undoing one redoes its save.
+    redo: VecDeque<Save>,
 }
 
 impl History {
     pub fn record(&mut self, save: Save) {
         self.redo.clear();
-        self.push_undo(save);
+        push_bounded(&mut self.undo, save);
     }
 
-    /// Undoes the latest save and returns its file. A refused undo stays in the history, to
-    /// try again once the file is put back.
+    /// Undoes the latest save and returns its file.
     pub fn undo(&mut self, show_dir: &Path) -> io::Result<String> {
-        let save = self
-            .undo
-            .last()
-            .ok_or_else(|| nothing_to("undo", "no save since the engine started"))?;
-        let undone = save.undo(show_dir)?;
-        self.undo.pop();
-        let file = undone.file.clone();
-        self.redo.push(undone);
-        Ok(file)
+        step(&mut self.undo, &mut self.redo, show_dir, "undo")
     }
 
-    /// Redoes the latest undo and returns its file. A refused redo stays in the history.
+    /// Redoes the latest undo and returns its file.
     pub fn redo(&mut self, show_dir: &Path) -> io::Result<String> {
-        let undone = self
-            .redo
-            .last()
-            .ok_or_else(|| nothing_to("redo", "no undo since the last save"))?;
-        let redone = undone.undo(show_dir)?;
-        self.redo.pop();
-        let file = redone.file.clone();
-        self.push_undo(redone);
-        Ok(file)
+        step(&mut self.redo, &mut self.undo, show_dir, "redo")
     }
 
     /// How many undos and redos are available.
     pub fn steps(&self) -> (usize, usize) {
         (self.undo.len(), self.redo.len())
     }
+}
 
-    fn push_undo(&mut self, save: Save) {
-        if self.undo.len() == HISTORY_LENGTH {
-            self.undo.remove(0);
+/// Undoes the latest change in `from`, and keeps the change that made in `to`, so it can be
+/// taken back in turn. A step refused because the file changed since stays, to try again once
+/// the file is put back; one whose earlier content no longer passes the checks never could, so
+/// it is dropped rather than block every step before it.
+fn step(
+    from: &mut VecDeque<Save>,
+    to: &mut VecDeque<Save>,
+    show_dir: &Path,
+    action: &str,
+) -> io::Result<String> {
+    let change = from
+        .back()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("nothing to {action}")))?;
+    match change.undo(show_dir) {
+        Ok(inverse) => {
+            from.pop_back();
+            let file = inverse.file.clone();
+            push_bounded(to, inverse);
+            Ok(file)
         }
-        self.undo.push(save);
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            from.pop_back();
+            Err(io::Error::new(
+                error.kind(),
+                format!("{error}; that step can't be made and is dropped from the history"),
+            ))
+        }
+        Err(error) => Err(error),
     }
 }
 
-fn nothing_to(action: &str, why: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("nothing to {action}: {why}"),
-    )
+fn push_bounded(changes: &mut VecDeque<Save>, change: Save) {
+    if changes.len() == HISTORY_LENGTH {
+        changes.pop_front();
+    }
+    changes.push_back(change);
 }
 
 /// The file's text, or `None` if there is no such file.
@@ -721,7 +727,7 @@ mod tests {
             fs::read_to_string(show.join(TELL_ME)).unwrap(),
             hand_written
         );
-        assert_eq!(save.file(), TELL_ME);
+        assert_eq!(save.file, TELL_ME);
         save.undo(&show).unwrap();
         assert_eq!(
             fs::read_to_string(show.join(TELL_ME)).unwrap(),
@@ -783,7 +789,7 @@ mod tests {
         assert_eq!(history.steps(), (0, 3));
         assert_eq!(
             history.undo(&show).unwrap_err().to_string(),
-            "nothing to undo: no save since the engine started"
+            "nothing to undo"
         );
 
         assert_eq!(history.redo(&show).unwrap(), "songs/encore.yaml");
@@ -816,6 +822,29 @@ mod tests {
         fs::write(show.join(TELL_ME), saved).unwrap();
         history.undo(&show).unwrap();
         assert_eq!(text(&show, TELL_ME).unwrap(), before);
+    }
+
+    #[test]
+    fn an_undo_back_to_content_that_no_longer_loads_is_dropped() {
+        let show = fossile_copy("history-broken");
+        let fixed = read(&show, TELL_ME).unwrap();
+        let broken = text(&show, TELL_ME).unwrap().replace("deep-blue", "teal");
+        fs::write(show.join(TELL_ME), &broken).unwrap();
+        let mut history = History::default();
+        history.record(write(&show, TELL_ME, fixed).unwrap());
+        let saved = text(&show, TELL_ME);
+
+        let error = history.undo(&show).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .ends_with("that step can't be made and is dropped from the history"),
+            "{error}"
+        );
+        assert_eq!(history.steps(), (0, 0));
+        assert_eq!(text(&show, TELL_ME), saved, "the fixed song stays");
     }
 
     #[test]

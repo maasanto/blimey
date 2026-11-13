@@ -152,7 +152,7 @@ async fn write_show_file(
         return refused;
     }
     // Hot reload picks the file up on the next frame, and the stream then sends the new rig.
-    saved(&api, show_file::write(&api.show_dir, &file, content))
+    saved(&api, || show_file::write(&api.show_dir, &file, content))
 }
 
 async fn save_cue(
@@ -171,10 +171,9 @@ async fn save_cue(
         Err(error) => return error_response(&error),
     };
     let replaces = save.replaces.map(|replaced| (replaced.note, replaced.cue));
-    saved(
-        &api,
-        show_file::save_cue(&api.show_dir, &song, note, replaces, save.cue),
-    )
+    saved(&api, || {
+        show_file::save_cue(&api.show_dir, &song, note, replaces, save.cue)
+    })
 }
 
 async fn set_bpm(
@@ -186,7 +185,7 @@ async fn set_bpm(
         return refused;
     }
     match body::<Tempo>(content, "send { bpm } with bpm a number") {
-        Ok(tempo) => saved(&api, show_file::set_bpm(&api.show_dir, &song, tempo.bpm)),
+        Ok(tempo) => saved(&api, || show_file::set_bpm(&api.show_dir, &song, tempo.bpm)),
         Err(error) => error_response(&error),
     }
 }
@@ -195,7 +194,7 @@ async fn delete_cue(State(api): State<Api>, Path((song, note)): Path<(String, u8
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
-    saved(&api, show_file::delete_cue(&api.show_dir, &song, note))
+    saved(&api, || show_file::delete_cue(&api.show_dir, &song, note))
 }
 
 async fn create_song(State(api): State<Api>, Json(content): Json<Value>) -> Response {
@@ -206,18 +205,20 @@ async fn create_song(State(api): State<Api>, Json(content): Json<Value>) -> Resp
         content,
         "send { name, program } and optionally bpm, time_signature",
     ) {
-        Ok(song) => saved(
-            &api,
-            show_file::create_song(&api.show_dir, &song.name, song.content.into()),
-        ),
+        Ok(song) => saved(&api, || {
+            show_file::create_song(&api.show_dir, &song.name, song.content.into())
+        }),
         Err(error) => error_response(&error),
     }
 }
 
-fn saved(api: &Api, save: io::Result<Save>) -> Response {
-    match save {
+/// Makes a save and records it, holding the history throughout so the history lists saves in
+/// the order they reached the disk, as undo needs.
+fn saved(api: &Api, save: impl FnOnce() -> io::Result<Save>) -> Response {
+    let mut history = lock(&api.history);
+    match save() {
         Ok(save) => {
-            lock(&api.history).record(save);
+            history.record(save);
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => error_response(&error),
