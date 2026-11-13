@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -59,14 +60,22 @@ async fn read_show_file(State(api): State<Api>, Path(file): Path<String>) -> Res
     }
 }
 
+/// Takes the body's rejection too, so show mode answers 403 and a bad body gets the JSON error.
 async fn write_show_file(
     State(api): State<Api>,
     Path(file): Path<String>,
-    Json(content): Json<Value>,
+    content: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let Json(content) = match content {
+        Ok(content) => content,
+        Err(rejection) => {
+            let error = io::Error::new(io::ErrorKind::InvalidData, rejection.body_text());
+            return error_response(&error);
+        }
+    };
     // Hot reload picks the file up on the next frame, and the stream then sends the new rig.
     match show_file::write(&api.show_dir, &file, content) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),

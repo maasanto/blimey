@@ -109,6 +109,15 @@ test('a drag that saves nothing leaves fixtures draggable', async ({ page, show,
   await expect.poll(wash2X).toBe(0.775);
 });
 
+test('a body that is not JSON gets a JSON error', async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+
+  const response = await page.request.put(`${url}api/show/rig.yaml`, { data: 'not json' });
+
+  expect(response.status()).toBe(422);
+  expect((await response.json()).error).toBeTruthy();
+});
+
 test('the page reconnects after an engine restart', async ({ page, startEngine }) => {
   const first = await startEngine();
   await page.goto(`${first.url}#monitor`);
@@ -147,5 +156,7 @@ test('show mode locks positions and fixture tests', async ({ page, show, startEn
   const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
   const refused = await page.request.put(`${url}api/show/rig.yaml`, { data: rig });
   expect(refused.status()).toBe(403);
+  const malformed = await page.request.put(`${url}api/show/rig.yaml`, { data: 'not json' });
+  expect(malformed.status(), 'show mode refuses before reading the body').toBe(403);
   expect(readFileSync(path.join(show, 'rig.yaml'), 'utf8')).toBe(before);
 });
