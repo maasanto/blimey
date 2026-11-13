@@ -34,7 +34,7 @@ fn every_recorded_song_matches_its_reference_dump() {
     let mut failures = Vec::new();
     for recording in &recordings {
         let name = recording.file_stem().unwrap().to_string_lossy();
-        let song = name.split('.').next().unwrap_or_default();
+        let song = song_of(&name);
         if !show.songs.iter().any(|candidate| candidate.name == song) {
             failures.push(format!(
                 "{name}.mid: shows/fossile/songs has no song {song:?}"
@@ -54,14 +54,24 @@ fn every_recorded_song_matches_its_reference_dump() {
         }
     }
     for song in &show.songs {
-        let prefix = format!("{}.", song.name);
         let is_recorded = recordings.iter().any(|recording| {
-            let file = recording.file_name().unwrap().to_string_lossy();
-            file.starts_with(&prefix)
+            song_of(&recording.file_stem().unwrap().to_string_lossy()) == song.name
         });
         if !is_recorded {
             eprintln!("note: no recording yet for {}", song.name);
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The song a recording named `name` (file name without `.mid`) is of.
+fn song_of(name: &str) -> &str {
+    name.strip_suffix(".synthetic").unwrap_or(name)
+}
+
+#[test]
+fn only_a_trailing_synthetic_marks_a_stand_in() {
+    assert_eq!(song_of("tell-me.synthetic"), "tell-me");
+    assert_eq!(song_of("mr.blue"), "mr.blue");
+    assert_eq!(song_of("mr.blue.synthetic"), "mr.blue");
 }
