@@ -488,6 +488,7 @@ mod tests {
                 name: "verse-blue".into(),
                 intensity: 1.0,
                 released: false,
+                beats: 2.5,
             }],
             master: 0.25,
             live_parameters,
@@ -504,7 +505,7 @@ mod tests {
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
             message["cues"],
-            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false }])
+            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }])
         );
         assert_eq!(message["master"], 0.25);
         assert_eq!(message["live_parameters"][2], 0.5);

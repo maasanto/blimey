@@ -5,13 +5,10 @@
   const DEFAULT_WIDTH = 0.25;
   const DEFAULT_SEED = 7;
 
-  /** A new pixel cue, keeping the name and times already in the cue form. */
-  export function newPixelCue({ name = '', fade_in, release } = {}) {
+  /** What a new pixel cue starts as; the cue form adds its name and times. */
+  export function newPixelCue() {
     return {
-      name,
       type: 'pixel',
-      ...(fade_in ? { fade_in } : {}),
-      ...(release ? { release } : {}),
       shape: 'bar',
       effect: 'static',
       params: { color: DEFAULT_COLOUR, width: DEFAULT_WIDTH },

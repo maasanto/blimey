@@ -113,6 +113,40 @@ dd {
   color: #ff7b7b;
 }
 
+/* The builder's swell and pattern editors. */
+.editor {
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.editor legend {
+  padding: 0 6px;
+  color: var(--muted);
+}
+
+.editor .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.editor .row + .row {
+  margin-top: 8px;
+}
+
+.editor input[type='number'] {
+  width: 5em;
+}
+
+.editor output {
+  display: inline-block;
+  min-width: 3.5em;
+  font: 13px var(--mono);
+}
+
 button {
   padding: 3px 14px;
   color: var(--text);

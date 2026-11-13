@@ -16,6 +16,7 @@ use axum::{Json, Router};
 use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
 use blimey_engine::cue::resolve_look;
+use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look};
 use blimey_engine::pixel::{self, PixelScene};
 use blimey_engine::rig::Rig;
@@ -104,6 +105,15 @@ struct PostedMidi {
     message: Vec<u8>,
 }
 
+/// The most levels `POST /api/envelope` returns: more than any editor is pixels wide.
+const MAX_ENVELOPE_SAMPLES: usize = 1001;
+
+#[derive(Deserialize)]
+struct EnvelopeSampling {
+    curve: Envelope,
+    samples: usize,
+}
+
 /// A request body in the shape `T`, or an `InvalidData` error (a `422`) saying what was expected.
 fn body<T: DeserializeOwned>(content: Value, expected: &str) -> io::Result<T> {
     serde_json::from_value(content).map_err(|error| {
@@ -131,6 +141,7 @@ pub fn routes(api: Api) -> Router {
         .route("/api/preview/pixel", put(set_pixel_preview))
         .route("/api/pixel-thumbnail", post(render_thumbnail))
         .route("/api/midi", post(inject_midi))
+        .route("/api/envelope", post(sample_envelope))
         .route("/api/fixtures/{name}/test", post(test_fixture))
         .with_state(api)
 }
@@ -404,6 +415,31 @@ async fn inject_midi(State(api): State<Api>, content: JsonBody) -> Response {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(_) => error_response(&io::Error::other("the render loop no longer takes MIDI")),
     }
+}
+
+/// A curve's levels as the engine plays them, for the builder to draw. Changes nothing, so it
+/// works in show mode too.
+async fn sample_envelope(content: JsonBody) -> Response {
+    match json_body(content).and_then(envelope_levels) {
+        Ok(levels) => Json(levels).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// `{ "levels": [...] }`: the curve's level at `samples` evenly spaced points from 0 to 1.
+fn envelope_levels(content: Value) -> io::Result<Value> {
+    let expected = format!(
+        "send {{ curve, samples }}: curve as in a song file, samples from 2 to {MAX_ENVELOPE_SAMPLES}"
+    );
+    let sampling: EnvelopeSampling = body(content, &expected)?;
+    if !(2..=MAX_ENVELOPE_SAMPLES).contains(&sampling.samples) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, expected));
+    }
+    let last = (sampling.samples - 1) as f64;
+    let levels: Vec<f64> = (0..sampling.samples)
+        .map(|index| sampling.curve.level(index as f64 / last))
+        .collect();
+    Ok(json!({ "levels": levels }))
 }
 
 fn unprocessable(message: &str) -> Response {
@@ -693,5 +729,50 @@ mod tests {
             [2],
             "a new PUT doesn't restart it"
         );
+    }
+
+    #[test]
+    fn envelope_levels_are_the_engines_own() {
+        let points = json!({ "points": [[0.2, 0.1], [0.6, 1], [1, 0.3]] });
+        for (curve, envelope) in [
+            (json!("ease-in"), Envelope::EaseIn),
+            (json!("sine"), Envelope::Sine),
+            (
+                points,
+                Envelope::Points(vec![(0.2, 0.1), (0.6, 1.0), (1.0, 0.3)]),
+            ),
+        ] {
+            let levels = envelope_levels(json!({ "curve": curve, "samples": 11 })).unwrap();
+
+            let expected: Vec<f64> = (0..=10)
+                .map(|step| envelope.level(f64::from(step) / 10.0))
+                .collect();
+            assert_eq!(levels, json!({ "levels": expected }), "{curve}");
+        }
+    }
+
+    #[test]
+    fn envelope_sampling_refuses_unknown_curves_and_sample_counts_out_of_range() {
+        let refusal = |content: Value| {
+            let error = envelope_levels(content).unwrap_err();
+            (error.kind(), error.to_string())
+        };
+
+        let (kind, message) = refusal(json!({ "curve": "swell-up", "samples": 11 }));
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("a curve: ramp-up, ramp-down"), "{message}");
+        let (_, message) =
+            refusal(json!({ "curve": { "points": [[0.5, 0], [0.5, 1]] }, "samples": 11 }));
+        assert!(message.contains("times must rise"), "{message}");
+        for samples in [1, MAX_ENVELOPE_SAMPLES + 1] {
+            assert_eq!(
+                refusal(json!({ "curve": "sine", "samples": samples })),
+                (
+                    io::ErrorKind::InvalidData,
+                    "send { curve, samples }: curve as in a song file, samples from 2 to 1001"
+                        .into()
+                )
+            );
+        }
     }
 }
