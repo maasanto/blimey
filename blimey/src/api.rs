@@ -216,10 +216,14 @@ async fn delete_cue(State(api): State<Api>, Path((song, note)): Path<(String, u8
     saved(&api, || show_file::delete_cue(&api.show_dir, &song, note))
 }
 
-async fn create_song(State(api): State<Api>, Json(content): Json<Value>) -> Response {
+async fn create_song(State(api): State<Api>, content: JsonBody) -> Response {
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
     match body::<NewSong>(
         content,
         "send { name, program } and optionally bpm, time_signature",
