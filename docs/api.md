@@ -395,6 +395,16 @@ Plays one MIDI message as if it came in from the MIDI port, to audition cues wit
 
 `message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the look preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
+### Curve levels: `POST /api/envelope`
+
+The levels a curve plays, for the builder to draw what the engine will play. The body is a curve as in a song file (a swell's `curve`, a hit's `shape`) and how many levels to return, from 2 to 1001:
+
+```json
+{ "curve": { "points": [[0, 0], [0.5, 1], [1, 0.3]] }, "samples": 5 }
+```
+
+It returns `{ "levels": [0, 0.5, 1, 0.65, 0.3] }`: the level, 0–1, at `samples` evenly spaced points from the start of the curve to its end. A curve the engine would refuse at load is a `422` with the same message. It changes nothing, so it works in show mode too.
+
 ### Fixture test: `POST /api/fixtures/<name>/test`
 
 Lights the fixture full white for one second, above every other layer, on every output (`204`). Edit mode only.
