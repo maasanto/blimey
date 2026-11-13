@@ -252,6 +252,10 @@ impl Playback {
             artnet: show.rig.artnet_frames(),
         };
         look::render(&show.rig, look, &mut output.enttec);
+        // The builder's metronome: an edited `bpm` takes over at once.
+        if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
+            clock.set_song_bpm(at, f64::from(song.bpm.unwrap_or(DEFAULT_BPM)));
+        }
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
             apply_master(&show.rig, self.master, &mut output);
             return output;

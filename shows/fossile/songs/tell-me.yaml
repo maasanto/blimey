@@ -29,7 +29,8 @@ cues:
   39:
     name: chorus-swell
     type: swell
-    target: { all-wash: { dimmer: 100% } }
+    target:
+      all-wash: { dimmer: 100% }
     duration: 4 bars
     curve: ease-in
     release: 500ms
@@ -45,6 +46,6 @@ cues:
     length: 1 bar
     target: { all-wash: dimmer }
     hits:
-      - { at: 1,   shape: ramp-up, length: 0.5 beats, level: 100% }
-      - { at: 2,   shape: sine,    length: 0.5 beats, level: 80% }
+      - { at: 1, shape: ramp-up, length: 0.5 beats, level: 100% }
+      - { at: 2, shape: sine, length: 0.5 beats, level: 80% }
       - { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 100% }

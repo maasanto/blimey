@@ -37,8 +37,6 @@
         "type": { "const": "pixel" },
         "fade_in": { "$ref": "#/$defs/duration" },
         "release": { "$ref": "#/$defs/duration" },
-        "seed": { "description": "Fixes sparkle's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 },
-        "rgbw": { "description": "How RGBW pixels show the colour. Defaults to saturated.", "enum": ["saturated", "white-rich"] },
         "shape": { "$ref": "#/$defs/pixelShape" },
         "effect": { "$ref": "#/$defs/pixelEffect" },
         "params": { "$ref": "#/$defs/pixelParams" },
@@ -51,7 +49,9 @@
             "params": { "$ref": "#/$defs/pixelParams" },
             "blend": { "description": "How layer 2 combines with layer 1. Defaults to max.", "enum": ["max", "add", "mask"] }
           }
-        }
+        },
+        "rgbw": { "description": "How RGBW pixels show the colour. Defaults to saturated.", "enum": ["saturated", "white-rich"] },
+        "seed": { "description": "Fixes sparkle's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 }
       }
     },
     "pixelShape": { "description": "Defaults to bar.", "enum": ["bar", "sweep", "circle", "split", "gradient", "one-by-one"] },
