@@ -21,6 +21,7 @@
   import { engine, request } from './engine.svelte.js';
   import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
+  import PadBank from './PadBank.svelte';
   import PatternGrid from './PatternGrid.svelte';
   import PixelSceneEditor, { newPixelCue } from './PixelSceneEditor.svelte';
   import SwellEditor from './SwellEditor.svelte';
@@ -30,6 +31,7 @@
   const NOTE_OFF = 0x81;
   const PROGRAM_CHANGE = 0xc1;
   const FULL_VELOCITY = 127;
+  const LAST_NOTE = 127;
   const DEFAULT_BPM = 120;
   /** Cue types with a `fade_in` (schema/song.schema.json). */
   const FADE_IN_TYPES = ['scene', 'pixel'];
@@ -171,7 +173,14 @@
     adding = '';
   }
 
-  function edit({ note, cue }) {
+  /** Opens the pad's cue, or on an empty pad a new cue: the one being started, if any. */
+  function openPad(note) {
+    const cue = song.cues?.[note];
+    if (!cue) {
+      if (form.replaces === null) form.note = note;
+      else form = { ...newForm(), note };
+      return;
+    }
     form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: $state.snapshot(cue) };
     if (cue.type === 'scene') {
       look = Object.entries($state.snapshot(cue.values)).map(([target, settings]) => ({ target, settings }));
@@ -210,6 +219,28 @@
     await request('DELETE', `/api/songs/${songName}/cues/${note}`);
     if (form.replaces?.note === note) form = newForm();
     notice = `Deleted cue ${note}. Undo brings it back.`;
+    await reloadAfterSave();
+  }
+
+  /** Copies the saved cue to the first empty pad above it; the engine refuses a taken note. */
+  async function duplicateCue(note) {
+    const free = Array.from({ length: LAST_NOTE - note }, (_, index) => note + 1 + index).find((other) => !song.cues[other]);
+    if (free === undefined) throw new Error(`No empty pad above note ${note}: move or delete a cue there first.`);
+    const original = $state.snapshot(song.cues[note]);
+    await request('PUT', `/api/songs/${songName}/cues/${free}`, { cue: { ...original, name: `${original.name}-copy` }, replaces: null });
+    notice = `Duplicated cue ${note} to ${free}.`;
+    await reloadAfterSave();
+  }
+
+  /** Moves a saved cue to another pad; the engine refuses a taken note. */
+  async function moveCue(from, to) {
+    const cue = $state.snapshot(song.cues[from]);
+    await request('PUT', `/api/songs/${songName}/cues/${to}`, { cue, replaces: { note: from, cue } });
+    if (form.replaces?.note === from) {
+      form.note = to;
+      form.replaces.note = to;
+    }
+    notice = `Moved cue ${from} to ${to}.`;
     await reloadAfterSave();
   }
 
@@ -264,7 +295,13 @@
 
   /** Fires or releases a saved cue through the engine, as Reaper would. */
   async function audition(note) {
-    if (isPlaying(note)) return midi([NOTE_OFF, note, 0]);
+    if (isPlaying(note)) return release(note);
+    await fire(note);
+  }
+
+  const release = (note) => midi([NOTE_OFF, note, 0]);
+
+  async function fire(note) {
     if (engine.frame?.song !== songName) {
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
     }
@@ -336,6 +373,19 @@
 
 <div class="workspace">
   <div>
+    {#if song}
+      <PadBank
+        {songName}
+        cues={song.cues}
+        selected={form.note}
+        {editable}
+        {isPlaying}
+        onopen={openPad}
+        onhold={(note) => attempt(() => fire(note))}
+        onrelease={(note) => attempt(() => release(note))}
+        onmove={(from, to) => attempt(() => moveCue(from, to))}
+      />
+    {/if}
     {#if isPixel}
       <fieldset class="pixel-editor" disabled={!editable || !song}>
         <PixelSceneEditor
@@ -407,9 +457,10 @@
     {/if}
 
     <fieldset class="cue" disabled={!editable || !song}>
-      <legend>{form.replaces === null ? 'New cue' : `Cue ${form.replaces.note}`}</legend>
+      <legend>
+        {#if form.replaces !== null}Cue {form.replaces.note}{:else if form.note !== null}New cue on note {form.note}{:else}New cue{/if}
+      </legend>
       <div class="row">
-        <label>Note <input type="number" min="0" max="127" bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
         {#if form.replaces === null}
           <label>
@@ -441,10 +492,14 @@
         {:else}
           Keeps the rest of this {form.cue.type} cue as it is; the look above is for scenes.
         {/if}
+        {#if form.note === null}Pick an empty pad for it.{/if}
       </p>
       <div class="row">
-        <button disabled={form.note == null || !form.cue.name} onclick={() => attempt(saveCue)}>Save cue</button>
-        <button onclick={() => (form = newForm())}>New cue</button>
+        <button disabled={form.note === null || !form.cue.name} onclick={() => attempt(saveCue)}>Save cue</button>
+        {#if form.replaces !== null}
+          <button onclick={() => attempt(() => duplicateCue(form.replaces.note))}>Duplicate</button>
+          <button onclick={() => attempt(() => deleteCue(form.replaces.note))}>Delete</button>
+        {/if}
       </div>
     </fieldset>
   </div>
@@ -471,35 +526,6 @@
     {/if}
   {/key}
 </fieldset>
-
-{#if song}
-  <h2>Cues in {songName}</h2>
-  <table>
-    <thead>
-      <tr><th>Note</th><th>Name</th><th>Type</th><th>Fade in</th><th>Release</th><th></th></tr>
-    </thead>
-    <tbody>
-      {#each cues as { note, cue } (note)}
-        <tr data-note={note} aria-current={form.replaces?.note === note || undefined}>
-          <td>{note}</td>
-          <td>{cue.name}</td>
-          <td>{cue.type}</td>
-          <td>{cue.fade_in ?? '—'}</td>
-          <td>{cue.release ?? '—'}</td>
-          <td class="actions">
-            <button disabled={!editable} onclick={() => edit({ note, cue })}>Edit</button>
-            <button disabled={!editable} onclick={() => attempt(() => audition(note))}>
-              {isPlaying(note) ? 'Release' : 'Audition'}
-            </button>
-            <button disabled={!editable} onclick={() => attempt(() => deleteCue(note))}>Delete</button>
-          </td>
-        </tr>
-      {:else}
-        <tr><td colspan="6" class="hint">No cues yet.</td></tr>
-      {/each}
-    </tbody>
-  </table>
-{/if}
 
 <style>
   fieldset {
@@ -632,27 +658,5 @@
 
   .notice {
     color: var(--accent);
-  }
-
-  table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-
-  th,
-  td {
-    padding: 6px 10px;
-    text-align: left;
-    border-bottom: 1px solid var(--line);
-  }
-
-  tr[aria-current] {
-    background: #1f2128;
-  }
-
-  .actions {
-    display: flex;
-    gap: 6px;
-    justify-content: flex-end;
   }
 </style>
