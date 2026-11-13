@@ -29,10 +29,10 @@ test('C7 builder', async ({ page, startEngine }) => {
   await expect(page.getByRole('alert')).toContainText('note 36 already fires cue');
   await shoot(page, 'duplicate-note');
 
-  await page.getByLabel('Note').fill('40');
+  await page.getByLabel('Note').fill('41');
   await page.getByRole('button', { name: 'Save cue' }).click();
-  await page.locator('tr[data-note="40"]').getByRole('button', { name: 'Audition' }).click();
-  await expect(page.locator('tr[data-note="40"]').getByRole('button', { name: 'Release' })).toBeVisible();
+  await page.locator('tr[data-note="41"]').getByRole('button', { name: 'Audition' }).click();
+  await expect(page.locator('tr[data-note="41"]').getByRole('button', { name: 'Release' })).toBeVisible();
   await shoot(page, 'saved-and-auditioning');
 });
 

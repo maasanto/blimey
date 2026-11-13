@@ -92,6 +92,42 @@ test('a cue on a note already in use is refused', async ({ page, show, startEngi
   expect(readFileSync(songFile, 'utf8')).toBe(before);
 });
 
+test('editing a pixel cue in the form keeps the fields the form does not show', async ({ page, show, startEngine }) => {
+  const pixelCue = (head) =>
+    `  40:\n${head}    effect: chase\n` +
+    '    params: { color: deep-blue, width: 0.2, speed: 1 bar, direction: left-to-right }\n' +
+    '    layer_2: { shape: sweep, blend: add }\n    seed: 7\n';
+  const songFile = addSong(show, HEADER + BLACKOUT + pixelCue('    name: bridge-chase\n    type: pixel\n'));
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await page.locator('tr[data-note="40"]').getByRole('button', { name: 'Edit' }).click();
+  await page.getByLabel('Name').fill('bridge-sweep');
+  await page.getByLabel('Fade in').fill('1 beat');
+  await page.getByLabel('Release').fill('2s');
+  await page.getByRole('button', { name: 'Save cue' }).click();
+
+  await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toBe(
+    HEADER + BLACKOUT + pixelCue('    name: bridge-sweep\n    type: pixel\n    fade_in: 1 beat\n    release: 2s\n'),
+  );
+});
+
+test('the look preview draws above a playing pixel cue', async ({ page, show, startEngine }) => {
+  addSong(show, `${HEADER}  40:\n    name: all-blue\n    type: pixel\n    params: { color: deep-blue }\n`);
+  const { url, address } = await startEngine();
+  for (const message of [[0xc1, 1], [0x91, 40, 127]]) {
+    expect((await page.request.post(`${url}api/midi`, { data: { message } })).status()).toBe(204);
+  }
+  await expect.poll(async () => (await nextDmx(address)).slice(16, 20), 'wash-2 lit by the pixel cue').not.toEqual([0, 0, 0, 0]);
+  const pixelCue = (await nextDmx(address)).slice(16, 20);
+
+  await page.request.put(`${url}api/preview`, { data: { 'wash-1': { color: '#00ff00' } } });
+
+  await expect.poll(async () => (await nextDmx(address)).slice(0, 4), 'wash-1 shows the preview').toEqual([0, 255, 0, 0]);
+  expect((await nextDmx(address)).slice(16, 20), 'wash-2 keeps the pixel cue').toEqual(pixelCue);
+});
+
 test('the metronome tempo is saved to the song', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);
   const { url } = await startEngine();

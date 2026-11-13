@@ -604,7 +604,7 @@ mod tests {
         save_cue(&show, "tell-me", 48, from_38, blackout).unwrap();
         let cues = read(&show, TELL_ME).unwrap()["cues"].clone();
         let notes: Vec<&String> = cues.as_object().unwrap().keys().collect();
-        assert_eq!(notes, ["36", "37", "39", "42", "48"]);
+        assert_eq!(notes, ["36", "37", "39", "40", "42", "48"]);
         assert_eq!(cues["48"]["name"], "blackout");
 
         delete_cue(&show, "tell-me", 48).unwrap();
@@ -656,6 +656,41 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "songs/tell-me.yaml: program 3 already selects song \"other\""
+        );
+    }
+
+    #[test]
+    fn a_two_layer_pixel_cue_round_trips_byte_for_byte() {
+        let show = fossile_copy("pixel-round-trip");
+        let song = "program: 9\n\
+                    cues:\n  \
+                      41:\n    \
+                        name: split-sparkle\n    \
+                        type: pixel\n    \
+                        fade_in: 1 beat\n    \
+                        release: 2s\n    \
+                        shape: split\n    \
+                        effect: move\n    \
+                        params: { color: amber, background: \"#102030\", width: 0.5, speed: 2 bars, direction: right-to-left, phase: 0.25 }\n    \
+                        layer_2:\n      \
+                          shape: one-by-one\n      \
+                          effect: sparkle\n      \
+                          params: { color: white, width: 0.1 }\n      \
+                          blend: add\n    \
+                        rgbw: white-rich\n    \
+                        seed: 7\n";
+        fs::write(show.join("songs/pixel.yaml"), song).unwrap();
+
+        write(
+            &show,
+            "songs/pixel.yaml",
+            read(&show, "songs/pixel.yaml").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(show.join("songs/pixel.yaml")).unwrap(),
+            song
         );
     }
 

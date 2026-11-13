@@ -27,6 +27,8 @@
   const PROGRAM_CHANGE = 0xc1;
   const FULL_VELOCITY = 127;
   const DEFAULT_BPM = 120;
+  /** Cue types with a `fade_in` (schema/song.schema.json). */
+  const FADE_IN_TYPES = ['scene', 'pixel'];
   /** Well inside the engine's 5 s preview lifetime (docs/api.md), so the look never flickers off. */
   const PREVIEW_REFRESH_MS = 2000;
 
@@ -261,7 +263,7 @@
         <span>Type: {form.cue.type}</span>
       </div>
       <div class="row">
-        {#if form.cue.type === 'scene'}
+        {#if FADE_IN_TYPES.includes(form.cue.type)}
           <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" /></label>
         {/if}
         <label>Release <input bind:value={form.cue.release} placeholder="0s" /></label>
@@ -270,7 +272,7 @@
         {#if form.cue.type === 'scene'}
           Saves the look above as this scene. Times take ms, s, beats or bars.
         {:else}
-          Keeps this {form.cue.type}'s target and timing; the look above is for scenes.
+          Keeps the rest of this {form.cue.type} cue as it is; the look above is for scenes.
         {/if}
       </p>
       <div class="row">
