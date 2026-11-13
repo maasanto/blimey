@@ -26,6 +26,12 @@ cues:
     target: { dimmer-par: { color: white } }
     duration: 4 bars
     release: 1 beat
+  40:
+    name: both-brighten
+    type: swell
+    target: { both: { dimmer: 100% } }
+    duration: 1 bar
+    release: 500ms
   42:
     name: verse-pulse
     type: pattern
