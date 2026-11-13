@@ -29,12 +29,17 @@ pub struct Show {
 
 impl Show {
     pub fn load(dir: &Path) -> io::Result<Self> {
-        Self::load_with_song(dir, None)
+        Self::load_as_written(dir, None, None)
     }
 
-    /// The show as it would load with `songs/<name>.yaml` holding `yaml`, given as
-    /// `(name, yaml)`, whatever the file holds now or whether it exists.
-    pub(crate) fn load_with_song(dir: &Path, song: Option<(&str, &str)>) -> io::Result<Self> {
+    /// The show as it would load after a write: with `rig` instead of `rig.yaml`, and with
+    /// `songs/<name>.yaml` holding `yaml`, given as `(name, yaml)`, whatever the files hold now
+    /// or whether they exist.
+    pub(crate) fn load_as_written(
+        dir: &Path,
+        rig: Option<Rig>,
+        song: Option<(&str, &str)>,
+    ) -> io::Result<Self> {
         if !dir.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -44,13 +49,17 @@ impl Show {
                 ),
             ));
         }
+        let rig = match rig {
+            Some(rig) => rig,
+            None => load_optional(&dir.join(RIG_FILE), |yaml| {
+                Rig::parse(yaml, &dir.join(PROFILES_DIR))
+            })?,
+        };
         let mut show = Self {
             legacy: load_optional(&dir.join(LEGACY_MAP_FILE), |yaml| {
                 LegacyMap::parse(yaml).map_err(|error| error.to_string())
             })?,
-            rig: load_optional(&dir.join(RIG_FILE), |yaml| {
-                Rig::parse(yaml, &dir.join(PROFILES_DIR))
-            })?,
+            rig,
             palettes: load_optional(&dir.join(PALETTES_FILE), parse_palettes)?,
             songs: Vec::new(),
         };

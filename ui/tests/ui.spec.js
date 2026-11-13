@@ -83,6 +83,45 @@ test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine
   expect(raised.y, 'wash-2 (y 0.5) is drawn above wash-1 (y 0.2)').toBeLessThan(below.y - 0.25 * stage.height);
 });
 
+test('a drag that saves nothing leaves fixtures draggable', async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+  await page.goto(`${url}#front`);
+  const stage = await page.getByRole('img', { name: 'Front view' }).locator('rect.stage').boundingBox();
+  // wash-4 is the rightmost fixture: at the edge no other fixture's pixels sit over it.
+  const pixel = page.locator('[data-fixture="wash-4"] circle').first();
+  const dragRight = async (fraction) => {
+    const from = centre(await pixel.boundingBox());
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + fraction * stage.width, from.y, { steps: 5 });
+    await page.mouse.up();
+  };
+  /** wash-4's saved x, as the engine reads rig.yaml back. */
+  const wash4X = async () => {
+    const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
+    return rig.fixtures.find((fixture) => fixture.name === 'wash-4').canvas.x;
+  };
+
+  // Against the right edge: x is 1 - width.
+  await dragRight(0.9);
+  await expect.poll(wash4X).toBe(0.875);
+  await expect.poll(async () => Number(await pixel.getAttribute('cx'))).toBeCloseTo((0.875 + 0.125 / 8) * 1600, 1);
+  // Further right clamps back to the same x, so nothing is saved.
+  await dragRight(0.05);
+  await dragRight(-0.1);
+
+  await expect.poll(wash4X).toBe(0.775);
+});
+
+test('a body that is not JSON gets a JSON error', async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+
+  const response = await page.request.put(`${url}api/show/rig.yaml`, { data: 'not json' });
+
+  expect(response.status()).toBe(422);
+  expect((await response.json()).error).toBeTruthy();
+});
+
 test('the page reconnects after an engine restart', async ({ page, startEngine }) => {
   const first = await startEngine();
   await page.goto(`${first.url}#monitor`);
@@ -121,5 +160,9 @@ test('show mode locks positions and fixture tests', async ({ page, show, startEn
   const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
   const refused = await page.request.put(`${url}api/show/rig.yaml`, { data: rig });
   expect(refused.status()).toBe(403);
+  for (const [method, endpoint] of [['put', 'show/rig.yaml'], ['put', 'preview'], ['post', 'midi']]) {
+    const malformed = await page.request[method](`${url}api/${endpoint}`, { data: 'not json' });
+    expect(malformed.status(), `${endpoint}: show mode refuses before reading the body`).toBe(403);
+  }
   expect(readFileSync(path.join(show, 'rig.yaml'), 'utf8')).toBe(before);
 });

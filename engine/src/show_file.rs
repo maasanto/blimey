@@ -74,7 +74,8 @@ impl Writable<'_> {
             Writable::Rig => {
                 let in_rig = |error: String| format!("{RIG_FILE}: {error}");
                 let yaml = rig::canonical_yaml(content).map_err(in_rig)?;
-                Rig::parse(&yaml, &show_dir.join(PROFILES_DIR)).map_err(in_rig)?;
+                let rig = Rig::parse(&yaml, &show_dir.join(PROFILES_DIR)).map_err(in_rig)?;
+                load_as_written(show_dir, Some(rig), None)?;
                 Ok(yaml)
             }
             Writable::Song(name) => canonical_song(show_dir, name, content),
@@ -82,16 +83,26 @@ impl Writable<'_> {
     }
 }
 
-/// Loads the show as it would be with this song written, the same checks as at load. Judging
-/// the show after the write lets a broken song on disk be fixed through it.
 fn canonical_song(show_dir: &Path, name: &str, content: Value) -> Result<String, String> {
     let schema: Value = serde_json::from_str(SONG_SCHEMA).expect("schema/ files are JSON");
     let yaml = to_yaml(&song_in_schema_order(content, &schema));
-    Show::load_with_song(show_dir, Some((name, &yaml))).map_err(|error| {
-        let show_folder = show_dir.join("").display().to_string();
-        error.to_string().replace(&show_folder, "")
-    })?;
+    load_as_written(show_dir, None, Some((name, &yaml)))?;
     Ok(yaml)
+}
+
+/// Loads the show as it would be after the write, the same checks as at load: a rig the songs
+/// no longer load against is refused, and a broken song on disk can be fixed through a write.
+fn load_as_written(
+    show_dir: &Path,
+    rig: Option<Rig>,
+    song: Option<(&str, &str)>,
+) -> Result<(), String> {
+    Show::load_as_written(show_dir, rig, song)
+        .map(drop)
+        .map_err(|error| {
+            let show_folder = show_dir.join("").display().to_string();
+            error.to_string().replace(&show_folder, "")
+        })
 }
 
 /// Case-insensitive file systems, such as macOS's, would write `Tell-Me.yaml` over `tell-me.yaml`.
@@ -848,6 +859,43 @@ mod tests {
         assert!(error.to_string().contains("overlap"), "{error}");
 
         assert_eq!(fs::read_to_string(show.join(RIG_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_rig_the_songs_no_longer_load_against_is_refused() {
+        let show = fossile_copy("songs");
+        let before = fs::read_to_string(show.join(RIG_FILE)).unwrap();
+        let mut content = read(&show, RIG_FILE).unwrap();
+        content["groups"]
+            .as_object_mut()
+            .unwrap()
+            .remove("outer-wash");
+
+        let error = write(&show, RIG_FILE, content).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .starts_with("songs/tell-me.yaml: line 15: cue 37"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(show.join(RIG_FILE)).unwrap(), before);
+        assert!(Show::load(&show).is_ok(), "the show still starts");
+    }
+
+    #[test]
+    fn an_unreadable_file_is_reported_rather_than_losing_its_header() {
+        let show = fossile_copy("unreadable");
+        let content = read(&show, RIG_FILE).unwrap();
+        let mut before = b"# Notes \xff on the rig\n".to_vec();
+        before.extend(fs::read(show.join(RIG_FILE)).unwrap());
+        fs::write(show.join(RIG_FILE), &before).unwrap();
+
+        let error = write(&show, RIG_FILE, content).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(show.join(RIG_FILE)).unwrap(), before);
     }
 
     #[test]

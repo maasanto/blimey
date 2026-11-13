@@ -69,6 +69,20 @@ fn an_unknown_target_names_itself() {
     );
 }
 
+#[test]
+fn a_target_without_settings_is_refused() {
+    let output = fire(
+        "four-washes",
+        &["--set", "wash-1", "wash-2", "color=deep-blue"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "error: --set wash-1: give at least one key=value, e.g. --set wash-1 color=red\n"
+    );
+}
+
 /// Kills the streaming engine when the test ends, pass or fail.
 struct Running(Child);
 

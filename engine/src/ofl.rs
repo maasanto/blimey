@@ -133,13 +133,17 @@ impl OflFixture {
         let is_fine_alias = self
             .available_channels
             .values()
-            .chain(self.template_channels.values())
-            .any(|channel| {
-                channel
-                    .fine_channel_aliases
-                    .iter()
-                    .any(|alias| alias == name)
-            });
+            .flat_map(|channel| &channel.fine_channel_aliases)
+            .any(|alias| alias == name)
+            || self
+                .template_channels
+                .values()
+                .flat_map(|channel| &channel.fine_channel_aliases)
+                .any(|alias| {
+                    pixel_keys
+                        .iter()
+                        .any(|key| alias.replace("$pixelKey", key) == name)
+                });
         if is_fine_alias {
             // ponytail: 16-bit channels drive only their coarse byte; the fine byte stays at 0.
             return Ok(Channel {
@@ -327,6 +331,38 @@ mod tests {
                 ("Red B", Attribute::Red, 2),
                 ("Green A", Attribute::Green, 1),
                 ("Green B", Attribute::Green, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_the_fine_channel_of_a_template_channel() {
+        let json = r##"{
+            "name": "Bar",
+            "templateChannels": {
+                "Red $pixelKey": {
+                    "fineChannelAliases": ["Red $pixelKey fine"],
+                    "capability": { "type": "ColorIntensity", "color": "Red" }
+                }
+            },
+            "matrix": { "pixelKeys": [[["A", "B"]]] },
+            "modes": [{ "name": "16bit", "channels": ["Red A", "Red A fine", "Red B", "Red B fine"] }]
+        }"##;
+
+        let profile = import_ofl(json).unwrap();
+
+        let channels: Vec<_> = profile.modes[0]
+            .channels
+            .iter()
+            .map(|c| (c.name.as_str(), c.attribute))
+            .collect();
+        assert_eq!(
+            channels,
+            [
+                ("Red A", Some(Attribute::Red)),
+                ("Red A fine", None),
+                ("Red B", Some(Attribute::Red)),
+                ("Red B fine", None),
             ]
         );
     }

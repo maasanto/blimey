@@ -56,8 +56,8 @@ impl Song {
         if file.program > MIDI_DATA_MAX {
             return Err(located("program", "program must be 0-127".into()));
         }
-        if file.bpm.is_some_and(|bpm| bpm <= 0.0) {
-            return Err(located("bpm", "bpm must be above 0".into()));
+        if file.bpm.is_some_and(|bpm| !(bpm > 0.0 && bpm.is_finite())) {
+            return Err(located("bpm", "bpm must be a number above 0".into()));
         }
         let time_signature = file
             .time_signature
@@ -107,10 +107,6 @@ pub(crate) fn load_songs(
     let mut paths: Vec<PathBuf> = match fs::read_dir(dir) {
         Ok(entries) => entries
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "yaml")
-            })
             .collect(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(error) => {
@@ -120,6 +116,17 @@ pub(crate) fn load_songs(
             ));
         }
     };
+    // A song saved as .yml would otherwise vanish, and its Program Change select nothing.
+    if let Some(yml) = paths
+        .iter()
+        .find(|path| path.extension() == Some("yml".as_ref()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: rename it to .yaml to load it as a song", yml.display()),
+        ));
+    }
+    paths.retain(|path| path.extension() == Some("yaml".as_ref()));
     if let Some((name, _)) = replaced {
         let path = dir.join(format!("{name}.yaml"));
         if !paths.contains(&path) {
@@ -313,6 +320,13 @@ mod tests {
     #[test]
     fn rejects_numbers_outside_midi() {
         assert_eq!(error("program: 128\n"), "line 1: program must be 0-127");
+        for bpm in ["0", ".nan", ".inf"] {
+            assert_eq!(
+                error(&format!("program: 3\nbpm: {bpm}\n")),
+                "line 2: bpm must be a number above 0",
+                "bpm: {bpm}"
+            );
+        }
         assert_eq!(
             error("program: 3\ncues:\n  128: { name: x, type: scene, values: {} }\n"),
             "line 3: cue 128: cue numbers are note numbers, 0-127"
@@ -331,6 +345,22 @@ mod tests {
 
         assert!(
             message.ends_with("b.yaml: program 3 already selects song \"a\""),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_song_saved_as_yml_is_reported_not_skipped() {
+        let dir = std::env::temp_dir().join(format!("blimey-yml-song-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.yaml"), "program: 3\n").unwrap();
+        fs::write(dir.join("intro.yml"), "program: 4\n").unwrap();
+        fs::write(dir.join(".DS_Store"), "").unwrap();
+
+        let message = load_songs(&dir, &show(), None).unwrap_err().to_string();
+
+        assert!(
+            message.ends_with("intro.yml: rename it to .yaml to load it as a song"),
             "{message}"
         );
     }

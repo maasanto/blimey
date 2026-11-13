@@ -561,6 +561,12 @@ fn fire(
     // clap merges every --set into one list; each value without `=` starts a new target.
     for set in set_values.chunk_by(|_, value| value.contains('=')) {
         let (target, pairs) = set.split_first().expect("chunks are never empty");
+        if pairs.is_empty() {
+            return Err(format!(
+                "--set {target}: give at least one key=value, e.g. --set {target} color=red"
+            )
+            .into());
+        }
         let settings =
             LookSettings::from_pairs(pairs).map_err(|error| format!("--set {target}: {error}"))?;
         look.set(&show, target, &settings)
