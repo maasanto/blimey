@@ -570,14 +570,15 @@ impl Layer {
         }
     }
 
+    /// Whether the area holds the canvas position (`x`, `y`). Its far edges are open, so a
+    /// position on an edge two areas share is in one of them only, unless the edge is the
+    /// canvas's own.
     fn catches(&self, x: f32, y: f32) -> bool {
-        let Canvas {
-            x: left,
-            y: bottom,
-            width,
-            height,
-        } = self.area;
-        (left..=left + width).contains(&x) && (bottom..=bottom + height).contains(&y)
+        let within = |position: f32, start: f32, length: f32| {
+            let end = start + length;
+            position >= start && (position < end || (end >= 1.0 && position <= end))
+        };
+        within(x, self.area.x, self.area.width) && within(y, self.area.y, self.area.height)
     }
 
     /// A canvas position in the area's own 0–1 space.

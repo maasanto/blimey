@@ -588,6 +588,27 @@ fn a_shape_in_an_area_matches_it_on_the_whole_canvas_of_a_rig_squeezed_into_the_
     }
 }
 
+/// A pixel on the edge two areas share belongs to the one it starts, and one on the canvas's
+/// right edge to the area that ends there.
+#[test]
+fn a_pixel_on_a_shared_edge_belongs_to_one_area() {
+    // RGB pixels at x 1/6, 0.5 and 5/6, then one at x 1.
+    let rig = "fixtures:\n  - { name: row, type: pixel-grid, columns: 3, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n  - { name: edge, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, address: 10, canvas: { x: 1, y: 0.5 } }\n";
+    let show = Show {
+        rig: Rig::parse(rig, Path::new(".")).unwrap(),
+        ..Show::default()
+    };
+    let cues = "  60:\n    name: halves\n    type: pixel\n    layers:\n      - { area: { x: 0, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#ff0000\" } }\n      - { area: { x: 0.5, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#0000ff\" } }\n";
+
+    let frame = &render_show(show, cues, &[(Duration::ZERO, vec![0x91, 60, 127])], 1)[0];
+
+    assert_eq!(
+        frame.values[0..12],
+        [255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 255],
+        "red, then blue from the middle to the canvas's edge"
+    );
+}
+
 /// A muted fixture, or the fixtures of a muted group, show the layers below.
 #[test]
 fn a_layer_leaves_the_fixtures_and_groups_it_mutes_to_the_layers_below() {
