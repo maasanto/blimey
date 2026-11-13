@@ -76,6 +76,19 @@ test('a look built in the builder plays the same from note 36 after a restart', 
   await expect.poll(() => nextDmx(second.address)).toEqual(built);
 });
 
+test('a look entry without a colour shows it keeps the colour from below', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await page.locator('tr[data-note="38"]').getByRole('button', { name: 'Edit' }).click();
+  const allWash = page.locator('[data-target="all-wash"]');
+  await expect(allWash.getByText('colour from below')).toBeVisible();
+
+  await allWash.getByRole('button', { name: 'deep-blue' }).click();
+  await expect(allWash.getByText('colour from below')).toHaveCount(0);
+});
+
 test('a cue on a note already in use is refused', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);
   const before = readFileSync(songFile, 'utf8');

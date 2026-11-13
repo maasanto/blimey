@@ -169,6 +169,31 @@ fn without_a_clock_a_swell_runs_at_the_song_bpm() {
     assert_within_one_frame(dark, 21.0 * BEAT_AT_92 + half_second_beats, "dark");
 }
 
+/// At the song's 120 BPM, 0: program 1; note 38 (both-green-half). 500: note 40 (both-brighten:
+/// `{ both: { dimmer: 100% } }` over 1 bar, 500 ms release). 3000: note-off 40. 4000: note-off 38.
+#[test]
+fn a_dimmer_only_swell_brightens_the_scene_below_and_keeps_its_colour() {
+    let frames = replay_against_reference("dimmer-swell");
+    let green_half = [128, 0, 255, 0, 0, 128, 0];
+
+    assert_eq!(channels(&frames, 500, 1, 7), green_half);
+    assert_eq!(
+        channels(&frames, 1500, 1, 7),
+        [192, 0, 255, 0, 0, 192, 0],
+        "halfway, alike: dimmer-par's dimmer channel and rgb-par's virtual dimmer"
+    );
+    assert_eq!(
+        channels(&frames, 2500, 1, 7),
+        [255, 0, 255, 0, 0, 255, 0],
+        "full green on both"
+    );
+    assert_eq!(
+        channels(&frames, 3500, 1, 7),
+        green_half,
+        "released back to the scene"
+    );
+}
+
 /// 0: program 1; note 38 (both-green-half); legacy note 70 (vel 100).
 /// 300: CC 7 = 64. 600: CC 7 = 0. 900: CC 7 = 127. 1000: CC 20 = 100 (a live parameter).
 #[test]

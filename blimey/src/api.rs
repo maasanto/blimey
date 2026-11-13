@@ -17,7 +17,7 @@ use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
 use blimey_engine::cue::resolve_look;
 use blimey_engine::envelope::Envelope;
-use blimey_engine::look::{self, FixtureLook, Look};
+use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::pixel::{self, PixelScene};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
@@ -463,11 +463,11 @@ async fn test_fixture(State(api): State<Api>, Path(name): Path<String>) -> Respo
         ));
     }
     let white = FixtureLook {
-        color: Rgb {
+        color: Some(Rgb {
             red: 1.0,
             green: 1.0,
             blue: 1.0,
-        },
+        }),
         ..FixtureLook::default()
     };
     api.test_flash.show(Overlay::Look(Look {
@@ -562,7 +562,11 @@ impl TimedLook {
             return;
         }
         match &active.overlay {
-            Overlay::Look(look) => look::render(rig, look, &mut out.enttec),
+            // Above the master, on the frame as output: the colour below is that frame's DMX.
+            Overlay::Look(look) => {
+                let mut below = VirtualDimmers::of(&out.enttec);
+                look::render(rig, look, &mut out.enttec, &mut below);
+            }
             Overlay::Pixel { scene, clock } => {
                 let started = clock.moment(*active.started.get_or_insert(at));
                 scene.draw(rig, clock, started, at, 1.0, out);

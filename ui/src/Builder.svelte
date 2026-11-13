@@ -352,7 +352,10 @@
       <legend>Look</legend>
       {#each look as entry, index (entry.target)}
         <div class="entry" data-target={entry.target}>
-          <span class="target">{entry.target}</span>
+          <span class="target">
+            {entry.target}
+            {#if !entry.settings.color}<small class="hint">colour from below</small>{/if}
+          </span>
           <div class="swatches">
             {#each Object.entries(summary?.palettes ?? {}) as [name, colour] (name)}
               <button
@@ -565,6 +568,11 @@
 
   .target {
     font-weight: 600;
+  }
+
+  .target small {
+    display: block;
+    font-weight: normal;
   }
 
   .swatches {

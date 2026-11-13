@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::clock_follower::{ClockFollower, Moment};
 use crate::cue::Cue;
 use crate::fixture::Attribute;
-use crate::look::{self, Look};
+use crate::look::{self, Look, VirtualDimmers};
 use crate::rig::Rig;
 use crate::song::Song;
 use crate::{ArtNetFrames, DMX_CHANNELS, Frame, MidiEvent, Show, Universe, Universes};
@@ -251,7 +251,9 @@ impl Playback {
             enttec: self.legacy,
             artnet: show.rig.artnet_frames(),
         };
-        look::render(&show.rig, look, &mut output.enttec);
+        // Legacy notes are raw DMX: colour at full, at intensity 1.
+        let mut dimmers = VirtualDimmers::of(&output.enttec);
+        look::render(&show.rig, look, &mut output.enttec, &mut dimmers);
         // The builder's metronome: an edited `bpm` takes over at once.
         if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
             clock.set_song_bpm(at, song.tempo());
@@ -261,7 +263,7 @@ impl Playback {
             return output;
         };
         if self.safe_look {
-            look::render(&show.rig, &song.safe_look, &mut output.enttec);
+            look::render(&show.rig, &song.safe_look, &mut output.enttec, &mut dimmers);
         }
         let faded_out =
             |cue: &Cue, release: &Release| clock.progress(cue.release(), release.at, at) as f32;
@@ -302,7 +304,17 @@ impl Playback {
                     _ => ArtNetFrames::new(),
                 },
             };
-            cue.draw(&show.rig, clock, active.started, at, intensity, &mut lit);
+            let mut lit_dimmers = dimmers.clone();
+            cue.draw(
+                &show.rig,
+                clock,
+                active.started,
+                at,
+                intensity,
+                &mut lit,
+                &mut lit_dimmers,
+            );
+            dimmers.crossfade(&lit_dimmers, opacity);
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
             crossfade(&mut output.enttec, &lit.enttec, opacity);

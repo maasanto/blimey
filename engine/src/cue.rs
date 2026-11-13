@@ -11,7 +11,7 @@ use serde_yaml_ng::Mapping;
 use crate::clock_follower::{ClockFollower, Moment};
 use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
-use crate::look::{self, Look, LookSettings};
+use crate::look::{self, Look, LookSettings, VirtualDimmers};
 use crate::pattern::{Pattern, PatternEntry, PatternTarget};
 use crate::pixel::{PixelEntry, PixelScene};
 use crate::rig::Rig;
@@ -252,9 +252,10 @@ impl Cue {
         }
     }
 
-    /// Draws the cue at full opacity over `out`, as it is at `at` after it started at
-    /// `started`, its dimmers scaled by `intensity` (0–1). A pattern's dimmer target is its
-    /// fixtures as below, darkened by `intensity`.
+    /// Draws the cue at full opacity over `out` and the layers' virtual `dimmers`, as it is at
+    /// `at` after it started at `started`, its dimmers scaled by `intensity` (0–1). A pattern's
+    /// dimmer target is its fixtures as below, darkened by `intensity`.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         rig: &Rig,
@@ -263,9 +264,11 @@ impl Cue {
         at: Duration,
         intensity: f32,
         out: &mut Universes,
+        dimmers: &mut VirtualDimmers,
     ) {
         let frame = &mut out.enttec;
         let mut look = match self {
+            // Pixel cues draw above every other cue, so no look reads virtual dimmers after them.
             Cue::Pixel(scene) => return scene.draw(rig, clock, started, at, intensity, out),
             Cue::Scene(scene) => scene.look.clone(),
             Cue::Swell(swell) => match &swell.target {
@@ -275,7 +278,7 @@ impl Cue {
             Cue::Pattern(pattern) => match &pattern.target {
                 PatternTarget::Look(look) => look.clone(),
                 PatternTarget::Dimmer(fixtures) => {
-                    look::scale_intensity(rig, fixtures, 1.0 - intensity, frame);
+                    look::scale_intensity(rig, fixtures, 1.0 - intensity, frame, dimmers);
                     return;
                 }
                 PatternTarget::Intensity(_) => return,
@@ -284,6 +287,6 @@ impl Cue {
         for fixture in look.fixtures.values_mut() {
             fixture.dimmer *= intensity;
         }
-        look::render(rig, &look, frame);
+        look::render(rig, &look, frame, dimmers);
     }
 }

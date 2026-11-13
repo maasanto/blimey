@@ -236,11 +236,18 @@ A look sets colour, dimmer and RGBW mode per fixture, by fixture or group name. 
 
 | Key | Value | Unset means |
 | --- | --- | --- |
-| `color` | Palette name, or `#rrggbb` | Black for a fixture not yet set; otherwise unchanged |
+| `color` | Palette name, or `#rrggbb` | The colour from the layers below, for a fixture not yet set; otherwise unchanged |
 | `dimmer` | Percentage, `0%`–`100%` | 100% for a fixture not yet set; otherwise unchanged |
 | `rgbw` | `saturated` (white off) or `white-rich` (the part common to R, G and B goes to white) | `saturated` |
 
-The look renders above the legacy layer (plan §5): every channel of a fixture in the look comes from the look, with channels it doesn't drive at their profile default. Fixtures the look doesn't mention keep the legacy values. A fixture with a dimmer channel gets the look's dimmer there; a fixture without one, like the Wild Wash in 16ch, has its colour channels scaled by it.
+The look renders above the layers below it (plan §5). Fixtures it doesn't mention keep their values from below.
+
+Every fixture has a colour and an intensity. A fixture with a dimmer channel shows the intensity there and the colour on its colour channels; a fixture without one, like the Wild Wash in 16ch, has a **virtual dimmer**: its colour channels show the colour scaled by the intensity, and the engine keeps the colour at full beside them. So a dimmer means the same on both kinds of fixture.
+
+- A fixture given a colour takes every channel from the look, with channels the look doesn't drive at their profile default: the colour as written, at the look's dimmer. A colour at 100% shows exactly as written, a dim palette colour included.
+- A fixture given only a dimmer keeps everything below but its intensity: the colour from below, at full, at the look's dimmer. `deep-blue` at 60% under `{ dimmer: 100% }` becomes `deep-blue` at full, on a dimmer channel or a virtual one. A `{ dimmer: 0% }` blackout keeps that colour, so a dimmer-only swell after it brings the scene back up. With nothing below, there is no colour to light and the fixture stays dark. Legacy notes and other raw DMX below count as a colour at full, at intensity 100%. The colour below is already converted, so `rgbw` without a `color` (from this entry or an earlier one of the same look) is refused: `all-wash: rgbw needs a color for "wash-1": …`.
+
+This applies wherever looks are used: scene `values`, swell `target`, a pattern's look target, the `safe_look` and `fire --set`. A scene or swell fades from the layers below toward that look, so `chorus-swell`'s `{ all-wash: { dimmer: 100% } }` brings the scene under it to full. Velocity scales the look's dimmer, as for any look. The builder's previews are the exception: see [Look preview](#look-preview-put-and-delete-apipreview).
 
 ## CLI
 
@@ -403,6 +410,8 @@ If the file has changed since the save or undo (by hand, say), the step is refus
 ### Look preview: `PUT` and `DELETE /api/preview`
 
 `PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. Nothing is saved.
+
+Both previews, this one and the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel), draw on the frame as output, after the master. A pixel scene sets its own colours, so it shows as it will play. A look entry with only a `dimmer` reads the colour below from that frame's DMX, at intensity 100%, instead of from the virtual dimmers playback keeps: on a fixture without a dimmer channel it can dim what is shown but not bring a dimmed colour back to full, as the same look does when it plays as a cue.
 
 It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves no look on stage. `DELETE`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
 
