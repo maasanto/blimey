@@ -7,6 +7,8 @@ publish.workspace = true
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
+# Already in the tree: reads the soak's RSS from the kernel.
+libc = "0.2"
 midir = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

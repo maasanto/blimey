@@ -7,9 +7,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use blimey_engine::look::Look;
@@ -38,7 +36,6 @@ const RSS_SAMPLES: u32 = 20;
 const LATENESS_BUCKET: Duration = Duration::from_micros(100);
 /// Lateness from 0 to 100 ms in 0.1 ms steps; later frames share the last bucket.
 const LATENESS_BUCKETS: usize = 1000;
-const REPORT_DIR: &str = "claude-artifacts/soak";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,7 +56,7 @@ pub struct Setlist {
 
 struct SetlistSong {
     path: PathBuf,
-    midi: Vec<u8>,
+    midi: MidiFile,
     /// Frame the song starts on, from the start of the pass.
     first_frame: u32,
 }
@@ -86,16 +83,15 @@ impl Setlist {
         let mut pass_frames = 0;
         for song in file.songs {
             let song_path = folder.join(song);
-            let in_song = |error: io::Error| format!("{}: {error}", song_path.display());
-            let midi = fs::read(&song_path).map_err(in_song)?;
-            let duration = MidiFile::parse(&midi).map_err(in_song)?.duration();
+            let midi = MidiFile::open(&song_path).map_err(|error| error.to_string())?;
+            let song_frames = frames_in(midi.duration() + SONG_GAP);
             songs.push(SetlistSong {
                 path: song_path,
                 midi,
                 first_frame: pass_frames,
             });
             // Starting each song on a frame keeps its frames comparable from pass to pass.
-            pass_frames += frames_in(duration + SONG_GAP);
+            pass_frames += song_frames;
         }
         Ok(Self {
             path: path.to_path_buf(),
@@ -140,9 +136,7 @@ impl MidiSource for SetlistMidi<'_> {
             .as_ref()
             .is_none_or(|(playing, _)| *playing != slot)
         {
-            let midi = MidiFile::parse(&self.setlist.songs[slot.song].midi)
-                .expect("parsed when the setlist loaded");
-            self.playing = Some((slot, midi));
+            self.playing = Some((slot, self.setlist.songs[slot.song].midi.clone()));
         }
         let (slot, midi) = self.playing.as_mut()?;
         let start = FRAME_PERIOD * slot.first_frame;
@@ -160,34 +154,19 @@ pub struct Soak<'a, S> {
     pub output: S,
     /// The emulated box `output` sends to, if any: frames it misses count as dropped.
     pub device: Option<&'a EmulatedEnttec>,
+    /// Where to write the report; by default a new `soak-….txt` in the current folder.
+    pub report: Option<PathBuf>,
 }
 
 impl<S: DmxSink> Soak<'_, S> {
-    /// Runs the soak, writes the report under `claude-artifacts/soak/` and prints it.
-    /// Returns whether every check passed.
+    /// Runs the soak, prints the report and writes it. Returns whether every check passed.
     pub fn run(
         self,
         clock: &mut impl Clock,
         shows: impl ShowSource,
     ) -> Result<bool, Box<dyn Error>> {
         let frame_count = self.frame_count()?;
-        let path = self.report_path();
-        let mut sink = Measured {
-            setlist: self.setlist,
-            output: self.output,
-            device: self.device,
-            sent: 0,
-            received: 0,
-            lateness: Lateness::default(),
-            song: None,
-            song_hash: DefaultHasher::new(),
-            reference: Vec::new(),
-            songs_compared: 0,
-            drifted: 0,
-            first_drift: None,
-            memory: MemorySampler::start(self.accelerated),
-            sample_every: (frame_count / RSS_SAMPLES).max(1),
-        };
+        let path = self.report.clone().unwrap_or_else(|| self.default_report());
         let mode = if self.accelerated {
             "accelerated (fake clock)"
         } else {
@@ -198,6 +177,7 @@ impl<S: DmxSink> Soak<'_, S> {
             self.hours,
             self.setlist.path.display()
         );
+        let mut sink = Measured::new(self.setlist, self.output, self.device, frame_count);
         let started = Instant::now();
         blimey_engine::run(
             clock,
@@ -211,13 +191,16 @@ impl<S: DmxSink> Soak<'_, S> {
             frame_count,
         )?;
         let elapsed = started.elapsed();
-        sink.memory.sample(frame_count);
-        sink.collect_last_frames();
+        sink.end();
         let (report, passed) = sink.report(mode, elapsed);
         print!("{report}");
-        fs::create_dir_all(REPORT_DIR)
-            .and_then(|()| fs::write(&path, &report))
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if let Some(folder) = path
+            .parent()
+            .filter(|folder| !folder.as_os_str().is_empty())
+        {
+            fs::create_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+        }
+        fs::write(&path, &report).map_err(|error| format!("{}: {error}", path.display()))?;
         eprintln!("soak: report written to {}", path.display());
         Ok(passed)
     }
@@ -243,7 +226,9 @@ impl<S: DmxSink> Soak<'_, S> {
         Ok(frames)
     }
 
-    fn report_path(&self) -> PathBuf {
+    /// `soak-<setlist>-<mode>-<unix time>-<process>.txt`: the process id keeps two soaks
+    /// started in the same second apart.
+    fn default_report(&self) -> PathBuf {
         let name = self
             .setlist
             .path
@@ -259,7 +244,10 @@ impl<S: DmxSink> Soak<'_, S> {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        Path::new(REPORT_DIR).join(format!("{name}-{mode}-{since_epoch}.txt"))
+        PathBuf::from(format!(
+            "soak-{name}-{mode}-{since_epoch}-{}.txt",
+            std::process::id()
+        ))
     }
 }
 
@@ -272,15 +260,30 @@ struct Measured<'a, S> {
     /// Frames the emulated box received.
     received: usize,
     lateness: Lateness,
-    song: Option<Slot>,
-    song_hash: DefaultHasher,
-    /// Fingerprint of each song's frames in the reference pass.
-    reference: Vec<u64>,
-    songs_compared: u32,
-    drifted: u32,
-    first_drift: Option<String>,
-    memory: MemorySampler,
+    drift: DriftCheck,
+    memory: MemoryCheck,
     sample_every: u32,
+}
+
+impl<'a, S> Measured<'a, S> {
+    fn new(
+        setlist: &'a Setlist,
+        output: S,
+        device: Option<&'a EmulatedEnttec>,
+        frame_count: u32,
+    ) -> Self {
+        Self {
+            setlist,
+            output,
+            device,
+            sent: 0,
+            received: 0,
+            lateness: Lateness::default(),
+            drift: DriftCheck::default(),
+            memory: MemoryCheck::new(setlist.pass_frames * REFERENCE_PASS),
+            sample_every: (frame_count / RSS_SAMPLES).max(1),
+        }
+    }
 }
 
 impl<S: DmxSink> DmxSink for Measured<'_, S> {
@@ -288,21 +291,15 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
         let index = self.sent;
         self.lateness
             .record(at.saturating_sub(FRAME_PERIOD * index));
-        let slot = self.setlist.slot(index);
-        if self.song != Some(slot) {
-            self.finish_song();
-            self.song = Some(slot);
-            if slot.pass == REFERENCE_PASS && slot.song == 0 {
-                self.memory.sample(index);
-            }
-            if let Some(device) = self.device {
-                self.received += device.take_received().len();
-            }
+        // Every frame, so the frames the box keeps never weigh in the memory samples.
+        if let Some(device) = self.device {
+            self.received += device.take_received().len();
         }
-        if index.is_multiple_of(self.sample_every) {
+        let slot = self.setlist.slot(index);
+        if index == self.memory.baseline_frame || index.is_multiple_of(self.sample_every) {
             self.memory.sample(index);
         }
-        frame.hash(&mut self.song_hash);
+        self.drift.frame(slot, frame);
         self.sent += 1;
         self.output.send(at, frame)
     }
@@ -313,32 +310,11 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
 }
 
 impl<S> Measured<'_, S> {
-    /// Compares the song that just ended with the same song in the reference pass. The last
-    /// song of the run is cut short, so it is never finished.
-    fn finish_song(&mut self) {
-        let Some(slot) = self.song else {
-            return;
-        };
-        let fingerprint = std::mem::take(&mut self.song_hash).finish();
-        if slot.pass == REFERENCE_PASS {
-            self.reference.push(fingerprint);
-        } else if slot.pass > REFERENCE_PASS {
-            self.songs_compared += 1;
-            if self.reference.get(slot.song) != Some(&fingerprint) {
-                self.drifted += 1;
-                self.first_drift.get_or_insert_with(|| {
-                    format!(
-                        "first: pass {}, {}",
-                        slot.pass + 1,
-                        self.setlist.songs[slot.song].path.display()
-                    )
-                });
-            }
-        }
-    }
-
-    /// Waits up to a second for the emulated box to read the last frames sent.
-    fn collect_last_frames(&mut self) {
+    /// After the last frame: takes the last memory sample, finishes the last song if it played
+    /// to its end, and waits up to a second for the emulated box to read the last frames.
+    fn end(&mut self) {
+        self.memory.sample(self.sent);
+        self.drift.end(self.setlist, self.sent);
         let Some(device) = self.device else {
             return;
         };
@@ -355,20 +331,32 @@ impl<S> Measured<'_, S> {
     fn report(self, mode: &str, elapsed: Duration) -> (String, bool) {
         let setlist = self.setlist;
         let late = self.lateness.at_least(FRAME_PERIOD);
+        let device_failure = self.device.and_then(EmulatedEnttec::failure);
         let missed = self
             .device
             .map_or(0, |_| (self.sent as usize).saturating_sub(self.received));
         let dropped = late + missed as u64;
-        let device_note = match self.device {
-            Some(_) => format!("; the emulated Enttec received {} of them", self.received),
-            None => String::new(),
+        let device_note = match (self.device, &device_failure) {
+            (Some(_), Some(error)) => format!(
+                "; the emulated Enttec received {} of them, then stopped reading: {error}",
+                self.received
+            ),
+            (Some(_), None) => format!("; the emulated Enttec received {} of them", self.received),
+            (None, _) => String::new(),
         };
         let p99 = self.lateness.percentile(0.99);
-        let memory = MemoryCheck::from(self.memory.finish(), setlist.pass_frames * REFERENCE_PASS);
+        let drift = &self.drift;
+        let first_drift = drift.first.map_or_else(String::new, |(pass, song)| {
+            format!(
+                " (first: pass {}, {})",
+                pass + 1,
+                setlist.songs[song].path.display()
+            )
+        });
         let checks = [
             (
                 "frames",
-                dropped == 0,
+                dropped == 0 && device_failure.is_none(),
                 format!(
                     "{} rendered, {dropped} dropped (sent a frame period or more late, or never received){device_note}",
                     self.sent
@@ -388,22 +376,19 @@ impl<S> Measured<'_, S> {
             ),
             (
                 "drift",
-                self.drifted == 0 && self.songs_compared > 0,
+                drift.drifted == 0 && drift.compared > 0,
                 format!(
-                    "{} songs compared with their render in pass {}, {} differ{}",
-                    self.songs_compared,
+                    "{} songs compared with their render in pass {}, {} differ{first_drift}",
+                    drift.compared,
                     REFERENCE_PASS + 1,
-                    self.drifted,
-                    self.first_drift
-                        .map(|first| format!(" ({first})"))
-                        .unwrap_or_default()
+                    drift.drifted,
                 ),
                 "none differ".to_string(),
             ),
             (
                 "memory",
-                memory.is_flat(),
-                memory.summary(),
+                self.memory.is_flat(),
+                self.memory.summary(),
                 format!(
                     "RSS grows at most {} MiB after pass {}",
                     MEMORY_GROWTH_LIMIT_KIB / 1024,
@@ -430,7 +415,7 @@ impl<S> Measured<'_, S> {
             )
             .unwrap();
         }
-        writeln!(report, "rss      {}", memory.series()).unwrap();
+        writeln!(report, "rss      {}", self.memory.series()).unwrap();
         (report, passed)
     }
 }
@@ -441,6 +426,55 @@ fn verdict(passed: bool) -> &'static str {
 
 fn millis(duration: Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
+}
+
+/// Fingerprints each song's frames, and compares each song after the reference pass with the
+/// same song in it.
+#[derive(Default)]
+struct DriftCheck {
+    song: Option<Slot>,
+    hash: DefaultHasher,
+    /// Fingerprint of each song in the reference pass.
+    reference: Vec<u64>,
+    compared: u32,
+    drifted: u32,
+    /// Pass and song of the first song that differed.
+    first: Option<(u32, usize)>,
+}
+
+impl DriftCheck {
+    fn frame(&mut self, slot: Slot, frame: &Frame) {
+        if self.song != Some(slot) {
+            self.finish_song();
+            self.song = Some(slot);
+        }
+        frame.hash(&mut self.hash);
+    }
+
+    /// The run stopped after `frames` frames: the last song counts only if it played to its
+    /// end, i.e. the next frame would have started another song.
+    fn end(&mut self, setlist: &Setlist, frames: u32) {
+        if self.song.is_some_and(|slot| setlist.slot(frames) != slot) {
+            self.finish_song();
+        }
+        self.song = None;
+    }
+
+    fn finish_song(&mut self) {
+        let Some(slot) = self.song else {
+            return;
+        };
+        let fingerprint = std::mem::take(&mut self.hash).finish();
+        if slot.pass == REFERENCE_PASS {
+            self.reference.push(fingerprint);
+        } else if slot.pass > REFERENCE_PASS {
+            self.compared += 1;
+            if self.reference.get(slot.song) != Some(&fingerprint) {
+                self.drifted += 1;
+                self.first.get_or_insert((slot.pass, slot.song));
+            }
+        }
+    }
 }
 
 /// How late each frame went out, in 0.1 ms buckets, so hours of frames take constant memory.
@@ -492,101 +526,54 @@ impl Lateness {
     }
 }
 
-/// Samples the process's RSS on its own thread. In real time the render loop goes on
-/// meanwhile, so measuring never delays a frame; on the fake clock it waits, or it would race
-/// ahead of the samples.
-struct MemorySampler {
-    requests: Sender<u32>,
-    sampled: Receiver<()>,
-    is_waiting: bool,
-    sampler: JoinHandle<Result<Vec<(u32, u64)>, String>>,
-}
-
-impl MemorySampler {
-    fn start(is_waiting: bool) -> Self {
-        let (requests, frames) = mpsc::channel();
-        let (done, sampled) = mpsc::channel();
-        let sampler = thread::spawn(move || {
-            let mut samples = Vec::new();
-            for frame in frames {
-                samples.push((frame, rss_kib()?));
-                let _ = done.send(());
-            }
-            Ok(samples)
-        });
-        Self {
-            requests,
-            sampled,
-            is_waiting,
-            sampler,
-        }
-    }
-
-    fn sample(&self, frame: u32) {
-        // Both fail only once sampling has failed, which `finish` reports.
-        if self.requests.send(frame).is_ok() && self.is_waiting {
-            let _ = self.sampled.recv();
-        }
-    }
-
-    /// Each sample: the frame it was asked at, and RSS in KiB.
-    fn finish(self) -> Result<Vec<(u32, u64)>, String> {
-        drop(self.requests);
-        self.sampler.join().expect("the RSS sampler never panics")
-    }
-}
-
-/// RSS in KiB, from `ps`: the same command on macOS and Linux, and no unsafe code.
-fn rss_kib() -> Result<u64, String> {
-    let output = Command::new("ps")
-        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-        .output()
-        .map_err(|error| format!("cannot run ps to measure memory: {error}"))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.trim().parse().map_err(|_| {
-        format!(
-            "ps gave no RSS: {:?} {}",
-            text.trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-    })
-}
-
+/// RSS over the run, against its level at the start of the reference pass.
 struct MemoryCheck {
-    samples: Result<Vec<(u32, u64)>, String>,
-    /// Frame of the baseline: the start of the reference pass.
+    /// The frame each sample was taken at, and RSS in KiB.
+    samples: Vec<(u32, u64)>,
+    error: Option<String>,
     baseline_frame: u32,
 }
 
 impl MemoryCheck {
-    fn from(samples: Result<Vec<(u32, u64)>, String>, baseline_frame: u32) -> Self {
+    fn new(baseline_frame: u32) -> Self {
         Self {
-            samples,
+            samples: Vec::new(),
+            error: None,
             baseline_frame,
+        }
+    }
+
+    fn sample(&mut self, frame: u32) {
+        match rss_kib() {
+            Ok(kib) => self.samples.push((frame, kib)),
+            Err(error) => {
+                self.error.get_or_insert(error);
+            }
         }
     }
 
     /// RSS at the baseline and the most it reached after, in KiB.
     fn baseline_and_peak(&self) -> Option<(u64, u64)> {
-        let samples = self.samples.as_ref().ok()?;
-        let at = samples
+        let at = self
+            .samples
             .iter()
             .position(|(frame, _)| *frame >= self.baseline_frame)?;
-        let peak = samples[at..].iter().map(|(_, kib)| *kib).max()?;
-        Some((samples[at].1, peak))
+        let peak = self.samples[at..].iter().map(|(_, kib)| *kib).max()?;
+        Some((self.samples[at].1, peak))
     }
 
     fn is_flat(&self) -> bool {
-        self.baseline_and_peak().is_some_and(|(baseline, peak)| {
-            peak.saturating_sub(baseline) <= MEMORY_GROWTH_LIMIT_KIB
-        })
+        self.error.is_none()
+            && self.baseline_and_peak().is_some_and(|(baseline, peak)| {
+                peak.saturating_sub(baseline) <= MEMORY_GROWTH_LIMIT_KIB
+            })
     }
 
     fn summary(&self) -> String {
-        match (&self.samples, self.baseline_and_peak()) {
-            (Err(error), _) => format!("not measured: {error}"),
-            (Ok(_), None) => "not measured: no sample after the first pass".into(),
-            (Ok(_), Some((baseline, peak))) => format!(
+        match (&self.error, self.baseline_and_peak()) {
+            (Some(error), _) => format!("not measured: {error}"),
+            (None, None) => "not measured: no sample after the first pass".into(),
+            (None, Some((baseline, peak))) => format!(
                 "RSS {} after pass {REFERENCE_PASS}, at most {} after that, growth {}",
                 mib(baseline),
                 mib(peak),
@@ -597,10 +584,7 @@ impl MemoryCheck {
 
     /// Every sample as `hours: MiB`.
     fn series(&self) -> String {
-        let Ok(samples) = &self.samples else {
-            return "not measured".into();
-        };
-        samples
+        self.samples
             .iter()
             .map(|(frame, kib)| {
                 let hours = (FRAME_PERIOD * *frame).as_secs_f64() / 3600.0;
@@ -615,9 +599,72 @@ fn mib(kib: u64) -> String {
     format!("{:.2} MiB", kib as f64 / 1024.0)
 }
 
+/// This process's resident memory in KiB, from the kernel: cheap enough to sample on the render
+/// loop.
+#[cfg(target_os = "macos")]
+fn rss_kib() -> Result<u64, String> {
+    let mut info = std::mem::MaybeUninit::<libc::mach_task_basic_info>::zeroed();
+    let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+    // SAFETY: task_info writes at most `count` words into `info`, which is exactly that size.
+    // libc suggests the mach2 crate for mach_task_self; it is the same call.
+    #[allow(deprecated)]
+    let result = unsafe {
+        libc::task_info(
+            libc::mach_task_self(),
+            libc::MACH_TASK_BASIC_INFO,
+            info.as_mut_ptr().cast(),
+            &mut count,
+        )
+    };
+    if result != libc::KERN_SUCCESS {
+        return Err(format!("task_info failed with kern_return_t {result}"));
+    }
+    // SAFETY: task_info succeeded, so it filled `info`.
+    Ok(unsafe { info.assume_init() }.resident_size / 1024)
+}
+
+#[cfg(target_os = "linux")]
+fn rss_kib() -> Result<u64, String> {
+    let statm = fs::read_to_string("/proc/self/statm")
+        .map_err(|error| format!("cannot read /proc/self/statm: {error}"))?;
+    let pages: u64 = statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|pages| pages.parse().ok())
+        .ok_or_else(|| format!("/proc/self/statm has no resident size: {statm:?}"))?;
+    // SAFETY: sysconf only reads a system setting.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Ok(pages * page_size as u64 / 1024)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rss_kib() -> Result<u64, String> {
+    Err("reading RSS is only implemented on macOS and Linux".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn silence() -> MidiFile {
+        MidiFile::parse(&MidiFile::encode(&[]).unwrap()).unwrap()
+    }
+
+    fn setlist(first_frames: &[u32], pass_frames: u32) -> Setlist {
+        Setlist {
+            path: PathBuf::new(),
+            show_dir: PathBuf::new(),
+            songs: first_frames
+                .iter()
+                .map(|&first_frame| SetlistSong {
+                    path: PathBuf::new(),
+                    midi: silence(),
+                    first_frame,
+                })
+                .collect(),
+            pass_frames,
+        }
+    }
 
     #[test]
     fn percentiles_come_from_the_buckets_and_late_frames_are_counted() {
@@ -636,23 +683,7 @@ mod tests {
 
     #[test]
     fn songs_start_on_frames_with_a_gap_and_passes_loop() {
-        let setlist = Setlist {
-            path: PathBuf::new(),
-            show_dir: PathBuf::new(),
-            songs: vec![
-                SetlistSong {
-                    path: PathBuf::new(),
-                    midi: Vec::new(),
-                    first_frame: 0,
-                },
-                SetlistSong {
-                    path: PathBuf::new(),
-                    midi: Vec::new(),
-                    first_frame: 100,
-                },
-            ],
-            pass_frames: 180,
-        };
+        let setlist = setlist(&[0, 100], 180);
         let slot = |frame| {
             let slot = setlist.slot(frame);
             (slot.pass, slot.song, slot.first_frame)
@@ -665,5 +696,78 @@ mod tests {
         assert_eq!(slot(180), (1, 0, 180));
         assert_eq!(slot(385), (2, 0, 360));
         assert_eq!(frames_in(Duration::from_millis(1001)), 41);
+    }
+
+    /// Plays `passes` passes of a one-song setlist, the frame value given by `value`.
+    fn drift_over(passes: u32, value: impl Fn(u32) -> u8) -> DriftCheck {
+        let setlist = setlist(&[0], 4);
+        let mut drift = DriftCheck::default();
+        let frames = passes * setlist.pass_frames;
+        for index in 0..frames {
+            drift.frame(setlist.slot(index), &[value(index); 512]);
+        }
+        drift.end(&setlist, frames);
+        drift
+    }
+
+    #[test]
+    fn a_one_song_setlist_over_exactly_three_passes_compares_its_last_pass() {
+        let drift = drift_over(3, |_| 7);
+
+        assert_eq!((drift.compared, drift.drifted), (1, 0));
+    }
+
+    #[test]
+    fn a_song_rendering_differently_from_the_reference_pass_is_drift() {
+        let drift = drift_over(4, |index| u8::from(index == 13));
+
+        assert_eq!((drift.compared, drift.drifted), (2, 1));
+        assert_eq!(drift.first, Some((3, 0)), "pass 4, the only song");
+    }
+
+    #[test]
+    fn a_song_cut_short_by_the_end_of_the_run_is_not_compared() {
+        let setlist = setlist(&[0], 4);
+        let mut drift = DriftCheck::default();
+        for index in 0..10 {
+            drift.frame(setlist.slot(index), &[0; 512]);
+        }
+        drift.end(&setlist, 10);
+
+        assert_eq!(drift.compared, 0, "pass 3 stopped after 2 of its 4 frames");
+    }
+
+    #[test]
+    fn rss_follows_memory_the_process_touches() {
+        const TOUCHED: usize = 64 << 20;
+        let before = rss_kib().unwrap();
+
+        let touched = vec![1u8; TOUCHED];
+        let after = rss_kib().unwrap();
+
+        assert!(
+            after >= before + (TOUCHED as u64 / 1024) / 2,
+            "{before} KiB, then {after} KiB with 64 MiB touched"
+        );
+        drop(touched);
+    }
+
+    #[test]
+    fn the_soak_counts_frames_as_the_emulated_box_reads_them_not_at_song_ends() {
+        let device = EmulatedEnttec::plug_in().unwrap();
+        let output = crate::enttec::EnttecPro::new(device.path());
+        let setlist = setlist(&[0], 1_000_000);
+        let mut sink = Measured::new(&setlist, output, Some(&device), 1_000_000);
+
+        for _ in 0..100 {
+            sink.send(Duration::ZERO, &[0; 512]).unwrap();
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        assert!(
+            sink.received >= 50,
+            "received {} of 100 within the song",
+            sink.received
+        );
     }
 }

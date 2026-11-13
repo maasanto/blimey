@@ -115,7 +115,7 @@ fn wait_for_saved_state(state_dir: &Path) -> Duration {
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
-    let device = EmulatedEnttec::plug_in();
+    let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("kill");
     let mut reaper = reaper(&port_name);
     let engine = Engine::start(&device, &port_name, &state_dir);
@@ -154,7 +154,7 @@ fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn engine_runs_without_its_state_folder() {
-    let device = EmulatedEnttec::plug_in();
+    let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, scratch_dir) = scratch("state");
     let not_a_folder = scratch_dir.join("a-file");
     fs::write(&not_a_folder, "").unwrap();
@@ -171,7 +171,7 @@ fn engine_runs_without_its_state_folder() {
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
-    let device = EmulatedEnttec::plug_in();
+    let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("midi");
     let mut first_port = reaper(&port_name);
     let _engine = Engine::start(&device, &port_name, &state_dir);
@@ -200,7 +200,7 @@ fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
 #[test]
 #[ignore = "needs macOS CoreMIDI and a pty: run scripts/fault-injection.sh"]
 fn engine_resumes_output_when_the_serial_port_drops_and_comes_back() {
-    let mut device = EmulatedEnttec::plug_in();
+    let mut device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("serial");
     let mut reaper = reaper(&port_name);
     let _engine = Engine::start(&device, &port_name, &state_dir);
@@ -211,7 +211,7 @@ fn engine_resumes_output_when_the_serial_port_drops_and_comes_back() {
 
     device.unplug();
     thread::sleep(Duration::from_millis(500));
-    device.plug_back_in();
+    device.plug_back_in().unwrap();
     let back = wait_for(&device, Some(BLUE_AT_FULL));
 
     eprintln!("output back {back:?} after replug");

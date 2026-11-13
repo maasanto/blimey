@@ -18,6 +18,7 @@ const ENCODED_TICKS_PER_BEAT: u16 = 25_000;
 const ENCODED_TICK: Duration = Duration::from_micros(20);
 
 /// A Standard MIDI File played back as a `MidiSource`, with tick times resolved through its tempo map.
+#[derive(Clone)]
 pub struct MidiFile {
     events: VecDeque<MidiEvent>,
     duration: Duration,

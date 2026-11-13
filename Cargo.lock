@@ -222,6 +222,7 @@ dependencies = [
  "clap",
  "core-foundation",
  "futures-util",
+ "libc",
  "midir",
  "serde",
  "serde_json",

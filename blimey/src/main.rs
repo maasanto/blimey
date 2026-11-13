@@ -90,17 +90,25 @@ enum Command {
         #[arg(long, value_name = "DUMP")]
         artnet: Option<PathBuf>,
         /// Art-Net universe to capture: the 15-bit port-address, from 0.
-        #[arg(long, default_value_t = 0, requires = "artnet")]
+        #[arg(
+            long,
+            default_value_t = 0,
+            value_parser = clap::value_parser!(u16).range(..=i64::from(artnet::MAX_UNIVERSE)),
+            requires = "artnet",
+        )]
         artnet_universe: u16,
     },
     /// Loop a setlist of recorded songs against its show for hours, then report dropped
-    /// frames, drift, frame-time jitter and memory, under claude-artifacts/soak/. Exits with
-    /// status 1 if a check fails.
+    /// frames, drift, frame-time jitter and memory. Exits with status 1 if a check fails.
     Soak {
         /// YAML file: `show: <folder>` and `songs: [<file.mid>, …]`, relative to the file.
         setlist: PathBuf,
         #[arg(long, default_value_t = 4.0)]
         hours: f64,
+        /// Write the report to this file. Default: a new
+        /// soak-<setlist>-<mode>-<unix time>-<process id>.txt in the current folder.
+        #[arg(long)]
+        report: Option<PathBuf>,
         /// Simulate on a fake clock as fast as the machine renders, with no outputs: 100 hours
         /// of show in minutes.
         #[arg(long, conflicts_with_all = ["emulated_enttec", "dmx_port", "listen", "artnet"])]
@@ -276,10 +284,18 @@ fn main() -> ExitCode {
         Command::Soak {
             setlist,
             hours,
+            report,
             accelerated,
             emulated_enttec,
             outputs,
-        } => soak(&setlist, hours, accelerated, emulated_enttec, &outputs),
+        } => soak(
+            &setlist,
+            hours,
+            report,
+            accelerated,
+            emulated_enttec,
+            &outputs,
+        ),
         Command::Devices => devices(),
         Command::Fire {
             show_dir,
@@ -381,13 +397,14 @@ fn run(
 fn soak(
     setlist: &Path,
     hours: f64,
+    report: Option<PathBuf>,
     accelerated: bool,
     emulated_enttec: bool,
     outputs: &Outputs,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let setlist = Setlist::load(setlist)?;
     let mut shows = outputs.shows(&setlist.show_dir)?;
-    let device = emulated_enttec.then(EmulatedEnttec::plug_in);
+    let device = emulated_enttec.then(EmulatedEnttec::plug_in).transpose()?;
     let mut output = outputs.start(&setlist.show_dir, &shows.current().rig)?;
     if let Some(device) = &device {
         output.dmx = Some(EnttecPro::new(device.path()));
@@ -398,6 +415,7 @@ fn soak(
         accelerated,
         output,
         device: device.as_ref(),
+        report,
     };
     let passed = if accelerated {
         soak.run(&mut FakeClock::default(), shows)?
@@ -602,4 +620,27 @@ fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<d
         None => print!("{yaml}"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_takes_art_net_universes_up_to_15_bits_like_run() {
+        let record = |universe: &str| {
+            Command::try_parse_from([
+                "blimey",
+                "record",
+                "take.mid",
+                "--artnet",
+                "emu.dump",
+                "--artnet-universe",
+                universe,
+            ])
+        };
+
+        assert!(record("32767").is_ok());
+        assert!(record("32768").is_err());
+    }
 }

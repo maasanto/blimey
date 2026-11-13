@@ -153,7 +153,7 @@ mod tests {
             .iter()
             .map(|frame| frame.values)
             .collect();
-        let device = EmulatedEnttec::plug_in();
+        let device = EmulatedEnttec::plug_in().unwrap();
         let mut driver = EnttecPro::new(device.path());
 
         let frame_count = u32::try_from(expected.len()).unwrap();
@@ -172,14 +172,14 @@ mod tests {
 
     #[test]
     fn driver_reconnects_after_the_port_is_lost() {
-        let mut device = EmulatedEnttec::plug_in();
+        let mut device = EmulatedEnttec::plug_in().unwrap();
         let mut driver = EnttecPro::new(device.path());
         driver.send(Duration::ZERO, &frame_with(6, 1)).unwrap();
         device.wait_for_frames(1, PATIENCE);
 
         device.unplug();
         driver.send(Duration::ZERO, &frame_with(6, 2)).unwrap();
-        device.plug_back_in();
+        device.plug_back_in().unwrap();
         let deadline = std::time::Instant::now() + PATIENCE;
         while device.frames().len() < 2 && std::time::Instant::now() < deadline {
             driver.send(Duration::ZERO, &frame_with(6, 3)).unwrap();
