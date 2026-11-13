@@ -83,9 +83,8 @@ test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine
   expect(raised.y, 'wash-2 (y 0.5) is drawn above wash-1 (y 0.2)').toBeLessThan(below.y - 0.25 * stage.height);
 });
 
-test('a drag that saves nothing leaves fixtures draggable', async ({ page, show, startEngine }) => {
+test('a drag that saves nothing leaves fixtures draggable', async ({ page, startEngine }) => {
   const { url } = await startEngine();
-  const rigFile = path.join(show, 'rig.yaml');
   await page.goto(`${url}#front`);
   const stage = await page.getByRole('img', { name: 'Front view' }).locator('rect.stage').boundingBox();
   const pixel = page.locator('[data-fixture="wash-2"] circle').first();
@@ -96,7 +95,11 @@ test('a drag that saves nothing leaves fixtures draggable', async ({ page, show,
     await page.mouse.move(from.x + fraction * stage.width, from.y, { steps: 5 });
     await page.mouse.up();
   };
-  const wash2X = () => Number(readFileSync(rigFile, 'utf8').match(/- name: wash-2\n(?:.*\n){3}  canvas:\n    x: ([\d.]+)/)[1]);
+  /** wash-2's saved x, as the engine reads rig.yaml back. */
+  const wash2X = async () => {
+    const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
+    return rig.fixtures.find((fixture) => fixture.name === 'wash-2').canvas.x;
+  };
 
   // Against the right edge: x is 1 - width.
   await dragRight(0.9);
