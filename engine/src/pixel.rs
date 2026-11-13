@@ -446,8 +446,9 @@ const THUMBNAIL_BPM: f64 = 120.0;
 
 /// A pixel cue, as in a song file, rendered on a sample grid for the builder's pickers, as
 /// the preview sheet (`examples/pixel_sheet.rs`) renders it: `THUMBNAIL_FRAMES` frames evenly
-/// over one cycle of layer 1, each the grid's colours row by row from the top left as the
-/// audience sees it, at full intensity. `show` gives the palettes.
+/// over one cycle of its slowest moving layer (1 bar if none moves), each the grid's colours
+/// row by row from the top left as the audience sees it, at full intensity. `show` gives the
+/// palettes.
 pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, String> {
     let scene = PixelScene::parse(show, cue)?;
     let rig = Rig::parse(
@@ -460,7 +461,14 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
     let clock = ClockFollower::new(THUMBNAIL_BPM, TimeSignature::default());
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
-    let cycles_per_second = clock.cycles(scene.layers[0].speed, started, second);
+    let cycles_in_a_second = |speed| clock.cycles(speed, started, second);
+    let cycles_per_second = scene
+        .layers
+        .iter()
+        .filter(|layer| layer.effect != Effect::Static)
+        .map(|layer| cycles_in_a_second(layer.speed))
+        .min_by(f64::total_cmp)
+        .unwrap_or_else(|| cycles_in_a_second(Length::Bars(1.0)));
     let cycle = Duration::try_from_secs_f64(1.0 / cycles_per_second)
         .map_err(|_| "speed is too long to render a cycle of".to_string())?;
     let frames = (0..THUMBNAIL_FRAMES).map(|index| {
@@ -769,6 +777,32 @@ mod tests {
         assert!(draws.iter().all(|draw| (0.0..1.0).contains(draw)));
         let mean = draws.iter().sum::<f64>() / draws.len() as f64;
         assert!((mean - 0.5).abs() < 0.05, "mean {mean}");
+    }
+
+    #[test]
+    fn a_thumbnail_spans_one_cycle_of_the_slowest_moving_layer() {
+        let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [
+            { "shape": "fill", "params": { "color": "#000000", "speed": "1 beat" } },
+            { "effect": "chase", "params": { "color": "#00ff00", "width": 0.25, "speed": "1 bar" } },
+            { "effect": "chase", "params": { "color": "#ff0000", "width": 0.25, "speed": "2 bars" } },
+        ] });
+
+        let frames = thumbnail(&Show::default(), cue).unwrap();
+
+        // The red 2-bar chase's first lit column on the top row: four steps over the 8 frames.
+        let first_lit: Vec<Option<usize>> = frames
+            .iter()
+            .map(|frame| {
+                frame[..THUMBNAIL_SIDE]
+                    .iter()
+                    .position(|colour| colour.red == 1.0)
+            })
+            .collect();
+        assert_eq!(
+            first_lit,
+            [0, 0, 3, 3, 6, 6, 9, 9].map(Some),
+            "the 1-bar chase leads twice as fast, the static fill doesn't count"
+        );
     }
 
     #[test]

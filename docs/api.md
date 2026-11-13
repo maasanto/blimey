@@ -467,7 +467,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 ```
 
 - The grid is RGB and fills the canvas.
-- `frames` are 8 moments evenly over one cycle of layer 1's `speed`, from the note, with beats at 120 BPM.
+- `frames` are 8 moments evenly over one cycle of the slowest moving layer's `speed` (1 bar when every layer is `static`), from the note, with beats at 120 BPM.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
