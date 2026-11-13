@@ -263,6 +263,9 @@ struct Measured<'a, S> {
     lateness: Lateness,
     /// Fingerprint of the Art-Net universes of the frame about to be sent.
     artnet: u64,
+    /// Frames whose Art-Net universes failed to send, and the first error.
+    artnet_failures: u64,
+    first_artnet_failure: Option<String>,
     drift: DriftCheck,
     memory: MemoryCheck,
     sample_every: u32,
@@ -283,6 +286,8 @@ impl<'a, S> Measured<'a, S> {
             received: 0,
             lateness: Lateness::default(),
             artnet: 0,
+            artnet_failures: 0,
+            first_artnet_failure: None,
             drift: DriftCheck::default(),
             memory: MemoryCheck::new(setlist.pass_frames * REFERENCE_PASS),
             sample_every: (frame_count / RSS_SAMPLES).max(1),
@@ -309,12 +314,20 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
         self.output.send(at, frame)
     }
 
-    /// The render loop calls it before each `send`; the universes count towards drift too.
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+    /// The render loop calls it before each `send`; the universes count towards drift too, and
+    /// a frame whose universes fail to send counts as dropped.
+    // ponytail: the universes are stashed until `send` because the trait splits a frame in two
+    // calls; `DmxSink::send(&Universes)` would remove the stash, a cross-crate change.
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
         let mut hash = DefaultHasher::new();
         universes.hash(&mut hash);
         self.artnet = hash.finish();
-        self.output.send_artnet(universes);
+        if let Err(error) = self.output.send_artnet(universes) {
+            self.artnet_failures += 1;
+            self.first_artnet_failure
+                .get_or_insert_with(|| error.to_string());
+        }
+        Ok(())
     }
 
     fn status(&mut self, status: &Status) {
@@ -348,8 +361,8 @@ impl<S> Measured<'_, S> {
         let missed = self
             .device
             .map_or(0, |_| (self.sent as usize).saturating_sub(self.received));
-        let dropped = late + missed as u64;
-        let device_note = match (self.device, &device_failure) {
+        let dropped = late + missed as u64 + self.artnet_failures;
+        let mut device_note = match (self.device, &device_failure) {
             (Some(_), Some(error)) => format!(
                 "; the emulated Enttec received {} of them, then stopped reading: {error}",
                 self.received
@@ -357,6 +370,14 @@ impl<S> Measured<'_, S> {
             (Some(_), None) => format!("; the emulated Enttec received {} of them", self.received),
             (None, _) => String::new(),
         };
+        if let Some(error) = &self.first_artnet_failure {
+            write!(
+                device_note,
+                "; Art-Net failed to send on {} of them: {error}",
+                self.artnet_failures
+            )
+            .unwrap();
+        }
         let p99 = self.lateness.percentile(0.99);
         let drift = &self.drift;
         let first_drift = drift.first.map_or_else(String::new, |(pass, song)| {
@@ -371,7 +392,7 @@ impl<S> Measured<'_, S> {
                 "frames",
                 dropped == 0 && device_failure.is_none(),
                 format!(
-                    "{} rendered, {dropped} dropped (sent a frame period or more late, or never received){device_note}",
+                    "{} rendered, {dropped} dropped (sent a frame period or more late, never received, or failed on Art-Net){device_note}",
                     self.sent
                 ),
                 "none dropped".to_string(),
@@ -747,7 +768,8 @@ mod tests {
 
         for index in 0..16 {
             let universe = [u8::from(index == 13); 512];
-            sink.send_artnet(&ArtNetFrames::from([(3, universe)]));
+            sink.send_artnet(&ArtNetFrames::from([(3, universe)]))
+                .unwrap();
             sink.send(FRAME_PERIOD * index, &[0; 512]).unwrap();
         }
         sink.drift.end(&setlist, 16);
@@ -757,6 +779,42 @@ mod tests {
             (sink.drift.compared, sink.drift.drifted),
             (2, 1),
             "only Art-Net universe 3 differs, in pass 4"
+        );
+    }
+
+    /// An Art-Net node that is gone: every send of the grids' universes fails.
+    struct UnpluggedNode;
+
+    impl DmxSink for UnpluggedNode {
+        fn send(&mut self, _at: Duration, _frame: &Frame) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn send_artnet(&mut self, _universes: &ArtNetFrames) -> io::Result<()> {
+            Err(io::Error::new(
+                io::ErrorKind::HostUnreachable,
+                "no route to host",
+            ))
+        }
+    }
+
+    #[test]
+    fn frames_whose_art_net_fails_to_send_are_dropped() {
+        let setlist = setlist(&[0], 4);
+        let mut sink = Measured::new(&setlist, UnpluggedNode, None, 12);
+
+        for index in 0..12 {
+            sink.send_artnet(&ArtNetFrames::from([(3, [0; 512])]))
+                .unwrap();
+            sink.send(FRAME_PERIOD * index, &[0; 512]).unwrap();
+        }
+        sink.end();
+        let (report, passed) = sink.report("accelerated", Duration::ZERO);
+
+        assert!(!passed, "{report}");
+        assert!(
+            report.contains("12 dropped") && report.contains("no route to host"),
+            "{report}"
         );
     }
 

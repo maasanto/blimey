@@ -15,7 +15,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use blimey_engine::{MidiEvent, MidiFile, MidiSource, Show, format_dump, parse_dump, replay};
+use blimey_engine::{
+    FRAME_PERIOD, MidiEvent, MidiFile, MidiSource, Show, format_dump, parse_dump, replay,
+};
 use midir::MidiOutput;
 use midir::os::unix::VirtualOutput;
 
@@ -23,7 +25,8 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures")
 const PATIENCE: Duration = Duration::from_secs(5);
 /// From sending a message to the recorder stamping it, through CoreMIDI on the same machine.
 const MAX_LATENCY: Duration = Duration::from_millis(2);
-/// When EMU's stand-in sends its one Art-Net frame, into the song.
+/// EMU's stand-in sends its packets just before the first event from here, at 312.5 ms:
+/// mid-frame.
 const EMU_FRAME_AT: Duration = Duration::from_millis(300);
 
 /// Legacy notes on the legacy show (notes 37-52 drive DMX 6-21), with clock and transport,
@@ -63,6 +66,11 @@ fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
             "--until-stop".as_ref(),
             "--artnet".as_ref(),
             emu_dump.as_os_str(),
+            "--show".as_ref(),
+            // Pixel grids on Art-Net universes 1 and 2.
+            Path::new(FIXTURES)
+                .join("shows/pixel-grid-16x16")
+                .as_os_str(),
         ],
     );
 
@@ -107,30 +115,30 @@ fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
     }
     assert_eq!(recorded.len(), played.len());
     let emu_frames = parse_dump(&fs::read_to_string(&emu_dump).unwrap()).unwrap();
-    let [first, emu_frame] = emu_frames.as_slice() else {
+    let [emu_frame] = emu_frames.as_slice() else {
         panic!(
-            "expected the two Art-Net packets sent, got {}",
+            "expected the packets sent together in one frame, got {} frames",
             emu_frames.len()
         );
     };
     assert_eq!(
-        first.values[..3],
+        emu_frame.values[..3],
         [0, 0, 77],
         "universe 0 is the Enttec one"
     );
-    assert!(first.artnet.is_empty());
     assert_eq!(
-        emu_frame.values[..3],
-        [0, 0, 77],
-        "the latest of every universe"
+        emu_frame.artnet.keys().copied().collect::<Vec<_>>(),
+        [2],
+        "the grid's universe 2 is kept, universe 7 is not the show's"
     );
-    assert_eq!(emu_frame.artnet[&2][..2], [9, 0], "universe 2, DMX 1");
+    assert_eq!(emu_frame.artnet[&2][..2], [9, 0]);
     let emu_sent_at = emu_sent_at.unwrap() - start;
     assert!(
-        emu_frame.at.abs_diff(emu_sent_at) <= MAX_LATENCY,
-        "Art-Net sent at {emu_sent_at:?}, recorded at {:?}",
+        emu_frame.at >= emu_sent_at && emu_frame.at - emu_sent_at < FRAME_PERIOD + MAX_LATENCY,
+        "Art-Net sent at {emu_sent_at:?}, in the frame due at {:?}",
         emu_frame.at
     );
+    assert_eq!(emu_frame.at.as_millis() % 25, 0, "on the 25 ms frame grid");
     let show = Show::load(&Path::new(FIXTURES).join("shows/legacy")).unwrap();
     let played = played
         .into_iter()
@@ -208,10 +216,12 @@ fn start_recording(port_name: &str, out: &Path, args: &[&OsStr]) -> Child {
 }
 
 /// EMU's side, written from the specification rather than with the engine's encoder: universe
-/// 0 with DMX 3 at 77, then a pixel grid's universe 2 with DMX 1 at 9.
+/// 0 with DMX 3 at 77, a pixel grid's universe 2 with DMX 1 at 9, and universe 7, which the
+/// show doesn't use, as a desk elsewhere on the network might send. Sent mid-frame, so all
+/// three fall in one 25 ms frame.
 fn send_emu_frame() {
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    for (universe, channels) in [(0, [0, 0, 77, 0]), (2, [9, 0, 0, 0])] {
+    for (universe, channels) in [(0, [0, 0, 77, 0]), (2, [9, 0, 0, 0]), (7, [255; 4])] {
         let mut packet = b"Art-Net\0".to_vec();
         packet.extend([0x00, 0x50, 0, 14, 1, 0, universe, 0, 0, 4]);
         packet.extend(channels);

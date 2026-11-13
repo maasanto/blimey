@@ -42,12 +42,13 @@ impl DmxSink for Checksum {
         Ok(())
     }
 
-    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+    fn send_artnet(&mut self, universes: &ArtNetFrames) -> std::io::Result<()> {
         self.0 += universes
             .values()
             .flatten()
             .map(|v| u64::from(*v))
             .sum::<u64>();
+        Ok(())
     }
 }
 
