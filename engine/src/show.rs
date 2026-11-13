@@ -38,13 +38,19 @@ impl Show {
                 ),
             ));
         }
+        let rig = load_optional(&dir.join(RIG_FILE), |yaml| {
+            Rig::parse(yaml, &dir.join(PROFILES_DIR))
+        })?;
+        Self::load_with_rig(dir, rig)
+    }
+
+    /// The show in `dir` with `rig` instead of its `rig.yaml`: checks a rig before it is saved.
+    pub(crate) fn load_with_rig(dir: &Path, rig: Rig) -> io::Result<Self> {
         let mut show = Self {
             legacy: load_optional(&dir.join(LEGACY_MAP_FILE), |yaml| {
                 LegacyMap::parse(yaml).map_err(|error| error.to_string())
             })?,
-            rig: load_optional(&dir.join(RIG_FILE), |yaml| {
-                Rig::parse(yaml, &dir.join(PROFILES_DIR))
-            })?,
+            rig,
             palettes: load_optional(&dir.join(PALETTES_FILE), parse_palettes)?,
             songs: Vec::new(),
         };

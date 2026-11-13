@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
+use crate::Show;
 use crate::rig::{self, Rig};
 use crate::show::{PROFILES_DIR, RIG_FILE};
 
@@ -35,9 +36,11 @@ fn writable(file: &str) -> io::Result<Writable> {
     }
 }
 
+/// Refuses a rig the songs no longer load against, as the next start would.
 fn canonical_rig(show_dir: &Path, content: Value) -> Result<String, String> {
     let yaml = rig::canonical_yaml(content)?;
-    Rig::parse(&yaml, &show_dir.join(PROFILES_DIR))?;
+    let rig = Rig::parse(&yaml, &show_dir.join(PROFILES_DIR))?;
+    Show::load_with_rig(show_dir, rig).map_err(|error| error.to_string())?;
     Ok(yaml)
 }
 
@@ -105,20 +108,21 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// A scratch copy of the Fossile show's rig and profiles.
+    /// A scratch copy of the Fossile show.
     fn fossile_copy(test: &str) -> PathBuf {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shows/fossile");
         let copy = std::env::temp_dir().join(format!("blimey-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&copy);
-        fs::create_dir_all(copy.join(PROFILES_DIR)).unwrap();
-        fs::copy(source.join(RIG_FILE), copy.join(RIG_FILE)).unwrap();
-        for profile in fs::read_dir(source.join(PROFILES_DIR)).unwrap() {
-            let profile = profile.unwrap().path();
-            fs::copy(
-                &profile,
-                copy.join(PROFILES_DIR).join(profile.file_name().unwrap()),
-            )
-            .unwrap();
+        fs::create_dir_all(&copy).unwrap();
+        for file in [RIG_FILE, "palettes.yaml"] {
+            fs::copy(source.join(file), copy.join(file)).unwrap();
+        }
+        for folder in [PROFILES_DIR, "songs"] {
+            fs::create_dir_all(copy.join(folder)).unwrap();
+            for file in fs::read_dir(source.join(folder)).unwrap() {
+                let file = file.unwrap().path();
+                fs::copy(&file, copy.join(folder).join(file.file_name().unwrap())).unwrap();
+            }
         }
         copy
     }
@@ -170,6 +174,27 @@ mod tests {
         assert!(error.to_string().contains("overlap"), "{error}");
 
         assert_eq!(fs::read_to_string(show.join(RIG_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_rig_the_songs_no_longer_load_against_is_refused() {
+        let show = fossile_copy("songs");
+        let before = fs::read_to_string(show.join(RIG_FILE)).unwrap();
+        let mut content = read(&show, RIG_FILE).unwrap();
+        content["groups"]
+            .as_object_mut()
+            .unwrap()
+            .remove("outer-wash");
+
+        let error = write(&show, RIG_FILE, content).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("tell-me.yaml: line 15: cue 37"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(show.join(RIG_FILE)).unwrap(), before);
+        assert!(Show::load(&show).is_ok(), "the show still starts");
     }
 
     #[test]
