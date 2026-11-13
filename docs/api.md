@@ -235,7 +235,7 @@ blimey run <show> … [--state-dir <folder>]                         # where sta
 blimey service install [--dry-run] <run arguments>                  # keep `blimey run <run arguments>` going under launchd
 blimey service uninstall
 blimey fixture import <ofl.json> [--out <show>/fixtures/<name>.yaml]
-blimey record <out.mid> [--midi-port IAC] [--until-stop] [--artnet <emu.dump> [--artnet-universe <n>]]
+blimey record <out.mid> [--midi-port IAC] [--until-stop] [--artnet <emu.dump> --show <show> [--artnet-universe <n>]]
 blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run outputs>]
 ```
 
@@ -278,7 +278,13 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 ## Recording and soak
 
-`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, SIGTERM or SIGHUP (the terminal closing), or with `--until-stop` at the first Stop after a Start or Continue. The files are rewritten atomically every 5 s and at the end, so a crash or `kill -9` loses at most the last 5 s. `--artnet <dump>` also records the ArtDmx packets received on UDP 6454 to a [frame dump](frame-dump.md) on the same timeline, laid out like Blimey's own: the universe given by `--artnet-universe` (15-bit port-address, default 0) stands for the Enttec box, and every other universe is written as `<universe>:<channel>=<value>`. Each packet gives one line with the latest values of every universe seen so far, so times are not on the 25 ms grid. If the capture fails mid-take, the MIDI keeps recording, and `record` reports the dump as incomplete and exits 1.
+`blimey record <out.mid>` writes everything that arrives on the MIDI port, chosen as `run` chooses it, to a format 0 Standard MIDI File: channel messages as MIDI events, clock, Start, Stop and anything else as SMF escapes. Time 0 is the first message; times are kept to 20 µs (the file runs at 120 BPM, 25,000 ticks per beat), rounded up, so every event replays in the frame it arrived in. It stops on Ctrl-C, SIGTERM or SIGHUP (the terminal closing), or with `--until-stop` at the first Stop after a Start or Continue. The files are saved every 5 s and at the end (the MIDI file rewritten atomically, the dump appended to), so a crash or `kill -9` loses at most the last 5 s. `--artnet <dump> --show <show>` also records the ArtDmx packets received on UDP 6454 to a [frame dump](frame-dump.md) on the same timeline and 25 ms frame grid as `blimey replay`'s, laid out like it, so the two compare line by line:
+
+- the Enttec stand-in, `--artnet-universe` (15-bit port-address), is written as plain channels. It is chosen as `run --artnet` chooses its mirror: universe 0 by default, unless one of the show's pixel grids uses 0, in which case the grid keeps it. Naming a grid's universe is refused.
+- the show's pixel-grid universes are written as `<universe>:<channel>=<value>`;
+- any other universe is ignored, such as a desk elsewhere on the network.
+
+Frame N holds the latest values received by N × 25 ms, a short packet leaving the rest of its universe at 0. A frame with no packet gets no line. Packets before the first MIDI message only set the values the first frame starts from. If the capture fails mid-take, the MIDI keeps recording, and `record` reports the dump as incomplete and exits 1.
 
 `blimey soak <setlist>` plays a setlist's songs back to back, 2 s apart and each starting on a frame, looped for `--hours` (default 4), through the same render loop as `run`. A setlist is a YAML file, paths relative to it:
 

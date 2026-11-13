@@ -15,7 +15,7 @@ Copy this list into the song's PR or an issue, one per song.
 1. **Record the MIDI and EMU's output.** In Reaper, go to the start of the song with EMU running, then:
 
    ```sh
-   blimey record shows/fossile/recordings/<song>.mid --until-stop --artnet tests/fixtures/dumps/emu-fossile-<song>.dump
+   blimey record shows/fossile/recordings/<song>.mid --until-stop --artnet tests/fixtures/dumps/emu-fossile-<song>.dump --show shows/fossile
    ```
 
    Press play and let the song run to the end; recording stops when Reaper stops (or Ctrl-C). Time 0 is the first MIDI message, in both files. Check the summary line: a few thousand events for a song with MIDI clock.
@@ -28,7 +28,7 @@ Copy this list into the song's PR or an issue, one per song.
    blimey replay shows/fossile --midi shows/fossile/recordings/<song>.mid --out "$TMPDIR/<song>.dump"
    ```
 
-   and compare it with `tests/fixtures/dumps/emu-fossile-<song>.dump`. There is no automated comparison yet: EMU sends at its own rate, so its lines don't fall on Blimey's 25 ms grid. Compare a few moments by time (`grep '^12[0-9][0-9][0-9] '` around 12 s in both), channel by channel. Legacy channels should match exactly; differences on ported cues are expected and reviewed by eye on the preview.
+   and compare it with `tests/fixtures/dumps/emu-fossile-<song>.dump`. Both are on the same 25 ms frame grid, with only the show's universes in the capture, so the same line in each is the same moment: compare a few moments (`grep '^12[0-9][0-9][0-9] '` around 12 s in both), channel by channel. There is no automated comparison yet; EMU sends at its own rate, so the capture has no line for a frame EMU sent nothing in. Legacy channels should match exactly; differences on ported cues are expected and reviewed by eye on the preview.
 
 4. **Check on the preview.** Run the show with the web UI and play the song from Reaper:
 
