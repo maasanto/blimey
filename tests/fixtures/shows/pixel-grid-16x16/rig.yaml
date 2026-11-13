@@ -1,0 +1,14 @@
+# A 16×16 RGB grid over Art-Net, filling the canvas: 256 pixels, so 170 on universe 1 and the
+# rest on universe 2. Serpentine from the top right, as seen from the audience; BGR emitters.
+fixtures:
+  - name: grid
+    type: pixel-grid
+    columns: 16
+    rows: 16
+    colour_order: BGR
+    wiring: serpentine
+    start_corner: top-right
+    output: artnet
+    universe: 1
+    address: 1
+    canvas: { x: 0, y: 0, width: 1, height: 1 }

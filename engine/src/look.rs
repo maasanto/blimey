@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use crate::colour::{Rgb, RgbwMode, to_dmx};
-use crate::rig::Rig;
+use crate::fixture::PixelChannels;
+use crate::rig::{Fixture, Pixel, Rig};
 use crate::{Frame, Show};
 
 /// The settings applied to a fixture or group, as written in show files
@@ -106,7 +107,7 @@ impl Look {
 }
 
 /// A palette name, or a literal `#rrggbb`.
-fn colour(show: &Show, name: &str) -> Result<Rgb, String> {
+pub(crate) fn colour(show: &Show, name: &str) -> Result<Rgb, String> {
     if name.starts_with('#') {
         return Rgb::from_hex(name);
     }
@@ -123,37 +124,76 @@ fn colour(show: &Show, name: &str) -> Result<Rgb, String> {
 /// colour channels scaled by it.
 pub fn render(rig: &Rig, look: &Look, frame: &mut Frame) {
     for fixture in &rig.fixtures {
-        let Some(fixture_look) = look.fixtures.get(&fixture.name) else {
-            continue;
-        };
-        let start = fixture.address - 1;
-        for (offset, channel) in fixture.channels.iter().enumerate() {
-            frame[start + offset] = channel.default;
+        if let Some(fixture_look) = look.fixtures.get(&fixture.name) {
+            let colour = |_: &Pixel| fixture_look.color;
+            draw_fixture(
+                fixture,
+                fixture_look.dimmer,
+                fixture_look.rgbw,
+                colour,
+                frame,
+            );
         }
-        let colour_scale = match fixture.dimmer {
-            Some(offset) => {
-                frame[start + offset] = to_dmx(fixture_look.dimmer);
-                1.0
-            }
-            None => fixture_look.dimmer,
-        };
-        for pixel in &fixture.pixels {
-            let mode = match pixel.channels.white {
-                Some(_) => fixture_look.rgbw,
-                None => RgbwMode::Saturated,
-            };
-            let emitted = mode.convert(fixture_look.color);
-            let emitters = [
-                (pixel.channels.red, emitted.red),
-                (pixel.channels.green, emitted.green),
-                (pixel.channels.blue, emitted.blue),
-                (pixel.channels.white, emitted.white),
-            ];
-            for (offset, level) in emitters {
-                if let Some(offset) = offset {
-                    frame[start + offset] = to_dmx(level * colour_scale);
-                }
-            }
+    }
+}
+
+/// Draws one fixture over `frame`: every channel at its profile default, then `dimmer` and
+/// each pixel's colour. A fixture with a dimmer channel gets `dimmer` there; one without has
+/// its colour channels scaled by it.
+fn draw_fixture(
+    fixture: &Fixture,
+    dimmer: f32,
+    rgbw: RgbwMode,
+    colour: impl Fn(&Pixel) -> Rgb,
+    frame: &mut Frame,
+) {
+    let start = fixture.address - 1;
+    for (offset, channel) in fixture.channels.iter().enumerate() {
+        frame[start + offset] = channel.default;
+    }
+    let colour_scale = match fixture.dimmer {
+        Some(offset) => {
+            frame[start + offset] = to_dmx(dimmer);
+            1.0
+        }
+        None => dimmer,
+    };
+    for pixel in &fixture.pixels {
+        draw_pixel(
+            pixel.channels,
+            start,
+            colour(pixel),
+            rgbw,
+            colour_scale,
+            frame,
+        );
+    }
+}
+
+/// Writes `colour`, scaled by `scale`, to a pixel's emitters at `channels` from `start`.
+/// `rgbw` only applies to a pixel with a white emitter.
+pub(crate) fn draw_pixel(
+    channels: PixelChannels,
+    start: usize,
+    colour: Rgb,
+    rgbw: RgbwMode,
+    scale: f32,
+    frame: &mut Frame,
+) {
+    let mode = match channels.white {
+        Some(_) => rgbw,
+        None => RgbwMode::Saturated,
+    };
+    let emitted = mode.convert(colour);
+    let emitters = [
+        (channels.red, emitted.red),
+        (channels.green, emitted.green),
+        (channels.blue, emitted.blue),
+        (channels.white, emitted.white),
+    ];
+    for (offset, level) in emitters {
+        if let Some(offset) = offset {
+            frame[start + offset] = to_dmx(level * scale);
         }
     }
 }
@@ -231,6 +271,7 @@ mod tests {
             rig: Rig {
                 fixtures: vec![par],
                 groups: BTreeMap::from([("everything".into(), vec!["par".into()])]),
+                ..Rig::default()
             },
             palettes: BTreeMap::from([("pink".into(), Rgb::from_hex("#ff8080").unwrap())]),
             ..Show::default()

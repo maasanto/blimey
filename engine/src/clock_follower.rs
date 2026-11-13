@@ -245,16 +245,28 @@ impl ClockFollower {
     /// How far through `length` it is at `at`, from 0 to 1, counting from `from`. Beats and bars
     /// count elapsed beats, so they follow the tempo while they run. A zero length is done at once.
     pub fn progress(&self, length: Length, from: Moment, at: Duration) -> f64 {
-        let beats = || self.beats(at) - from.beats;
-        let (elapsed, span) = match length {
-            Length::Time(span) => (at.saturating_sub(from.at).as_secs_f64(), span.as_secs_f64()),
-            Length::Beats(span) => (beats(), span),
-            Length::Bars(bars) => (beats(), bars * self.time_signature.beats_per_bar()),
-        };
+        let (elapsed, span) = self.elapsed(length, from, at);
         if span > 0.0 {
             (elapsed / span).clamp(0.0, 1.0)
         } else {
             1.0
+        }
+    }
+
+    /// How many `length`s have passed at `at` since `from`, unclamped, for effects that repeat.
+    /// Counts as `progress` does. `length` must not be zero.
+    pub fn cycles(&self, length: Length, from: Moment, at: Duration) -> f64 {
+        let (elapsed, span) = self.elapsed(length, from, at);
+        elapsed / span
+    }
+
+    /// Time or beats from `from` to `at`, and `length` in the same unit.
+    fn elapsed(&self, length: Length, from: Moment, at: Duration) -> (f64, f64) {
+        let beats = || self.beats(at) - from.beats;
+        match length {
+            Length::Time(span) => (at.saturating_sub(from.at).as_secs_f64(), span.as_secs_f64()),
+            Length::Beats(span) => (beats(), span),
+            Length::Bars(bars) => (beats(), bars * self.time_signature.beats_per_bar()),
         }
     }
 

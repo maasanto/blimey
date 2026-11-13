@@ -14,7 +14,9 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
 use blimey_engine::rig::Rig;
-use blimey_engine::{DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status};
+use blimey_engine::{
+    ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status,
+};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -36,6 +38,8 @@ pub struct StreamSink {
     rig: Arc<watch::Sender<Rig>>,
     /// The engine state behind the next frame.
     status: Status,
+    /// The Art-Net universes of the next frame, for the grids' preview colours.
+    artnet: ArtNetFrames,
     frames: watch::Sender<Arc<str>>,
     midi: broadcast::Sender<Arc<str>>,
     test_flash: TestFlash,
@@ -91,11 +95,18 @@ impl StreamSink {
         Ok(StreamSink {
             rig,
             status: Status::default(),
+            artnet: ArtNetFrames::new(),
             frames,
             midi,
             test_flash,
             _server: server,
         })
+    }
+
+    /// The latest `frame` message published.
+    #[cfg(test)]
+    pub fn latest_frame(&self) -> Value {
+        serde_json::from_str(&self.frames.borrow()).unwrap()
     }
 
     /// Draws a fixture test started from the UI over `frame`, if one is running.
@@ -106,9 +117,14 @@ impl StreamSink {
 
 impl DmxSink for StreamSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
-        let message = frame_message(&self.rig.borrow(), at, frame, &self.status);
+        let rig = self.rig.borrow();
+        let message = frame_message(&rig, at, frame, &self.artnet, &self.status);
         self.frames.send_replace(message.to_string().into());
         Ok(())
+    }
+
+    fn send_artnet(&mut self, universes: &ArtNetFrames) {
+        self.artnet = universes.clone();
     }
 
     fn status(&mut self, status: &Status) {
@@ -229,18 +245,35 @@ fn rig_message(rig: &Rig, mode: Mode) -> Value {
             })
         })
         .collect();
+    let grids: Vec<Value> = rig
+        .grids
+        .iter()
+        .map(|grid| {
+            json!({
+                "name": grid.name,
+                "pixels": grid.pixels.iter().map(|pixel| json!({ "x": pixel.x, "y": pixel.y })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     json!({
         "type": "rig",
         "protocol": PROTOCOL_VERSION,
         "mode": mode.name(),
         "fixtures": fixtures,
+        "grids": grids,
         "groups": rig.groups,
     })
 }
 
-fn frame_message(rig: &Rig, at: Duration, frame: &Frame, status: &Status) -> Value {
+fn frame_message(
+    rig: &Rig,
+    at: Duration,
+    frame: &Frame,
+    artnet: &ArtNetFrames,
+    status: &Status,
+) -> Value {
     let pixels: serde_json::Map<String, Value> = rig
-        .pixel_colours(frame)
+        .pixel_colours(frame, artnet)
         .into_iter()
         .map(|(name, colours)| {
             let hex: Vec<String> = colours.into_iter().map(|colour| colour.to_hex()).collect();
@@ -419,7 +452,13 @@ mod tests {
             live_parameters,
         };
 
-        let message = frame_message(&Rig::default(), Duration::ZERO, &[0; 512], &status);
+        let message = frame_message(
+            &Rig::default(),
+            Duration::ZERO,
+            &[0; 512],
+            &ArtNetFrames::new(),
+            &status,
+        );
 
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
@@ -428,5 +467,32 @@ mod tests {
         );
         assert_eq!(message["master"], 0.25);
         assert_eq!(message["live_parameters"][2], 0.5);
+    }
+
+    #[test]
+    fn grids_come_with_their_pixel_positions_and_art_net_colours() {
+        let rig = Rig::parse(
+            "fixtures:\n  - { name: wall, type: pixel-grid, columns: 2, rows: 1, colour_order: GRB, output: artnet, universe: 3, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n",
+            Path::new("."),
+        )
+        .unwrap();
+        let mut universe = [0; 512];
+        universe[4] = 255; // GRB: the second pixel's red
+
+        let rig_message = rig_message(&rig, Mode::Show);
+        let frame = frame_message(
+            &rig,
+            Duration::ZERO,
+            &[0; 512],
+            &ArtNetFrames::from([(3, universe)]),
+            &Status::default(),
+        );
+
+        assert_eq!(rig_message["fixtures"], json!([]));
+        assert_eq!(
+            rig_message["grids"],
+            json!([{ "name": "wall", "pixels": [{ "x": 0.25, "y": 0.5 }, { "x": 0.75, "y": 0.5 }] }])
+        );
+        assert_eq!(frame["pixels"]["wall"], json!(["#000000", "#ff0000"]));
     }
 }

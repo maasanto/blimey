@@ -1,0 +1,10 @@
+# A 1×32 RGBW column on the Enttec universe, mid-stage, floor to top, wired from the top.
+fixtures:
+  - name: column
+    type: pixel-grid
+    columns: 1
+    rows: 32
+    colour_order: WRGB
+    start_corner: top-right
+    address: 101
+    canvas: { x: 0.5, y: 0, height: 1 }
