@@ -182,9 +182,8 @@ impl Cue {
     ) {
         let frame = &mut out.enttec;
         let mut look = match self {
-            Cue::Pixel(scene) => {
-                return scene.draw(rig, clock, started, at, intensity, out, dimmers);
-            }
+            // Pixel cues draw above every other cue, so no look reads virtual dimmers after them.
+            Cue::Pixel(scene) => return scene.draw(rig, clock, started, at, intensity, out),
             Cue::Scene(scene) => scene.look.clone(),
             Cue::Swell(swell) => swell.target.clone(),
             Cue::Pattern(pattern) => match &pattern.target {

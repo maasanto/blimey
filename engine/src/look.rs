@@ -150,19 +150,29 @@ impl VirtualDimmers {
         }
     }
 
-    /// Moves each entry towards `above`'s by `opacity` (0–1), as the frames crossfade.
+    /// Moves towards `above` by `opacity` (0–1) as the frames crossfade, which mix what is
+    /// shown, the colour at full times the intensity. The intensities mix alike, and the colour
+    /// at full is what is shown over the intensity, so it stays the colour the frame shows: a
+    /// colour hidden at intensity 0, under a blackout, adds nothing. Where nothing is lit, the
+    /// colours mix as they are.
     pub fn crossfade(&mut self, above: &VirtualDimmers, opacity: f32) {
-        let mix = |below: &mut f32, above: f32| *below += (above - *below) * opacity;
-        for (below, above) in self.at_full.iter_mut().zip(above.at_full) {
-            mix(below, above);
-        }
-        for (below, above) in self.intensity.iter_mut().zip(above.intensity) {
-            mix(below, above);
+        let mix = |below: f32, above: f32| below + (above - below) * opacity;
+        for channel in 0..DMX_CHANNELS {
+            let (colour, intensity) = (self.at_full[channel], self.intensity[channel]);
+            let (lit_colour, lit_intensity) = (above.at_full[channel], above.intensity[channel]);
+            let mixed_intensity = mix(intensity, lit_intensity);
+            let shown = mix(colour * intensity, lit_colour * lit_intensity);
+            self.at_full[channel] = if mixed_intensity > 0.0 {
+                (shown / mixed_intensity).min(1.0)
+            } else {
+                mix(colour, lit_colour)
+            };
+            self.intensity[channel] = mixed_intensity;
         }
     }
 
     /// Records the emitter on `channel` (0-based) as `at_full`, shown at `intensity`.
-    pub(crate) fn set(&mut self, channel: usize, at_full: f32, intensity: f32) {
+    fn set(&mut self, channel: usize, at_full: f32, intensity: f32) {
         self.at_full[channel] = at_full;
         self.intensity[channel] = intensity;
     }
@@ -258,31 +268,18 @@ fn draw_fixture(
             colour_scale,
             frame,
         );
-        if fixture.dimmer.is_none() {
-            record_virtual_dimmer(start, emitted, colour_scale, dimmers);
+        // Only read for a fixture without a dimmer channel, where `colour_scale` is the dimmer.
+        for (offset, at_full) in emitted {
+            if let Some(offset) = offset {
+                dimmers.set(start + offset, at_full, colour_scale);
+            }
         }
     }
 }
-
-/// Records a pixel of a fixture without a dimmer channel, drawn as `emitted` at `intensity`.
-pub(crate) fn record_virtual_dimmer(
-    start: usize,
-    emitted: Emitted,
-    intensity: f32,
-    dimmers: &mut VirtualDimmers,
-) {
-    for (offset, at_full) in emitted {
-        if let Some(offset) = offset {
-            dimmers.set(start + offset, at_full, intensity);
-        }
-    }
-}
-
-/// A pixel's emitters, as offsets from its fixture's start, and their levels at full.
-pub(crate) type Emitted = [(Option<usize>, f32); 4];
 
 /// Writes `colour`, scaled by `scale`, to a pixel's emitters at `channels` from `start`, and
-/// returns their levels at full. `rgbw` only applies to a pixel with a white emitter.
+/// returns them, as offsets from `start`, with their levels at full. `rgbw` only applies to a
+/// pixel with a white emitter.
 pub(crate) fn draw_pixel(
     channels: PixelChannels,
     start: usize,
@@ -290,7 +287,7 @@ pub(crate) fn draw_pixel(
     rgbw: RgbwMode,
     scale: f32,
     frame: &mut Frame,
-) -> Emitted {
+) -> [(Option<usize>, f32); 4] {
     let mode = match channels.white {
         Some(_) => rgbw,
         None => RgbwMode::Saturated,

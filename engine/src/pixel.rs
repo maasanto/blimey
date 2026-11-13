@@ -13,7 +13,7 @@ use crate::clock_follower::{ClockFollower, Moment};
 use crate::colour::{Rgb, RgbwMode, to_dmx};
 use crate::duration::Length;
 use crate::envelope::Envelope;
-use crate::look::{VirtualDimmers, colour, draw_pixel, record_virtual_dimmer};
+use crate::look::{colour, draw_pixel};
 use crate::rig::{Fixture, Rig, line_key};
 use crate::{Show, Universes};
 
@@ -229,8 +229,7 @@ impl PixelScene {
     /// Draws the scene at full opacity over `out`, on every fixture and grid of the rig.
     ///
     /// `intensity` (0–1) is the cue's input level, today the note's velocity: it goes on the
-    /// dimmer channel of fixtures that have one, and on the virtual dimmer of the others.
-    #[allow(clippy::too_many_arguments)]
+    /// dimmer channel of fixtures that have one, and scales the colours of the others.
     pub fn draw(
         &self,
         rig: &Rig,
@@ -239,7 +238,6 @@ impl PixelScene {
         at: Duration,
         intensity: f32,
         out: &mut Universes,
-        dimmers: &mut VirtualDimmers,
     ) {
         let layer = self.layer.at(rig, clock, started, at, self.seed);
         let layer_2 = self.layer_2.as_ref().map(|(blend, layer)| {
@@ -267,7 +265,7 @@ impl PixelScene {
             let centre = fixture.centre();
             for pixel in &fixture.pixels {
                 let lit = colour(pixel.x, pixel.y, centre);
-                let emitted = draw_pixel(
+                draw_pixel(
                     pixel.channels,
                     start,
                     lit,
@@ -275,9 +273,6 @@ impl PixelScene {
                     colour_scale,
                     &mut out.enttec,
                 );
-                if fixture.dimmer.is_none() {
-                    record_virtual_dimmer(start, emitted, intensity, dimmers);
-                }
             }
         }
         for pixel in rig.grids.iter().flat_map(|grid| &grid.pixels) {
