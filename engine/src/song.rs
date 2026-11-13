@@ -56,8 +56,8 @@ impl Song {
         if file.program > MIDI_DATA_MAX {
             return Err(located("program", "program must be 0-127".into()));
         }
-        if file.bpm.is_some_and(|bpm| bpm <= 0.0) {
-            return Err(located("bpm", "bpm must be above 0".into()));
+        if file.bpm.is_some_and(|bpm| !(bpm > 0.0 && bpm.is_finite())) {
+            return Err(located("bpm", "bpm must be a number above 0".into()));
         }
         let time_signature = file
             .time_signature
@@ -260,6 +260,13 @@ mod tests {
     #[test]
     fn rejects_numbers_outside_midi() {
         assert_eq!(error("program: 128\n"), "line 1: program must be 0-127");
+        for bpm in ["0", ".nan", ".inf"] {
+            assert_eq!(
+                error(&format!("program: 3\nbpm: {bpm}\n")),
+                "line 2: bpm must be a number above 0",
+                "bpm: {bpm}"
+            );
+        }
         assert_eq!(
             error("program: 3\ncues:\n  128: { name: x, type: scene, values: {} }\n"),
             "line 3: cue 128: cue numbers are note numbers, 0-127"
