@@ -94,6 +94,9 @@ pub struct CueStatus {
     pub name: String,
     pub intensity: f32,
     pub released: bool,
+    /// Beats since the cue started, or for a pattern since its loop did: negative while the
+    /// loop waits for its bar line. Places the builder's playhead.
+    pub beats: f64,
 }
 
 impl Default for Playback {
@@ -306,7 +309,8 @@ impl Playback {
         output
     }
 
-    pub fn status(&self, show: &Show) -> Status {
+    /// The state behind the frame due at `at`.
+    pub fn status(&self, show: &Show, at: Duration) -> Status {
         let song = self.song(show);
         Status {
             song: song.map(|song| song.name.clone()),
@@ -321,6 +325,7 @@ impl Playback {
                         name: cue.name().into(),
                         intensity: active.intensity,
                         released: active.released.is_some(),
+                        beats: self.clock.as_ref()?.beats(at) - active.started.beats,
                     })
                 })
                 .collect(),
@@ -456,5 +461,38 @@ mod tests {
                 "{name}: frame index of the first difference"
             );
         }
+    }
+
+    #[test]
+    fn status_counts_beats_from_a_cue_start_and_a_pattern_loop_start() {
+        let show = cues_show();
+        let mut playback = Playback::default();
+        let seconds = Duration::from_secs_f64;
+        // No clock, 120 BPM: 2 beats a second. The pattern's note lands mid-bar, so its loop
+        // starts on the bar 2 line at 2 s.
+        for (at, message) in [
+            (0.0, [CUE_PROGRAM_CHANGE, 1].as_slice()),
+            (0.5, &[CUE_NOTE_ON, 39, 127]),
+            (1.0, &[CUE_NOTE_ON, 42, 127]),
+        ] {
+            playback.apply(
+                &show,
+                &MidiEvent {
+                    at: seconds(at),
+                    message: message.to_vec(),
+                },
+            );
+        }
+        let beats = |at: f64| -> Vec<(u8, f64)> {
+            let status = playback.status(&show, seconds(at));
+            status
+                .cues
+                .iter()
+                .map(|cue| (cue.note, cue.beats))
+                .collect()
+        };
+
+        assert_eq!(beats(1.5), [(39, 2.0), (42, -1.0)]);
+        assert_eq!(beats(3.25), [(39, 5.5), (42, 2.5)]);
     }
 }
