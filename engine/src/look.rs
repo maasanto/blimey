@@ -54,8 +54,9 @@ impl TryFrom<String> for Level {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FixtureLook {
-    /// `None` keeps the colour the layers below give the fixture, so a look of only a dimmer
-    /// brightens or dims what is underneath.
+    /// `None` keeps the colour the layers below give the fixture, so a look of only a dimmer sets
+    /// the intensity of what is underneath: its dimmer channel, or without one its colour scaled
+    /// down (see `render`).
     pub color: Option<Rgb>,
     pub dimmer: f32,
     pub rgbw: RgbwMode,
@@ -102,6 +103,13 @@ impl Look {
                 look.dimmer = dimmer;
             }
             if let Some(rgbw) = settings.rgbw {
+                if look.color.is_none() {
+                    return Err(format!(
+                        "rgbw needs a color for {:?}: without one the fixture keeps the colour \
+                         from below, already converted; add a color or remove rgbw",
+                        fixture.name
+                    ));
+                }
                 look.rgbw = rgbw;
             }
         }
@@ -244,12 +252,14 @@ pub fn scale_intensity(rig: &Rig, fixtures: &BTreeSet<String>, factor: f32, fram
         .iter()
         .filter(|fixture| fixtures.contains(&fixture.name))
     {
-        let offsets: Vec<usize> = match fixture.dimmer {
-            Some(offset) => vec![offset],
-            None => colour_channels(fixture).collect(),
-        };
-        for offset in offsets {
-            scale(&mut frame[fixture.address - 1 + offset], factor);
+        let start = fixture.address - 1;
+        match fixture.dimmer {
+            Some(offset) => scale(&mut frame[start + offset], factor),
+            None => {
+                for offset in colour_channels(fixture) {
+                    scale(&mut frame[start + offset], factor);
+                }
+            }
         }
     }
 }
@@ -423,6 +433,20 @@ mod tests {
             rendered(&show, &look, [0; DMX_CHANNELS])[19..22],
             [128, 64, 64]
         );
+    }
+
+    #[test]
+    fn rgbw_without_a_colour_to_convert_is_refused() {
+        let show = par_show();
+        let mut look = Look::default();
+
+        assert_eq!(
+            set(&show, &mut look, "par", &["dimmer=50%", "rgbw=white-rich"]).unwrap_err(),
+            "rgbw needs a color for \"par\": without one the fixture keeps the colour from below, \
+             already converted; add a color or remove rgbw"
+        );
+        set(&show, &mut look, "par", &["color=pink"]).unwrap();
+        set(&show, &mut look, "par", &["rgbw=white-rich"]).unwrap();
     }
 
     #[test]
