@@ -179,7 +179,8 @@ impl Fixture {
             dimmer,
             pixels: entry.canvas.place(&pixel_channels),
         };
-        if fixture.address == 0 || fixture.last_address() > DMX_CHANNELS {
+        // The address check comes first: `last_address` overflows for a huge one.
+        if !(1..=DMX_CHANNELS).contains(&fixture.address) || fixture.last_address() > DMX_CHANNELS {
             return Err(format!(
                 "{} channels at address {} do not fit in DMX 1-{DMX_CHANNELS}",
                 fixture.channels.len(),
@@ -237,5 +238,26 @@ impl Canvas {
                 channels,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_huge_address_is_refused_instead_of_overflowing() {
+        let profiles = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/shows/four-washes/fixtures");
+        let rig = |address: &str| {
+            format!(
+                "fixtures:\n  - {{ name: wash, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: {address}, canvas: {{ x: 0, y: 0 }} }}\n"
+            )
+        };
+
+        let error = Rig::parse(&rig("18446744073709551610"), &profiles).unwrap_err();
+
+        assert!(error.contains("do not fit in DMX 1-512"), "{error}");
+        assert!(Rig::parse(&rig("497"), &profiles).is_ok());
     }
 }

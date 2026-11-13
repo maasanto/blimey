@@ -102,11 +102,14 @@ impl Mode {
                 continue;
             };
             let pixel = channel.pixel.unwrap_or(1);
-            if pixel == 0 {
+            // Each pixel needs a channel of its own, so a larger number is a typo, and one in
+            // the billions would exhaust memory below.
+            if !(1..=self.channels.len()).contains(&pixel) {
                 return Err(format!(
-                    "mode {}: channel {} has pixel 0; pixels count from 1",
+                    "mode {}: channel {} has pixel {pixel}; pixels count from 1 to the mode's {} channels",
                     self.name,
-                    offset + 1
+                    offset + 1,
+                    self.channels.len()
                 ));
             }
             if pixels.len() < pixel {
@@ -196,6 +199,22 @@ mod tests {
         assert_eq!(
             mode.layout().unwrap_err(),
             "mode 3ch: channels 1 and 3 both drive Red of pixel 1"
+        );
+    }
+
+    #[test]
+    fn layout_rejects_a_pixel_beyond_the_channel_count() {
+        let mode = Mode {
+            name: "2ch".into(),
+            channels: vec![
+                channel(Attribute::Red, Some(4_000_000_000)),
+                channel(Attribute::Green, Some(0)),
+            ],
+        };
+
+        assert_eq!(
+            mode.layout().unwrap_err(),
+            "mode 2ch: channel 1 has pixel 4000000000; pixels count from 1 to the mode's 2 channels"
         );
     }
 }
