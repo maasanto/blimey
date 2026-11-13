@@ -253,6 +253,8 @@ test('malformed request bodies are refused with 422', async ({ page, show, start
     ['api/songs/demo/bpm', 'put'],
     ['api/midi', 'post'],
     ['api/preview', 'put'],
+    ['api/preview/pixel', 'put'],
+    ['api/pixel-thumbnail', 'post'],
   ]) {
     for (const data of [[1, 2], 7, { cue: 'x', replaces: 'y', bpm: 'fast', message: 'note' }]) {
       const response = await page.request[method](`${url}${path}`, { data });
@@ -288,6 +290,7 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
     page.request.post(`${url}api/songs`, { data: { name: 'encore', program: 7 } }),
     page.request.post(`${url}api/redo`),
     page.request.put(`${url}api/preview`, { data: { 'all-wash': { color: '#ffffff' } } }),
+    page.request.put(`${url}api/preview/pixel`, { data: { song: 'demo', cue: { name: 'x', type: 'pixel' } } }),
     page.request.post(`${url}api/midi`, { data: { message: [0x91, 38, 127] } }),
     page.request.post(`${url}api/undo`),
   ];

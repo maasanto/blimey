@@ -16,7 +16,7 @@ use axum::response::Response;
 use axum::routing::get;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
-    ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status,
+    ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status, Universes,
 };
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -122,12 +122,12 @@ impl StreamSink {
         serde_json::from_str(&self.frames.borrow()).unwrap()
     }
 
-    /// Draws what the UI puts above every layer over `frame`: the builder's look, then a
-    /// fixture test if one is running.
-    pub fn apply_overlays(&self, at: Duration, frame: &mut Frame) {
+    /// Draws what the UI puts above every layer over `out`: the builder's look or pixel scene,
+    /// then a fixture test if one is running.
+    pub fn apply_overlays(&self, at: Duration, out: &mut Universes) {
         let rig = self.rig.borrow();
-        self.preview.apply(&rig, at, frame);
-        self.test_flash.apply(&rig, at, frame);
+        self.preview.apply(&rig, at, out);
+        self.test_flash.apply(&rig, at, out);
     }
 }
 
@@ -488,6 +488,7 @@ mod tests {
                 name: "verse-blue".into(),
                 intensity: 1.0,
                 released: false,
+                beats: 2.5,
             }],
             master: 0.25,
             live_parameters,
@@ -504,7 +505,7 @@ mod tests {
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
             message["cues"],
-            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false }])
+            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }])
         );
         assert_eq!(message["master"], 0.25);
         assert_eq!(message["live_parameters"][2], 0.5);

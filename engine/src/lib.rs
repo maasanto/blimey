@@ -240,7 +240,7 @@ pub fn run(
         if let Some(line) = playback.log_line(deadline) {
             eprintln!("blimey: {line}");
         }
-        sink.status(&playback.status(show));
+        sink.status(&playback.status(show, deadline));
         // Reported by the driver; see `DmxSink::send_artnet`.
         let _ = sink.send_artnet(&output.artnet);
         sink.send(clock.now(), &output.enttec)?;

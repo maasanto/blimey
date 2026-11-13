@@ -2,6 +2,7 @@
 //! active cues, the master dimmer and the live parameters. Renders it in layer order: legacy,
 //! then cues, then the master dimmer.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -26,8 +27,6 @@ const MASTER_CONTROLLER: u8 = 7;
 const FIRST_LIVE_PARAMETER: u8 = 20;
 pub const LIVE_PARAMETERS: usize = 8;
 const MIDI_DATA_MAX: f32 = 127.0;
-/// Reaper's default tempo, for a song without `bpm` when no MIDI clock arrives.
-const DEFAULT_BPM: f32 = 120.0;
 
 pub(crate) struct Playback {
     legacy: Frame,
@@ -94,6 +93,9 @@ pub struct CueStatus {
     pub name: String,
     pub intensity: f32,
     pub released: bool,
+    /// Beats since the cue started, or for a pattern since its loop did: negative while the
+    /// loop waits for its bar line. Places the builder's playhead.
+    pub beats: f64,
 }
 
 impl Default for Playback {
@@ -161,10 +163,8 @@ impl Playback {
     fn select_song(&mut self, show: &Show, program: u8, at: Duration) {
         let song = show.songs.iter().find(|song| song.program == program);
         self.song = song.map(|song| song.name.clone());
-        self.clock = song.map(|song| {
-            let bpm = song.bpm.unwrap_or(DEFAULT_BPM);
-            ClockFollower::started_at(at, f64::from(bpm), song.time_signature)
-        });
+        self.clock =
+            song.map(|song| ClockFollower::started_at(at, song.tempo(), song.time_signature));
         self.cues.clear();
         self.safe_look = false;
     }
@@ -256,7 +256,7 @@ impl Playback {
         look::render(&show.rig, look, &mut output.enttec, &mut dimmers);
         // The builder's metronome: an edited `bpm` takes over at once.
         if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
-            clock.set_song_bpm(at, f64::from(song.bpm.unwrap_or(DEFAULT_BPM)));
+            clock.set_song_bpm(at, song.tempo());
         }
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
             apply_master(&show.rig, self.master, &mut output);
@@ -275,12 +275,27 @@ impl Playback {
                     .is_none_or(|release| faded_out(cue, release) < 1.0)
             })
         });
+        let opacity = |active: &ActiveCue, cue: &Cue| match &active.released {
+            None => cue.opacity(clock, active.started, at),
+            Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
+        };
+        // Swells and patterns on a pixel cue's intensity darken it, as a dimmer pattern darkens
+        // its fixtures, and draw nothing themselves. Several on one pixel cue multiply.
+        let mut intensity_scales: BTreeMap<u8, f32> = BTreeMap::new();
+        for active in &self.cues {
+            let cue = &song.cues[&active.note];
+            for note in cue.intensity_targets().into_iter().flatten() {
+                let darkened = opacity(active, cue) * active.intensity;
+                *intensity_scales.entry(*note).or_insert(1.0) *= 1.0 - darkened;
+            }
+        }
         for active in self.layered(song) {
             let cue = &song.cues[&active.note];
-            let opacity = match &active.released {
-                None => cue.opacity(clock, active.started, at),
-                Some(release) => release.opacity * (1.0 - faded_out(cue, release)),
-            };
+            if cue.intensity_targets().is_some() {
+                continue;
+            }
+            let opacity = opacity(active, cue);
+            let intensity = active.intensity * intensity_scales.get(&active.note).unwrap_or(&1.0);
             // Only pixel cues draw on Art-Net: the others get no copy of it to blend back.
             let mut lit = Universes {
                 enttec: output.enttec,
@@ -295,7 +310,7 @@ impl Playback {
                 clock,
                 active.started,
                 at,
-                active.intensity,
+                intensity,
                 &mut lit,
                 &mut lit_dimmers,
             );
@@ -311,7 +326,8 @@ impl Playback {
         output
     }
 
-    pub fn status(&self, show: &Show) -> Status {
+    /// The state behind the frame due at `at`.
+    pub fn status(&self, show: &Show, at: Duration) -> Status {
         let song = self.song(show);
         Status {
             song: song.map(|song| song.name.clone()),
@@ -326,6 +342,7 @@ impl Playback {
                         name: cue.name().into(),
                         intensity: active.intensity,
                         released: active.released.is_some(),
+                        beats: self.clock.as_ref()?.beats(at) - active.started.beats,
                     })
                 })
                 .collect(),
@@ -461,5 +478,72 @@ mod tests {
                 "{name}: frame index of the first difference"
             );
         }
+    }
+
+    #[test]
+    fn status_counts_beats_from_a_cue_start_and_a_pattern_loop_start() {
+        let show = cues_show();
+        let mut playback = Playback::default();
+        let seconds = Duration::from_secs_f64;
+        // No clock, 120 BPM: 2 beats a second. The pattern's note lands mid-bar, so its loop
+        // starts on the bar 2 line at 2 s.
+        for (at, message) in [
+            (0.0, [CUE_PROGRAM_CHANGE, 1].as_slice()),
+            (0.5, &[CUE_NOTE_ON, 39, 127]),
+            (1.0, &[CUE_NOTE_ON, 42, 127]),
+        ] {
+            playback.apply(
+                &show,
+                &MidiEvent {
+                    at: seconds(at),
+                    message: message.to_vec(),
+                },
+            );
+        }
+        let beats = |at: f64| -> Vec<(u8, f64)> {
+            let status = playback.status(&show, seconds(at));
+            status
+                .cues
+                .iter()
+                .map(|cue| (cue.note, cue.beats))
+                .collect()
+        };
+
+        assert_eq!(beats(1.5), [(39, 2.0), (42, -1.0)]);
+        assert_eq!(beats(3.25), [(39, 5.5), (42, 2.5)]);
+    }
+
+    /// The builder's playhead follows a pattern that drives a pixel cue's intensity, though
+    /// the pattern draws nothing itself.
+    #[test]
+    fn a_pattern_linked_to_a_pixel_cue_reports_its_beats_while_it_dims_the_cue() {
+        let mut show = cues_show();
+        let song = "program: 1\ncues:\n  40: { name: red, type: pixel, params: { color: \"#ff0000\" } }\n  42:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { red: intensity }\n    hits:\n      - { at: 1, shape: ramp-up, length: 1 beat, level: 100% }\n";
+        show.songs = vec![Song::parse("linked", song, &show).unwrap()];
+        let mut playback = Playback::default();
+        for message in [
+            [CUE_PROGRAM_CHANGE, 1].as_slice(),
+            &[CUE_NOTE_ON, 40, 127],
+            &[CUE_NOTE_ON, 42, 127],
+        ] {
+            let event = MidiEvent {
+                at: Duration::ZERO,
+                message: message.to_vec(),
+            };
+            playback.apply(&show, &event);
+        }
+        // 120 BPM: half a beat in, half-way up the ramp.
+        let at = Duration::from_millis(250);
+
+        let output = playback.render(&show, &Look::default(), at);
+        let status = playback.status(&show, at);
+
+        assert_eq!(output.enttec[4], 128, "rgb-par red at half intensity");
+        let beats: Vec<(u8, f64)> = status
+            .cues
+            .iter()
+            .map(|cue| (cue.note, cue.beats))
+            .collect();
+        assert_eq!(beats, [(42, 0.5), (40, 0.5)]);
     }
 }

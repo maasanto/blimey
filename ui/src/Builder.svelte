@@ -4,7 +4,7 @@
   let songName = $state('');
   /** The look being built, in order: a later entry wins on the fixtures they share. */
   let look = $state([]);
-  /** The look as it was when an audition took it off the output, until it is edited again. */
+  /** The preview as it was when an audition took it off the output, until it is edited again. */
   let pausedLook = $state(null);
   /**
    * The cue being edited, as in the song file, and its note. `replaces` is the cue as loaded,
@@ -19,7 +19,11 @@
 
 <script>
   import { engine, request } from './engine.svelte.js';
+  import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
+  import PatternGrid from './PatternGrid.svelte';
+  import PixelSceneEditor, { newPixelCue } from './PixelSceneEditor.svelte';
+  import SwellEditor from './SwellEditor.svelte';
 
   // Channel 2, where cues and song select live (docs/api.md, Playback).
   const NOTE_ON = 0x91;
@@ -48,8 +52,39 @@
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
   const values = $derived(Object.fromEntries($state.snapshot(look).map(({ target, settings }) => [target, settings])));
-  const isPaused = $derived(JSON.stringify(values) === pausedLook);
+  const isPixel = $derived(form.cue.type === 'pixel');
+  /** What the output previews while editing: the pixel scene in the cue form, or the look; null for nothing. */
+  const shown = $derived(
+    isPixel && songName
+      ? { path: '/api/preview/pixel', body: { song: songName, cue: withoutEmptyTimes(form.cue) } }
+      : !isPixel && Object.keys(values).length
+        ? { path: '/api/preview', body: values }
+        : null,
+  );
+  const isPaused = $derived(JSON.stringify(shown) === pausedLook);
   const cues = $derived(Object.entries(song?.cues ?? {}).map(([note, cue]) => ({ note: Number(note), cue })));
+  const barBeats = $derived(beatsPerBar(song?.time_signature));
+  /** How far the cue being edited has played, while its saved version is auditioned. */
+  const editedBeats = $derived(
+    engine.frame?.song === songName
+      ? engine.frame.cues.find((cue) => cue.note === form.replaces?.note && !cue.released)?.beats
+      : undefined,
+  );
+
+  /** What a new cue of each type starts as; scenes take the look above when saved. */
+  const newCue = {
+    scene: () => ({ type: 'scene' }),
+    swell: () => ({ type: 'swell', target: { [targets[0]]: { dimmer: '100%' } }, duration: '4 bars' }),
+    pattern: () => ({ type: 'pattern', length: '1 bar', target: { [targets[0]]: 'dimmer' }, hits: [] }),
+    pixel: newPixelCue,
+  };
+
+  /** Starts the new cue over as `type`, keeping what the form shows for every type. */
+  function changeType(type) {
+    const { name, fade_in, release } = form.cue;
+    const kept = { name, ...(release && { release }), ...(fade_in && FADE_IN_TYPES.includes(type) && { fade_in }) };
+    form.cue = { ...kept, ...newCue[type]() };
+  }
 
   async function attempt(action) {
     error = '';
@@ -94,18 +129,20 @@
     loadSong().catch((failure) => (error = failure.message));
   });
 
-  // One preview request at a time, always the latest look, so the output never steps back.
-  let queuedPreview = null;
+  // One preview request at a time, always the latest, so the output never steps back.
+  let queuedPreview;
+  let isQueued = false;
   let previewing = false;
   async function preview(next) {
     queuedPreview = next;
+    isQueued = true;
     if (previewing) return;
     previewing = true;
-    while (queuedPreview) {
-      const values = queuedPreview;
-      queuedPreview = null;
+    while (isQueued) {
+      const current = queuedPreview;
+      isQueued = false;
       try {
-        await (Object.keys(values).length ? request('PUT', '/api/preview', values) : request('DELETE', '/api/preview'));
+        await (current ? request('PUT', current.path, current.body) : request('DELETE', '/api/preview'));
       } catch (failure) {
         error = failure.message;
       }
@@ -114,12 +151,12 @@
   }
 
   // The engine drops a preview it hasn't heard of for a while, so a closed or crashed builder
-  // leaves no look on stage: keep this one alive while it is shown.
+  // leaves nothing on stage: keep this one alive while it is shown.
   $effect(() => {
     if (!editable || isPaused) return;
-    const current = values;
+    const current = shown;
     preview(current);
-    if (!Object.keys(current).length) return;
+    if (!current) return;
     const heartbeat = setInterval(() => preview(current), PREVIEW_REFRESH_MS);
     return () => clearInterval(heartbeat);
   });
@@ -141,14 +178,32 @@
     }
   }
 
-  async function saveCue() {
-    const cue = $state.snapshot(form.cue);
+  function withoutEmptyTimes(edited) {
+    const cue = $state.snapshot(edited);
     for (const optional of ['fade_in', 'release']) if (!cue[optional]) delete cue[optional];
+    return cue;
+  }
+
+  async function saveCue() {
+    const cue = withoutEmptyTimes(form.cue);
     if (cue.type === 'scene') cue.values = values;
     await request('PUT', `/api/songs/${songName}/cues/${form.note}`, { cue, replaces: form.replaces });
     notice = `Saved cue ${form.note} in ${songName}.`;
     await reloadAfterSave();
     form.replaces = { note: form.note, cue: $state.snapshot(song.cues[form.note]) };
+  }
+
+  /**
+   * Makes the swell or pattern on `note` drive the intensity of the pixel scene being edited,
+   * by the scene's name as saved: the engine refuses a name no saved pixel cue has.
+   */
+  async function linkIntensity(note) {
+    const { name } = form.replaces.cue;
+    const linked = $state.snapshot(song.cues[note]);
+    const cue = { ...linked, target: { [name]: 'intensity' } };
+    await request('PUT', `/api/songs/${songName}/cues/${note}`, { cue, replaces: { note, cue: linked } });
+    notice = `Cue ${note} now drives the intensity of ${name}.`;
+    await reloadAfterSave();
   }
 
   async function deleteCue(note) {
@@ -202,15 +257,19 @@
   const isPlaying = (note) =>
     engine.frame?.song === songName && engine.frame.cues.some((cue) => cue.note === note && !cue.released);
 
+  const midi = (message) => request('POST', '/api/midi', { message });
+
+  /** Plays the swell being edited again from the top, for a looped audition. */
+  const restartEdited = () => midi([NOTE_ON, form.replaces.note, FULL_VELOCITY]).catch((failure) => (error = failure.message));
+
   /** Fires or releases a saved cue through the engine, as Reaper would. */
   async function audition(note) {
-    const midi = (message) => request('POST', '/api/midi', { message });
     if (isPlaying(note)) return midi([NOTE_OFF, note, 0]);
     if (engine.frame?.song !== songName) {
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
     }
-    // The engine takes the look off the output so the cue shows; editing the look brings it back.
-    if (Object.keys(values).length) pausedLook = JSON.stringify(values);
+    // The engine takes the preview off the output so the cue shows; editing brings it back.
+    if (shown) pausedLook = JSON.stringify(shown);
     await midi([NOTE_ON, note, FULL_VELOCITY]);
   }
 </script>
@@ -277,6 +336,18 @@
 
 <div class="workspace">
   <div>
+    {#if isPixel}
+      <fieldset class="pixel-editor" disabled={!editable || !song}>
+        <PixelSceneEditor
+          bind:cue={form.cue}
+          palettes={summary?.palettes}
+          {cues}
+          savedName={form.replaces?.cue.name ?? null}
+          paused={isPaused}
+          onlink={(note) => attempt(() => linkIntensity(note))}
+        />
+      </fieldset>
+    {:else}
     <fieldset class="look" disabled={!editable}>
       <legend>Look</legend>
       {#each look as entry, index (entry.target)}
@@ -333,13 +404,26 @@
         <button disabled={!look.length} onclick={() => (look = [])}>Clear look</button>
       </div>
     </fieldset>
+    {/if}
 
     <fieldset class="cue" disabled={!editable || !song}>
       <legend>{form.replaces === null ? 'New cue' : `Cue ${form.replaces.note}`}</legend>
       <div class="row">
         <label>Note <input type="number" min="0" max="127" bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
-        <span>Type: {form.cue.type}</span>
+        {#if form.replaces === null}
+          <label>
+            Type
+            <select
+              value={form.cue.type}
+              onchange={(event) => changeType(event.currentTarget.value)}
+            >
+              {#each Object.keys(newCue) as type (type)}<option>{type}</option>{/each}
+            </select>
+          </label>
+        {:else}
+          <span>Type: {form.cue.type}</span>
+        {/if}
       </div>
       <div class="row">
         {#if FADE_IN_TYPES.includes(form.cue.type)}
@@ -350,6 +434,10 @@
       <p class="hint">
         {#if form.cue.type === 'scene'}
           Saves the look above as this scene. Times take ms, s, beats or bars.
+        {:else if isPixel}
+          Saves the pixel scene above as this cue. Times take ms, s, beats or bars.
+        {:else if form.cue.type === 'swell' || form.cue.type === 'pattern'}
+          Shape the {form.cue.type} below, then save it. Times take ms, s, beats or bars.
         {:else}
           Keeps the rest of this {form.cue.type} cue as it is; the look above is for scenes.
         {/if}
@@ -363,6 +451,26 @@
 
   <div><FrontView /></div>
 </div>
+
+<fieldset disabled={!editable || !song}>
+  {#key form.replaces?.note}
+    {@const editorProps = {
+      targets,
+      // Saved pixel cues only: the engine resolves a link by the name in the file.
+      pixelCues: [...new Set(cues.filter(({ cue }) => cue.type === 'pixel').map(({ cue }) => cue.name))],
+      palettes: summary?.palettes,
+      barBeats,
+      beats: editedBeats,
+      saved: form.replaces?.cue ?? null,
+      onaudition: () => attempt(() => audition(form.replaces.note)),
+    }}
+    {#if form.cue.type === 'swell'}
+      <SwellEditor bind:cue={form.cue} {...editorProps} onrestart={restartEdited} />
+    {:else if form.cue.type === 'pattern'}
+      <PatternGrid bind:cue={form.cue} {...editorProps} />
+    {/if}
+  {/key}
+</fieldset>
 
 {#if song}
   <h2>Cues in {songName}</h2>
@@ -429,6 +537,10 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
     gap: 20px;
     align-items: start;
+  }
+
+  .pixel-editor {
+    min-width: 0;
   }
 
   .look,

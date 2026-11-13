@@ -325,6 +325,52 @@ fn a_pixel_cue_draws_above_a_scene_fired_after_it() {
     );
 }
 
+/// Plan §8: a pattern drives a pixel cue's intensity. At 150 BPM a beat is 16 frames: a 1-beat
+/// ramp-up on beat 1, 50% held for half a beat on beat 3, released on beat 3.5 over a beat.
+#[test]
+fn a_pattern_on_a_pixel_cues_intensity_pulses_it_then_lets_it_back_up_on_release() {
+    let cues = "  60: { name: red-wash, type: pixel, params: { color: \"#ff0000\" } }\n  61:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { red-wash: intensity }\n    release: 1 beat\n    hits:\n      - { at: 1, shape: ramp-up, length: 1 beat, level: 100% }\n      - { at: 3, shape: hold, length: 0.5 beats, level: 50% }\n";
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/four-washes"))).unwrap();
+    let messages = [
+        (Duration::ZERO, vec![0x91, 60, 127]),
+        (Duration::ZERO, vec![0x91, 61, 127]),
+        (Duration::from_millis(1000), vec![0x81, 61, 0]),
+    ];
+
+    let frames = render_show(show, cues, &messages, 64);
+
+    let path = format!("{FIXTURES}/dumps/pixel/intensity-link.dump");
+    if std::env::var_os("BLIMEY_BLESS").is_some() {
+        fs::write(&path, format_dump(&frames)).unwrap();
+    }
+    let reference = parse_dump(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(first_difference(&frames, &reference), None);
+    // Wash 1's first red, which the pixel cue lights full at full intensity.
+    let red: Vec<u8> = [0, 8, 16, 32, 40, 48, 56]
+        .iter()
+        .map(|frame| frames[*frame].values[0])
+        .collect();
+    assert_eq!(
+        red,
+        [0, 128, 0, 128, 0, 128, 255],
+        "dark, half-way up the ramp, dark, the 50% hit, dark at release, half-way back, full a beat after"
+    );
+}
+
+#[test]
+fn a_swell_on_a_pixel_cues_intensity_brings_it_up_along_its_curve() {
+    let cues = "  60: { name: red-wash, type: pixel, params: { color: \"#ff0000\" } }\n  62: { name: rise, type: swell, target: { red-wash: intensity }, duration: 1 beat }\n";
+    let frames = render_song(
+        "four-washes",
+        cues,
+        &[(Duration::ZERO, 60), (Duration::ZERO, 62)],
+        20,
+    );
+
+    let red = |frame: usize| frames[frame].values[0];
+    assert_eq!([red(0), red(8), red(16), red(19)], [0, 128, 255, 255]);
+}
+
 #[test]
 fn bottom_to_top_runs_from_the_floor_up() {
     let cue = "    shape: sweep\n    effect: move\n    params: { color: \"#ffffff\", speed: 3200ms, direction: bottom-to-top }\n";
