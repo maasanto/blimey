@@ -80,6 +80,21 @@ test('the pads show the song file after a load, a save and an undo', async ({ pa
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
 });
 
+test('thumbnails the engine refuses are cleared, saying why', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  await expect(firstLight(page, 36)).toHaveAttribute('fill', '#0028ff');
+
+  const refusal = 'songs/demo.yaml: cue 40: speed is too long to render a cycle of';
+  await page.route('**/api/songs/demo/thumbnails', (route) => route.fulfill({ status: 422, json: { error: refusal } }));
+  await pad(page, 36).click();
+  await page.getByRole('button', { name: 'Save cue' }).click();
+
+  await expect(page.getByRole('alert')).toHaveText(`Thumbnails: ${refusal}`);
+  await expect(pad(page, 36).locator('circle'), 'no stale picture').toHaveCount(0);
+});
+
 test('duplicate goes to the next empty pad and a drag moves a cue, never onto a taken note', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);
   const { url } = await startEngine();

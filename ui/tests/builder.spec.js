@@ -277,7 +277,7 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
   }
   // The pads still show what each cue looks like: thumbnails are reads.
   await expect(pad(page, 38).locator('circle')).toHaveCount(16);
-  expect((await page.request.get(`${url}api/songs/demo/cues/38/thumbnail`)).status()).toBe(200);
+  expect((await page.request.get(`${url}api/songs/demo/thumbnails`)).status()).toBe(200);
 
   const refusals = [
     page.request.put(`${url}api/songs/demo/cues/40`, { data: { cue: { name: 'x', type: 'scene', values: {} } } }),

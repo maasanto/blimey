@@ -438,21 +438,25 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
 
-### Cue thumbnail: `GET /api/songs/<song>/cues/<note>/thumbnail`
+### Cue thumbnails: `GET /api/songs/<song>/thumbnails`
 
-What the saved cue on `<note>` looks like, for the builder's pads. The engine renders it from the song file as loaded, aside from the output: nothing is saved or shown, and it works in show mode. An unknown song or an empty note is a `404`.
+What each saved cue of the song looks like, for the builder's pads, by note. The engine loads the show once for the request and renders every cue from the song file, aside from the output: nothing is saved or shown, and it works in show mode. An unknown song is a `404`; a cue that can't be rendered, such as a pixel cue whose `speed` is too long to show a cycle of, is a `422` naming it.
 
-A scene or pixel cue returns `frames`, each the colour every pixel of the rig shows, at the rig's own pixel positions, in the shape of the stream's `frame.pixels`:
+```json
+{ "36": { "frames": ["…"] }, "39": { "levels": ["…"] } }
+```
+
+A scene or pixel cue's thumbnail is `frames`, each the colour every pixel of the rig shows, at the rig's own pixel positions, in the shape of the stream's `frame.pixels`:
 
 ```json
 { "frames": [{ "wash-1": ["#0028ff", "#0028ff", "#0028ff", "#0028ff"], "back-grid": ["#000000", "…"] }] }
 ```
 
-- A scene is one frame: its look over a dark stage, with nothing below. A fixture given only a dimmer stays dark.
+- A scene is one frame: the cue drawn as playback draws it, over a dark stage with nothing below. A fixture given only a dimmer stays dark.
 - A pixel cue is 8 frames, timed as in the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail): evenly over one cycle of layer 1's `speed`, with beats at 120 BPM.
 - Fade-in, release and velocity are left out.
 
-A swell or pattern cue returns its envelope as `levels`: 129 levels, 0–1, evenly spaced from start to end.
+A swell or pattern cue's thumbnail is its envelope, `levels`: 129 levels, 0–1, evenly spaced from start to end.
 
 ```json
 { "levels": [0, 0.0001, "…", 1] }

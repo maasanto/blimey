@@ -29,8 +29,8 @@
 
   let bank = $state(ALIGNED_ON);
   let tick = $state(0);
-  /** `"<song>:<note>"` → `GET …/thumbnail` result, kept until the next one arrives. */
-  let thumbnails = $state.raw({});
+  /** `GET …/thumbnails` for `song`: note → thumbnail, replaced whole by the next one. */
+  let thumbnails = $state.raw({ song: null, byNote: {} });
   let thumbnailError = $state('');
   /** The press on a pad: a click until it is held or moved. */
   let pressed = $state(null);
@@ -71,21 +71,24 @@
   // Rendered by the engine from the saved song, again whenever it or the rig changes.
   $effect(() => {
     const song = songName;
-    const shown = notes.filter((note) => cues[note]);
+    cues;
     engine.rig;
     let isCurrent = true;
-    thumbnailError = '';
-    for (const note of shown) {
-      request('GET', `/api/songs/${song}/cues/${note}/thumbnail`)
-        .then((thumbnail) => {
-          if (isCurrent) thumbnails = { ...thumbnails, [`${song}:${note}`]: thumbnail };
-        })
-        .catch((failure) => {
-          if (isCurrent) thumbnailError = failure.message;
-        });
-    }
+    request('GET', `/api/songs/${song}/thumbnails`)
+      .then((byNote) => {
+        if (!isCurrent) return;
+        thumbnails = { song, byNote };
+        thumbnailError = '';
+      })
+      .catch((failure) => {
+        if (!isCurrent) return;
+        thumbnails = { song, byNote: {} };
+        thumbnailError = failure.message;
+      });
     return () => (isCurrent = false);
   });
+
+  const thumbnailOf = (note) => (thumbnails.song === songName ? thumbnails.byNote[note] : undefined);
 
   function press(event, note) {
     if (event.button !== 0 || !cues[note]) return;
@@ -176,7 +179,7 @@
         onclick={() => click(note)}
       >
         {#if cue}
-          {@render picture(thumbnails[`${songName}:${note}`])}
+          {@render picture(thumbnailOf(note))}
         {:else}
           <span class="thumbnail add">+</span>
         {/if}

@@ -21,6 +21,7 @@ use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::pixel::{self, PixelScene};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
+use blimey_engine::song::Song;
 use blimey_engine::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -134,10 +135,7 @@ pub fn routes(api: Api) -> Router {
             "/api/songs/{song}/cues/{note}",
             put(save_cue).delete(delete_cue),
         )
-        .route(
-            "/api/songs/{song}/cues/{note}/thumbnail",
-            get(cue_thumbnail),
-        )
+        .route("/api/songs/{song}/thumbnails", get(song_thumbnails))
         .route("/api/songs", post(create_song))
         .route("/api/songs/{song}/bpm", put(set_bpm))
         .route("/api/history", get(history))
@@ -390,28 +388,48 @@ async fn render_thumbnail(State(api): State<Api>, content: JsonBody) -> Response
 /// Levels in a swell or pattern cue's thumbnail: two per quarter beat of a 4-bar pattern.
 const CUE_THUMBNAIL_LEVELS: usize = 129;
 
-/// Works in show mode too: it renders the saved cue aside from the output and changes nothing.
-async fn cue_thumbnail(State(api): State<Api>, Path((song, note)): Path<(String, u8)>) -> Response {
-    match Show::load(&api.show_dir).and_then(|show| saved_cue_thumbnail(&show, &song, note)) {
-        Ok(thumbnail) => Json(thumbnail).into_response(),
+/// Works in show mode too: it renders the saved cues aside from the output and changes nothing.
+async fn song_thumbnails(State(api): State<Api>, Path(song): Path<String>) -> Response {
+    // One load and render for the whole song, as blocking work off the async runtime.
+    let thumbnails = tokio::task::spawn_blocking(move || {
+        Show::load(&api.show_dir).and_then(|show| saved_cue_thumbnails(&show, &song))
+    })
+    .await
+    .unwrap_or_else(|failure| Err(io::Error::other(failure.to_string())));
+    match thumbnails {
+        Ok(thumbnails) => Json(thumbnails).into_response(),
         Err(error) => error_response(&error),
     }
 }
 
-/// `{ "frames": [...] }`, the pixels' colours, for a cue that draws; `{ "levels": [...] }`, its
-/// envelope, for a swell or pattern.
-fn saved_cue_thumbnail(show: &Show, song: &str, note: u8) -> io::Result<Value> {
-    let not_found = |message: String| io::Error::new(io::ErrorKind::NotFound, message);
+/// `{ "<note>": <thumbnail>, … }` for every cue of `song`.
+fn saved_cue_thumbnails(show: &Show, song: &str) -> io::Result<Value> {
     let song = show
         .songs
         .iter()
         .find(|entry| entry.name == song)
-        .ok_or_else(|| not_found(format!("no song {song:?} in the show")))?;
-    let cue = song
-        .cues
-        .get(&note)
-        .ok_or_else(|| not_found(format!("songs/{}.yaml: no cue on note {note}", song.name)))?;
-    let rig = &show.rig;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no song {song:?} in the show"),
+            )
+        })?;
+    let mut thumbnails = serde_json::Map::new();
+    for (note, cue) in &song.cues {
+        let thumbnail = cue_thumbnail(&show.rig, song, cue).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("songs/{}.yaml: cue {note}: {error}", song.name),
+            )
+        })?;
+        thumbnails.insert(note.to_string(), thumbnail);
+    }
+    Ok(Value::Object(thumbnails))
+}
+
+/// `{ "frames": [...] }`, the pixels' colours, for a cue that draws; `{ "levels": [...] }`, its
+/// envelope, for a swell or pattern.
+fn cue_thumbnail(rig: &Rig, song: &Song, cue: &Cue) -> Result<Value, String> {
     let colours = |out: &Universes| stream::pixel_colours(rig, &out.enttec, &out.artnet);
     let levels = |level: &dyn Fn(f64) -> f64| {
         let last = (CUE_THUMBNAIL_LEVELS - 1) as f64;
@@ -420,18 +438,28 @@ fn saved_cue_thumbnail(show: &Show, song: &str, note: u8) -> io::Result<Value> {
             .collect::<Vec<f64>>()
     };
     Ok(match cue {
-        Cue::Scene(scene) => {
+        // Drawn as playback draws it, over a dark stage, at full velocity.
+        Cue::Scene(_) => {
+            let clock = ClockFollower::new(song.tempo(), song.time_signature);
             let mut out = Universes {
                 enttec: [0; DMX_CHANNELS],
                 artnet: ArtNetFrames::new(),
             };
             let mut dimmers = VirtualDimmers::of(&out.enttec);
-            look::render(rig, &scene.look, &mut out.enttec, &mut dimmers);
+            let started = clock.moment(Duration::ZERO);
+            cue.draw(
+                rig,
+                &clock,
+                started,
+                Duration::ZERO,
+                1.0,
+                &mut out,
+                &mut dimmers,
+            );
             json!({ "frames": [colours(&out)] })
         }
         Cue::Pixel(scene) => {
-            let frames = pixel::cycle(scene, rig)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let frames = pixel::cycle(scene, rig)?;
             json!({ "frames": frames.iter().map(colours).collect::<Vec<_>>() })
         }
         Cue::Swell(swell) => json!({ "levels": levels(&|time| swell.curve.level(time)) }),
@@ -640,7 +668,6 @@ impl TimedLook {
 mod tests {
     use super::*;
     use blimey_engine::look::LookSettings;
-    use blimey_engine::song::Song;
 
     #[test]
     fn a_timed_look_lapses_unless_shown_again() {
@@ -754,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_cue_thumbnail_draws_its_look_on_the_rig_or_returns_its_envelope() {
+    fn a_songs_thumbnails_draw_each_cue_on_the_rig_or_return_its_envelope() {
         let mut show = Show::load(std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../tests/fixtures/shows/four-washes"
@@ -769,7 +796,12 @@ mod tests {
             \x20     - { at: 2, shape: sine, length: 0.5 beats, level: 80% }\n";
         let song = Song::parse("demo", song, &show).unwrap();
         show.songs.push(song);
-        let thumbnail = |note| saved_cue_thumbnail(&show, "demo", note).unwrap();
+        let thumbnails = saved_cue_thumbnails(&show, "demo").unwrap();
+        assert_eq!(
+            thumbnails.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["37", "39", "40", "42"]
+        );
+        let thumbnail = |note: u8| thumbnails[note.to_string()].clone();
 
         let outer_blue = thumbnail(37);
         let frames = outer_blue["frames"].as_array().unwrap();
@@ -800,10 +832,8 @@ mod tests {
         assert_eq!(level(0.75), Some(0.0), "dark between hits");
         assert_eq!(level(1.25), Some(f64::from(0.8_f32)), "the sine's peak");
 
-        for (song, note) in [("demo", 41), ("encore", 36)] {
-            let error = saved_cue_thumbnail(&show, song, note).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
-        }
+        let error = saved_cue_thumbnails(&show, "encore").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
     }
 
     #[test]
