@@ -1,14 +1,21 @@
 <script>
-  import { FULL_STAGE, mutedBy, withAreaField } from './layers.js';
+  import { lengthInBeats, parseLength } from './duration.js';
+  import { curveLevels, curvePoints } from './envelope.svelte.js';
+  import { FULL_STAGE, grooves, mutedBy, withAreaField } from './layers.js';
+  import PatternGrid from './PatternGrid.svelte';
+  import SwellEditor from './SwellEditor.svelte';
   import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, paint } from './thumbnails.svelte.js';
 
   /**
    * `layer`: the selected layer of the pixel cue, as in the song file. `palettes`: name → #rrggbb.
    * `groups`: the rig's groups. `caught`: what its area catches, fixture or grid name → pixel
    * indices, or null before the rig is known. `seed`: the cue's. `tick`: the thumbnails' frame.
-   * `editable`: false shows the recipe without changing it.
+   * `editable`: false shows the recipe without changing it. `song` and `barBeats`: the song the
+   * cue is in and its bar. `saved`: this layer as saved, which an audition plays, or null.
+   * `audition`: the saved cue's `beats` and `loopBeats` while it plays (see the stream's
+   * `cues`), and `onaudition` and `onrestart`, as the swell and pattern editors take them.
    */
-  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick, editable } = $props();
+  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick, editable, song, barBeats, saved, audition } = $props();
 
   // docs/api.md, Pixel cues.
   const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one'];
@@ -19,8 +26,23 @@
   const SPEED_UNITS = ['beats', 'bars', 's'];
   const AREA_FIELDS = [['x', 'Area left'], ['y', 'Area bottom'], ['width', 'Area width'], ['height', 'Area height']];
 
+  /** A custom rhythm starts as an empty grid. */
+  const NO_HITS = { pattern: { length: '1 bar', hits: [] } };
+
   const thumbnails = new Thumbnails();
   const speed = $derived(speedOf(layer));
+  const rhythm = $derived(layer.swell ? { swell: layer.swell } : layer.pattern ? { pattern: layer.pattern } : null);
+  const grooveChoices = $derived(grooves(barBeats));
+  const groove = $derived.by(() => {
+    if (!rhythm) return 'steady';
+    const own = JSON.stringify(rhythm);
+    return Object.keys(grooveChoices).find((name) => JSON.stringify(grooveChoices[name]) === own) ?? 'custom';
+  });
+  const rhythmChoices = $derived([
+    ['steady', {}],
+    ...Object.entries(grooveChoices),
+    ['custom', groove === 'custom' ? rhythm : NO_HITS],
+  ]);
   const area = $derived(layer.area ?? FULL_STAGE);
   /** Groups with a fixture in the area, what it catches, and what it already mutes: each can be toggled. */
   const mutable = $derived.by(() => {
@@ -35,9 +57,20 @@
       ...SHAPES.map((shape) => [`shape:${shape}`, { ...own, shape }]),
       ...EFFECTS.map((effect) => [`effect:${effect}`, { ...own, effect }]),
     ];
-    const timer = setTimeout(() => thumbnails.load(variants, seed), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => thumbnails.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
+
+  /** Gives the layer the rhythm `name`; a custom one already there stays to edit. */
+  function pickRhythm(name, choice) {
+    if (name === groove) return;
+    delete layer.swell;
+    delete layer.pattern;
+    Object.assign(layer, structuredClone(choice));
+  }
+
+  /** A length in beats or bars, in beats; 0 for anything else. */
+  const beatsOf = (length) => lengthInBeats(parseLength(length) ?? { count: 0, unit: 'beats' }, barBeats) ?? 0;
 
   function setParam(key, value) {
     layer.params ??= {};
@@ -96,6 +129,33 @@
   </div>
 {/snippet}
 
+<!-- A rhythm's level over one loop or its swell, from the engine's own curves. -->
+{#snippet rhythmPicture({ swell, pattern })}
+  <svg class="rhythm" viewBox="0 -0.1 1 1.2" preserveAspectRatio="none" aria-hidden="true">
+    {#if swell}
+      {@const levels = curveLevels(swell.curve ?? 'ramp-up')}
+      {#if levels}<polyline points={curvePoints(levels, { width: 1, height: 1 })} />{/if}
+    {:else if pattern}
+      {@const loopBeats = beatsOf(pattern.length) || barBeats}
+      {#each pattern.hits as hit, index (index)}
+        {@const levels = curveLevels(hit.shape)}
+        {#if levels}
+          <polyline
+            points={curvePoints(levels, {
+              x: (hit.at - 1) / loopBeats,
+              width: Math.min(beatsOf(hit.length), loopBeats) / loopBeats,
+              height: 1,
+              scale: parseFloat(hit.level) / 100,
+            })}
+          />
+        {/if}
+      {/each}
+    {:else}
+      <polyline points="0,0 1,0" />
+    {/if}
+  </svg>
+{/snippet}
+
 {#snippet colour(label, key, isOptional)}
   <div class="colour">
     <span class="name">{label}</span>
@@ -119,6 +179,23 @@
   {@render picker('Shape', 'shape', SHAPES)}
   <span class="name">Motion</span>
   {@render picker('Motion', 'effect', EFFECTS)}
+  <span class="name">Rhythm</span>
+  <div class="picker" role="group" aria-label="Rhythm">
+    {#each rhythmChoices as [name, choice] (name)}
+      <button class="choice" aria-label="Rhythm: {name}" aria-pressed={groove === name} onclick={() => pickRhythm(name, choice)}>
+        {@render rhythmPicture(choice)}
+        <span>{name}</span>
+      </button>
+    {/each}
+  </div>
+  <!-- A fresh editor per rhythm, so no hit stays selected from the one before. -->
+  {#key layer.swell ?? layer.pattern}
+    {#if layer.swell}
+      <SwellEditor bind:cue={layer.swell} saved={saved?.swell ?? null} {barBeats} beats={audition.beats} onaudition={audition.onaudition} onrestart={audition.onrestart} />
+    {:else if layer.pattern}
+      <PatternGrid bind:cue={layer.pattern} saved={saved?.pattern ?? null} {barBeats} beats={audition.loopBeats} onaudition={audition.onaudition} />
+    {/if}
+  {/key}
   <div class="fields">
     <label>
       Direction
@@ -247,11 +324,19 @@
     font-size: 11px;
   }
 
-  canvas {
+  canvas,
+  .rhythm {
     width: 40px;
     height: 40px;
     image-rendering: pixelated;
     background: #000;
+  }
+
+  .rhythm polyline {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2px;
+    vector-effect: non-scaling-stroke;
   }
 
   .fields {

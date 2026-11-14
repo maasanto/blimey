@@ -32,16 +32,40 @@ function midiFile(events) {
   ]);
 }
 
-/**
- * The dump `blimey replay` renders of `show`'s saved files: its song on program 1 selected and
- * `note` fired at 0 ms, held to the last frame of a bar at 150 BPM.
- */
-function replayHeld(show, note) {
+/** The dump `blimey replay` renders of `show`'s saved files for `[ms, message]` events. */
+function replay(show, events) {
   const midi = path.join(show, 'fire.mid');
-  // A note-off for a note no cue uses, so the replay runs to that frame and nothing changes.
-  writeFileSync(midi, midiFile([[0, [0xc1, 1]], [0, [0x91, note, 127]], [LAST_FRAME_MS, [0x81, 0, 0]]]));
+  writeFileSync(midi, midiFile(events));
   return execFileSync(BINARY, ['replay', show, '--midi', midi], { encoding: 'utf8' });
 }
+
+/** A note-off for a note no cue uses, so a replay runs to that frame and nothing changes. */
+const runTo = (ms) => [ms, [0x81, 0, 0]];
+
+/**
+ * The dump of `show`'s song on program 1 selected and `notes` fired at 0 ms, held to the frame
+ * at `lastFrameMs`: by default the last of a bar at 150 BPM.
+ */
+const replayHeld = (show, notes, lastFrameMs = LAST_FRAME_MS) =>
+  replay(show, [[0, [0xc1, 1]], ...[notes].flat().map((note) => [0, [0x91, note, 127]]), runTo(lastFrameMs)]);
+
+/** A dump's frames as `[ms, 512 channel values]`. */
+const framesOf = (dump) =>
+  dump
+    .split('\n')
+    .filter((line) => /^\d/.test(line))
+    .map((line) => {
+      const [ms, ...channels] = line.split(' ');
+      const values = new Array(512).fill(0);
+      for (const channel of channels) {
+        const [number, value] = channel.split('=').map(Number);
+        values[number - 1] = value;
+      }
+      return [Number(ms), values];
+    });
+
+const ingredient = (page, name) => page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name, exact: true });
+const step = (page, at) => page.getByRole('button', { name: `at ${at}`, exact: true });
 
 const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
 
@@ -61,9 +85,8 @@ async function dragTo(page, from, to) {
 const centre = ({ x, y, width, height }) => ({ x: x + width / 2, y: y + height / 2 });
 
 /** Drags an ingredient from the tray onto the stage at canvas point `at`. */
-async function dropIngredient(page, ingredient, at) {
-  const button = page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name: ingredient });
-  await dragTo(page, centre(await button.boundingBox()), await stagePoint(page, at));
+async function dropIngredient(page, name, at) {
+  await dragTo(page, centre(await ingredient(page, name).boundingBox()), await stagePoint(page, at));
 }
 
 /** Drags a handle of the selected area to canvas point `to`. */
@@ -97,7 +120,6 @@ test.describe('on three rows of washes', () => {
     await openChorusBuild(page, url);
 
     await pad(page, 43).click();
-    await page.getByLabel('Type').selectOption('pixel');
     await page.getByLabel('Name').fill('chorus-build');
     await page.getByLabel('Release').fill('1s');
 
@@ -232,6 +254,30 @@ test.describe('on three rows of washes', () => {
     await expect(page.locator('[data-handle]')).toHaveCount(0);
   });
 
+  test("a swell given to one area leaves the other layers' YAML untouched and plays C15's reference", async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const withoutSwell = readFileSync(songFile, 'utf8');
+    const { url } = await startEngine({ look: DARK });
+    await openChorusBuild(page, url);
+    await pad(page, 43).click();
+
+    await page.getByRole('button', { name: 'warm-white wash on the left', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Rhythm: steady' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: 'Rhythm: swell' }).click();
+    await expect(page.getByLabel('Curve', { exact: true })).toHaveValue('ease-in');
+    await page.getByRole('button', { name: 'Save cue' }).click();
+
+    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    const warmWhite = '        params: { color: warm-white }\n';
+    expect(readFileSync(songFile, 'utf8')).toBe(
+      withoutSwell.replace(warmWhite, `${warmWhite}        swell: { duration: 4 bars, curve: ease-in }\n`),
+    );
+    // Held its 4 bars and 8 frames, as C15's reference of the same cue.
+    expect(replayHeld(show, 43, (4 * 64 + 7) * 25)).toBe(
+      readFileSync(path.join(ROOT, 'tests/fixtures/dumps/pixel/layers/three-rows-swell.dump'), 'utf8'),
+    );
+  });
+
   test('a hidden area leaves the preview but stays in the saved cue', async ({ page, show, startEngine }) => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const saved = readFileSync(songFile, 'utf8');
@@ -277,4 +323,92 @@ test('an old-form pixel cue opened and saved untouched saves as layers and plays
       '      -\n        shape: circle\n        effect: pulse\n        params: { color: "#ff0000", width: 0.2 }\n        blend: add\n',
   );
   expect(replayHeld(show, 40)).toBe(before);
+});
+
+/** The plan's example song: C5's pattern reference is its `verse-pulse`. */
+const TELL_ME = readFileSync(path.join(ROOT, 'shows/fossile/songs/tell-me.yaml'), 'utf8');
+const C5_HITS = TELL_ME.slice(TELL_ME.indexOf('    hits:\n', TELL_ME.indexOf('  42:\n')));
+
+test("the 1 / 2 / 3.5 pattern built on one area saves the reference and plays as C15's linked pattern", async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  const songFile = path.join(show, 'songs/demo.yaml');
+  const header = 'program: 1\nbpm: 120\n';
+  writeFileSync(songFile, header);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 42).click();
+  await page.getByLabel('Name').fill('verse-pulse');
+  await ingredient(page, 'Hits').click();
+  await expect(page.getByRole('button', { name: 'Rhythm: on the beat' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Rhythm: heartbeat' }).locator('polyline'), 'drawn from the engine curves').toHaveCount(2);
+  await page.getByRole('button', { name: 'Colour: deep-blue' }).click();
+  await page.getByRole('button', { name: 'Rhythm: custom' }).click();
+  await step(page, 1).click();
+  await step(page, 2).click();
+  await page.getByLabel('Hit shape').selectOption('sine');
+  await page.getByLabel('Hit level').fill('80');
+  await step(page, 3.5).click();
+  await page.getByLabel('Hit shape').selectOption('ramp-up');
+  await page.getByLabel('Hit level').fill('100');
+  await page.getByRole('button', { name: 'Save cue' }).click();
+
+  await expect(page.getByText('Saved cue 42 in demo.')).toBeVisible();
+  const layer = '      -\n        shape: fill\n        params: { color: deep-blue }\n';
+  const pattern = `        pattern:\n          length: 1 bar\n${C5_HITS.replace(/^(?=.)/gm, '      ')}`;
+  const cue = (layers) => `cues:\n  42:\n    name: verse-pulse\n    type: pixel\n    layers:\n${layers}`;
+  expect(readFileSync(songFile, 'utf8')).toBe(header + cue(`${layer}${pattern}        blend: over\n`));
+
+  // The saved loop auditions from the next bar line, the grid's playhead following it.
+  await page.getByRole('button', { name: 'Audition loop' }).click();
+  await expect(page.locator('.lane .playhead')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Stop audition' }).click();
+  await expect(page.locator('.lane .playhead')).toHaveCount(0);
+
+  // As C15: the same frames as the area without it plus the same pattern on the cue's intensity.
+  const twoBars = 4000;
+  const inLayer = replay(show, [[0, [0xc1, 1]], [0, [0x91, 42, 127]], runTo(twoBars)]);
+  writeFileSync(
+    songFile,
+    header + cue(`${layer}        blend: over\n`) +
+      `  43:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { verse-pulse: intensity }\n${C5_HITS}`,
+  );
+  const still = replay(show, [[0, [0xc1, 1]], [0, [0x91, 42, 127]], runTo(twoBars)]);
+  const linked = replay(show, [[0, [0xc1, 1]], [0, [0x91, 42, 127]], [0, [0x91, 43, 127]], runTo(twoBars)]);
+  expect(inLayer).toBe(linked);
+  expect(inLayer, 'the rhythm shows').not.toBe(still);
+});
+
+test.describe('on the Fossile show', () => {
+  test.use({ showSource: 'shows/fossile' });
+
+  test("each scene of tell-me, converted, plays alone as the scene within a DMX step", async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/tell-me.yaml');
+    // Program 3 selects tell-me; held past verse-blue's 2 s fade-in, then through its 1 s release.
+    const fire = (note) =>
+      framesOf(replay(show, [[0, [0xc1, 3]], [0, [0x91, Number(note), 127]], [3000, [0x81, Number(note), 0]], runTo(4500)]));
+    const scenes = { 36: 'Deep-blue wash everywhere.', 37: 'Magenta wash everywhere except inner-wash, amber wash everywhere except outer-wash.', 38: '#000000 wash everywhere.' };
+    const before = Object.fromEntries(Object.keys(scenes).map((note) => [note, fire(note)]));
+    const { url } = await startEngine();
+    await page.goto(`${url}#builder`);
+
+    for (const [note, sentence] of Object.entries(scenes)) {
+      await pad(page, note).click();
+      await expect(page.getByText(sentence)).toBeVisible();
+      await page.getByRole('button', { name: 'Save cue' }).click();
+      await expect(page.getByText(`Saved cue ${note} in tell-me.`)).toBeVisible();
+    }
+    expect(readFileSync(songFile, 'utf8')).toContain(
+      '  37:\n    name: chorus-amber\n    type: pixel\n    fade_in: 500ms\n    release: 500ms\n    layers:\n' +
+        '      -\n        shape: fill\n        params: { color: magenta }\n        blend: over\n        mute: [inner-wash]\n' +
+        '      -\n        shape: fill\n        params: { color: amber }\n        blend: over\n        mute: [outer-wash]\n',
+    );
+
+    for (const note of Object.keys(scenes)) {
+      const after = fire(note);
+      expect(after.map(([ms]) => ms), `cue ${note}: frame times`).toEqual(before[note].map(([ms]) => ms));
+      const furthest = Math.max(...after.flatMap(([, values], frame) => values.map((value, channel) => Math.abs(value - before[note][frame][1][channel]))));
+      expect(furthest, `cue ${note}: largest difference on any channel`).toBeLessThanOrEqual(1);
+    }
+  });
 });

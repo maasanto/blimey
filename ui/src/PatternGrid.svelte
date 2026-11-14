@@ -4,7 +4,7 @@
   import TargetPicker from './TargetPicker.svelte';
 
   /**
-   * `cue` is the pattern as in the song file; `saved` is the cue as saved, which is what an
+   * `cue` is the pattern as in the song file, a cue or a pixel layer's `pattern`; `saved` is it as saved, which is what an
    * audition plays, or null before the first save. `beats` is how far the saved cue's loop has
    * played while it is auditioned (the stream's `beats`); `onaudition` starts or stops that.
    */
@@ -87,7 +87,8 @@
 <fieldset class="editor">
   <legend>Pattern</legend>
   <div class="row">
-    <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer="dimmer" />
+    <!-- A pixel layer's pattern has no target: it plays on its layer. -->
+    {#if cue.target}<TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer="dimmer" />{/if}
     <label>
       Bars
       <select value={bars} onchange={(event) => setBars(Number(event.currentTarget.value))}>

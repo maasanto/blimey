@@ -4,7 +4,7 @@
   import TargetPicker from './TargetPicker.svelte';
 
   /**
-   * `cue` is the swell as in the song file; `saved` is the cue as saved, which is what an audition
+   * `cue` is the swell as in the song file, a cue or a pixel layer's `swell`; `saved` is it as saved, which is what an audition
    * plays, or null before the first save. `beats` is how far the saved cue has played while it is
    * auditioned (the stream's `beats`); `onaudition` starts or stops that, `onrestart` plays it
    * again from the top.
@@ -98,9 +98,12 @@
 
 <fieldset class="editor">
   <legend>Swell</legend>
-  <div class="row">
-    <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer={{ dimmer: '100%' }} />
-  </div>
+  <!-- A pixel layer's swell has no target: it plays on its layer. -->
+  {#if cue.target}
+    <div class="row">
+      <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer={{ dimmer: '100%' }} />
+    </div>
+  {/if}
   <div class="row">
     <label>
       Curve

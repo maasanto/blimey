@@ -13,11 +13,7 @@ function addSong(show, text = HEADER + BLACKOUT) {
   return file;
 }
 
-async function addToLook(page, target) {
-  await page.getByLabel('Fixture or group to add').selectOption(target);
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
-}
-
+const ingredient = (page, name) => page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name });
 const pixel = (page, fixture) => page.locator(`[data-fixture="${fixture}"] circle`).first();
 const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
 
@@ -35,35 +31,36 @@ test('a look built in the builder plays the same from note 36 after a restart', 
   const first = await startEngine();
   await page.goto(`${first.url}#builder`);
 
-  // 1. Build the look: all washes deep blue at 50%, then wash-1 green at full.
-  await addToLook(page, 'all-wash');
-  const allWash = page.locator('[data-target="all-wash"]');
-  await allWash.getByRole('button', { name: 'deep-blue' }).click();
-  await allWash.getByLabel('all-wash dimmer').fill('50');
-  await addToLook(page, 'wash-1');
-  await page.getByLabel('wash-1 colour').fill('#00ff00');
+  // 1. Build the look on an empty pad: all washes deep blue at 50%, then wash-1 green at full.
+  await pad(page, 36).click();
+  await ingredient(page, 'Wash').click();
+  await page.getByRole('button', { name: 'Colour: deep-blue' }).click();
+  await page.getByLabel('Level', { exact: true }).fill('50');
+  await ingredient(page, 'Wash').click();
+  await page.getByLabel('Colour', { exact: true }).fill('#00ff00');
+  for (const fixture of ['wash-2', 'wash-3', 'wash-4']) await page.getByRole('button', { name: `Mute ${fixture}` }).click();
 
   // Live through the engine: the front view on the page follows the output.
   await expect(pixel(page, 'wash-1')).toHaveAttribute('fill', '#00ff00');
   await expect(pixel(page, 'wash-2')).toHaveAttribute('fill', '#001480');
+  await expect(pixel(page, 'wash-4'), 'the last mute on the output').toHaveAttribute('fill', '#001480');
   const built = await nextDmx(first.address);
   expect(built.slice(0, 4), 'wash-1 pixel 1: red, green, blue, white').toEqual([0, 255, 0, 0]);
-  expect(built.slice(16, 20), 'wash-2 pixel 1').toEqual([0, 20, 128, 0]);
 
   // 2. Save it as cue 36.
-  await pad(page, 36).click();
   await page.getByLabel('Name').fill('verse-green');
   await page.getByRole('button', { name: 'Save cue' }).click();
   await expect(page.getByText('Saved cue 36 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     HEADER +
-      '  36:\n    name: verse-green\n    type: scene\n    values:\n' +
-      '      all-wash: { color: deep-blue, dimmer: 50% }\n      wash-1: { color: "#00ff00", dimmer: 100% }\n' +
+      '  36:\n    name: verse-green\n    type: pixel\n    layers:\n' +
+      '      -\n        shape: fill\n        params: { color: deep-blue }\n        level: 50%\n        blend: over\n' +
+      '      -\n        shape: fill\n        params: { color: "#00ff00" }\n        blend: over\n        mute: [wash-2, wash-3, wash-4]\n' +
       BLACKOUT,
   );
 
   // Holding its pad fires it through the engine, the cue showing over a look edited since.
-  await page.getByLabel('wash-1 colour').fill('#0000ff');
+  await page.getByLabel('Colour', { exact: true }).fill('#0000ff');
   await expect(pixel(page, 'wash-1')).toHaveAttribute('fill', '#0000ff');
   await pad(page, 36).hover();
   await page.mouse.down();
@@ -85,19 +82,6 @@ test('a look built in the builder plays the same from note 36 after a restart', 
 
   // 5. The output is the look built in step 1.
   await expect.poll(() => nextDmx(second.address)).toEqual(built);
-});
-
-test('a look entry without a colour shows it keeps the colour from below', async ({ page, show, startEngine }) => {
-  addSong(show);
-  const { url } = await startEngine();
-  await page.goto(`${url}#builder`);
-
-  await pad(page, 38).click();
-  const allWash = page.locator('[data-target="all-wash"]');
-  await expect(allWash.getByText('colour from below')).toBeVisible();
-
-  await allWash.getByRole('button', { name: 'deep-blue' }).click();
-  await expect(allWash.getByText('colour from below')).toHaveCount(0);
 });
 
 test('editing a pixel cue in the form keeps its layers, in the layers form', async ({ page, show, startEngine }) => {
@@ -204,8 +188,8 @@ test('a new song takes a cue, and two undos remove the cue then the song', async
   await expect(songPicker).toHaveValue('encore');
   expect(readFileSync(encoreFile, 'utf8')).toBe('program: 7\nbpm: 100\n');
 
-  await addToLook(page, 'all-wash');
   await pad(page, 36).click();
+  await ingredient(page, 'Wash').click();
   await page.getByLabel('Name').fill('first-look');
   await page.getByRole('button', { name: 'Save cue' }).click();
   await expect(pad(page, 36)).toHaveAccessibleName('Pad 36: first-look');
@@ -270,7 +254,7 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
 
   await expect(page.getByText('Show mode: the builder is read-only.')).toBeVisible();
   for (const control of [
-    page.getByLabel('Fixture or group to add'),
+    ingredient(page, 'Wash'),
     page.getByLabel('Name'),
     page.getByRole('button', { name: 'Set tempo' }),
     page.getByRole('button', { name: 'New song' }),

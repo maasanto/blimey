@@ -25,9 +25,23 @@
    * `cue`: the pixel cue being edited, in the `layers` form. `hidden`: per layer, whether it is
    * left off the preview while editing; it is saved all the same. `editable`: false in show mode.
    * `paused`: the preview is off the output for an audition. `cues`, `savedName` and `onlink`
-   * link a swell or pattern to the cue's intensity.
+   * link a swell or pattern to the cue's intensity. `song` and `barBeats`: the song the cue is
+   * in and its bar. `savedLayers`: the cue's layers as saved; `audition`: as the inspector takes it.
    */
-  let { cue = $bindable(), hidden = $bindable(), palettes = {}, editable, paused, cues, savedName, onlink } = $props();
+  let {
+    cue = $bindable(),
+    hidden = $bindable(),
+    palettes = {},
+    editable,
+    paused,
+    cues,
+    savedName,
+    onlink,
+    song,
+    barBeats,
+    savedLayers,
+    audition,
+  } = $props();
 
   /** An ingredient dropped on the stage makes an area this size, in canvas units, around the drop. */
   const DROP_SIZE = 0.4;
@@ -61,15 +75,15 @@
   });
 
   $effect(() => {
-    const variants = INGREDIENTS.map((ingredient) => [ingredient, newLayer(ingredient, newColour)]);
+    const variants = INGREDIENTS.map((ingredient) => [ingredient, newLayer(ingredient, newColour, undefined, barBeats)]);
     const { seed } = cue;
-    const timer = setTimeout(() => tray.load(variants, seed), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => tray.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
   function addLayer(ingredient, area) {
     if (isFull) return;
-    cue.layers.push(newLayer(ingredient, newColour, area));
+    cue.layers.push(newLayer(ingredient, newColour, area, barBeats));
     hidden.push(false);
     selected = cue.layers.length - 1;
   }
@@ -280,7 +294,19 @@
     {#if selectedLayer}
       <!-- A fresh inspector per area, so no picker shows the previous area's thumbnails. -->
       {#key selected}
-        <AreaInspector bind:layer={cue.layers[selected]} {palettes} groups={rig?.groups ?? {}} {caught} seed={cue.seed} {tick} {editable} />
+        <AreaInspector
+          bind:layer={cue.layers[selected]}
+          {palettes}
+          groups={rig?.groups ?? {}}
+          {caught}
+          seed={cue.seed}
+          {tick}
+          {editable}
+          {song}
+          {barBeats}
+          saved={savedLayers[selected] ?? null}
+          {audition}
+        />
       {/key}
     {:else}
       <p class="hint">Click an area on the stage or in the list to open its recipe.</p>

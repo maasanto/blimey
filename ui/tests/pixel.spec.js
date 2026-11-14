@@ -55,7 +55,6 @@ test('a two-layer pixel look plays after a restart as the engine renders its sav
 
   // 1. A new pixel cue: a deep-blue gradient over the whole stage, plus a red bar added over it.
   await pad(page, 40).click();
-  await page.getByLabel('Type').selectOption('pixel');
   await page.getByLabel('Name').fill('two-layer');
   await ingredient(page, 'Wash').click();
   const gradient = page.getByRole('button', { name: 'Shape: gradient' });
@@ -141,12 +140,11 @@ test("a pattern's own target picker links it to a pixel scene's intensity", asyn
 test('a thumbnail the engine refuses says why', async ({ page, show, startEngine }) => {
   addSong(show, HEADER.replace('cues:\n', ''));
   const { url } = await startEngine();
-  await page.route('**/api/pixel-thumbnail', (route) =>
+  await page.route('**/api/pixel-thumbnail?song=demo', (route) =>
     route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'speed is too long to render a cycle of' }) }),
   );
+  // An empty builder starts a look, whose tray asks for thumbnails in the song's bars.
   await page.goto(`${url}#builder`);
-
-  await page.getByLabel('Type').selectOption('pixel');
 
   await expect(page.getByRole('alert')).toHaveText('Thumbnails: speed is too long to render a cycle of');
 });

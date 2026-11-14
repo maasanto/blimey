@@ -42,7 +42,6 @@ test('C17 stage composer', async ({ page, startEngine }) => {
   await shoot(page, 'mute-toggles-crossed-out');
 
   await pad(page, 44).click();
-  await page.getByLabel('Type').selectOption('pixel');
   const sweep = await page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name: 'Sweep' }).boundingBox();
   await page.mouse.move(sweep.x + sweep.width / 2, sweep.y + sweep.height / 2);
   await page.mouse.down();

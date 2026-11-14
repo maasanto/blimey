@@ -20,10 +20,11 @@ function addSong(show, text) {
 
 const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
 
+/** An empty pad starts a look: make it a swell or pattern cue instead. */
 async function newCue(page, note, name, type) {
   await pad(page, note).click();
   await page.getByLabel('Name').fill(name);
-  await page.getByLabel('Type').selectOption(type);
+  await page.getByRole('button', { name: `${type} cue`, exact: true }).click();
 }
 
 const step = (page, at) => page.getByRole('button', { name: `at ${at}`, exact: true });
@@ -206,8 +207,9 @@ test('a new cue keeps its release across types; a shorter loop keeps its hits pl
   await page.goto(`${url}#builder`);
 
   await page.getByLabel('Release').fill('2s');
-  await page.getByLabel('Type').selectOption('swell');
-  await page.getByLabel('Type').selectOption('pattern');
+  await page.getByRole('button', { name: 'swell cue', exact: true }).click();
+  await page.getByRole('button', { name: 'Make a look instead' }).click();
+  await page.getByRole('button', { name: 'pattern cue', exact: true }).click();
   await expect(page.getByLabel('Release')).toHaveValue('2s');
 
   // Two bars of 7/8 are 7 beats, the second bar starting on beat 3.5.

@@ -66,9 +66,11 @@ test('the pads show the song file after a load, a save and an undo', async ({ pa
   await expect(firstLight(page, 1)).toHaveAttribute('fill', '#ffd2a0');
 
   await page.getByRole('button', { name: 'Notes 36–51, 4 cues' }).click();
+  // The scene opens on the stage, and saves as a pixel cue.
   await pad(page, 36).click();
   await page.getByLabel('Name').fill('verse-warm');
-  await page.locator('[data-target="all-wash"]').getByRole('button', { name: 'warm-white' }).click();
+  await page.getByRole('button', { name: 'deep-blue wash everywhere', exact: true }).click();
+  await page.getByRole('button', { name: 'Colour: warm-white' }).click();
   await page.getByRole('button', { name: 'Save cue' }).click();
   await expect(pad(page, 36)).toHaveAccessibleName('Pad 36: verse-warm');
   await expect(firstLight(page, 36)).toHaveAttribute('fill', '#ffd2a0');
@@ -123,7 +125,7 @@ test('duplicate goes to the next empty pad and a drag moves a cue, never onto a 
 
   // Delete, from the open cue.
   await pad(page, 41).click();
-  await page.getByRole('button', { name: 'Delete' }).click();
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(pad(page, 41)).toHaveAccessibleName('Pad 41: empty');
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
 });

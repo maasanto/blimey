@@ -15,13 +15,17 @@ export class Thumbnails {
   error = $state('');
   #generation = 0;
 
-  /** Renders each `[key, layer]` as a one-layer cue; what an earlier call returns late is dropped. */
-  load(variants, seed) {
+  /**
+   * Renders each `[key, layer]` as a one-layer cue in `song`'s time signature; what an earlier
+   * call returns late is dropped.
+   */
+  load(variants, seed, song) {
     this.#generation += 1;
     const current = this.#generation;
     this.error = '';
+    const path = song ? `/api/pixel-thumbnail?song=${encodeURIComponent(song)}` : '/api/pixel-thumbnail';
     for (const [key, layer] of variants) {
-      request('POST', '/api/pixel-thumbnail', { name: 'thumbnail', type: 'pixel', seed, layers: [layer] })
+      request('POST', path, { name: 'thumbnail', type: 'pixel', seed, layers: [layer] })
         .then((thumbnail) => {
           if (current === this.#generation) this.byKey = { ...this.byKey, [key]: thumbnail };
         })

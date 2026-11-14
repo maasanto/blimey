@@ -2,19 +2,18 @@
   // Kept while other pages are open, so the look stays live on the output while you check it
   // on the front view, and is still here when you come back.
   let songName = $state('');
-  /** The look being built, in order: a later entry wins on the fixtures they share. */
-  let look = $state([]);
   /** The preview as it was when an audition took it off the output, until it is edited again. */
   let pausedLook = $state(null);
   /**
-   * The cue being edited, as in the song file, and its note. `replaces` is the cue as loaded,
-   * `{ note, cue }`, so the engine can refuse the save if the file changed since. `hidden`
-   * marks the pixel cue's layers left off the preview while editing.
+   * The cue being edited, as in the song file, and its note: a look on the stage unless made
+   * a swell or pattern cue. `replaces` is the cue as loaded, `{ note, cue }`, so the engine can
+   * refuse the save if the file changed since. `hidden` marks the pixel cue's layers left off
+   * the preview while editing.
    */
   let form = $state(newForm());
 
   function newForm() {
-    return { note: null, replaces: null, cue: { name: '', type: 'scene' }, hidden: [] };
+    return { note: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [] };
   }
 </script>
 
@@ -23,7 +22,7 @@
   import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
   import PadBank, { LAST_NOTE } from './PadBank.svelte';
-  import { asLayers } from './layers.js';
+  import { asLayers, sceneAsPixelCue } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
   import StageComposer from './StageComposer.svelte';
   import SwellEditor from './SwellEditor.svelte';
@@ -34,8 +33,6 @@
   const PROGRAM_CHANGE = 0xc1;
   const FULL_VELOCITY = 127;
   const DEFAULT_BPM = 120;
-  /** Cue types with a `fade_in` (schema/song.schema.json). */
-  const FADE_IN_TYPES = ['scene', 'pixel'];
   /** Well inside the engine's 5 s preview lifetime (docs/api.md), so the look never flickers off. */
   const PREVIEW_REFRESH_MS = 2000;
 
@@ -46,7 +43,6 @@
   /** The selected song file, as JSON. */
   let song = $state(null);
   let tempo = $state(DEFAULT_BPM);
-  let adding = $state('');
   /** `GET /api/history`: how many saves can be undone and redone. */
   let steps = $state({ undo: 0, redo: 0 });
   /** The new-song form while it is open. */
@@ -54,30 +50,26 @@
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
-  const values = $derived(Object.fromEntries($state.snapshot(look).map(({ target, settings }) => [target, settings])));
   const isPixel = $derived(form.cue.type === 'pixel');
   const shownLayers = $derived(isPixel ? form.cue.layers.filter((_, index) => !form.hidden[index]) : []);
-  /** What the output previews while editing: the pixel cue's shown layers, or the look; null for nothing. */
+  /** What the output previews while editing: the pixel cue's shown layers; null for nothing. */
   const shown = $derived(
     shownLayers.length && songName
       ? { path: '/api/preview/pixel', body: { song: songName, cue: { ...withoutEmptyTimes(form.cue), layers: $state.snapshot(shownLayers) } } }
-      : !isPixel && Object.keys(values).length
-        ? { path: '/api/preview', body: values }
-        : null,
+      : null,
   );
   const isPaused = $derived(JSON.stringify(shown) === pausedLook);
   const cues = $derived(Object.entries(song?.cues ?? {}).map(([note, cue]) => ({ note: Number(note), cue })));
   const barBeats = $derived(beatsPerBar(song?.time_signature));
-  /** How far the cue being edited has played, while its saved version is auditioned. */
-  const editedBeats = $derived(
-    engine.frame?.song === songName
-      ? engine.frame.cues.find((cue) => cue.note === form.replaces?.note && !cue.released)?.beats
-      : undefined,
+  /** The cue being edited as the stream reports it, while its saved version is auditioned. */
+  const editedStatus = $derived(
+    engine.frame?.song === songName ? engine.frame.cues.find((cue) => cue.note === form.replaces?.note && !cue.released) : undefined,
   );
+  /** The pixel cue's layers as saved, which an audition plays. */
+  const savedLayers = $derived(form.replaces?.cue.type === 'pixel' ? asLayers(form.replaces.cue).layers : []);
 
-  /** What a new cue of each type starts as; scenes take the look above when saved. */
+  /** What a new cue of each type starts as. */
   const newCue = {
-    scene: () => ({ type: 'scene' }),
     swell: () => ({ type: 'swell', target: { [targets[0]]: { dimmer: '100%' } }, duration: '4 bars' }),
     pattern: () => ({ type: 'pattern', length: '1 bar', target: { [targets[0]]: 'dimmer' }, hits: [] }),
     pixel: () => ({ type: 'pixel', layers: [] }),
@@ -86,7 +78,7 @@
   /** Starts the new cue over as `type`, keeping what the form shows for every type. */
   function changeType(type) {
     const { name, fade_in, release } = form.cue;
-    const kept = { name, ...(release && { release }), ...(fade_in && FADE_IN_TYPES.includes(type) && { fade_in }) };
+    const kept = { name, ...(release && { release }), ...(fade_in && type === 'pixel' && { fade_in }) };
     form.cue = { ...kept, ...newCue[type]() };
     form.hidden = [];
   }
@@ -169,11 +161,11 @@
   /** Takes the look off the output when the browser page goes; nobody is left to hear back. */
   const clearPreview = () => editable && fetch('/api/preview', { method: 'DELETE', keepalive: true });
 
-  const hex = (color) => summary?.palettes[color] ?? (color?.startsWith('#') ? color : '#000000');
-
-  function add() {
-    look.push({ target: adding, settings: { color: '#ffffff', dimmer: '100%' } });
-    adding = '';
+  /** The cue as the builder edits it: a pixel cue in the `layers` form, a scene made one. */
+  function asEdited(cue) {
+    if (cue.type === 'pixel') return asLayers(cue);
+    if (cue.type === 'scene') return sceneAsPixelCue(cue, engine.rig ?? { fixtures: [], groups: {} });
+    return cue;
   }
 
   /** Opens the pad's cue, or on an empty pad a new cue: the one being started, if any. */
@@ -184,11 +176,7 @@
       else form = { ...newForm(), note };
       return;
     }
-    const edited = cue.type === 'pixel' ? asLayers($state.snapshot(cue)) : $state.snapshot(cue);
-    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: edited, hidden: [] };
-    if (cue.type === 'scene') {
-      look = Object.entries($state.snapshot(cue.values)).map(([target, settings]) => ({ target, settings }));
-    }
+    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: asEdited($state.snapshot(cue)), hidden: [] };
   }
 
   function withoutEmptyTimes(edited) {
@@ -199,7 +187,6 @@
 
   async function saveCue() {
     const cue = withoutEmptyTimes(form.cue);
-    if (cue.type === 'scene') cue.values = values;
     await request('PUT', `/api/songs/${songName}/cues/${form.note}`, { cue, replaces: form.replaces });
     notice = `Saved cue ${form.note} in ${songName}.`;
     await reloadAfterSave();
@@ -393,64 +380,6 @@
         onmove={(from, to) => attempt(() => moveCue(from, to))}
       />
     {/if}
-    {#if !isPixel}
-    <fieldset class="look" disabled={!editable}>
-      <legend>Look</legend>
-      {#each look as entry, index (entry.target)}
-        <div class="entry" data-target={entry.target}>
-          <span class="target">
-            {entry.target}
-            {#if !entry.settings.color}<small class="hint">colour from below</small>{/if}
-          </span>
-          <div class="swatches">
-            {#each Object.entries(summary?.palettes ?? {}) as [name, colour] (name)}
-              <button
-                class="swatch"
-                style:background={colour}
-                title={name}
-                aria-label={name}
-                aria-pressed={entry.settings.color === name}
-                onclick={() => (entry.settings.color = name)}
-              ></button>
-            {/each}
-          </div>
-          <input
-            type="color"
-            aria-label="{entry.target} colour"
-            value={hex(entry.settings.color)}
-            oninput={(event) => (entry.settings.color = event.currentTarget.value)}
-          />
-          <label class="dimmer">
-            <input
-              type="range"
-              min="0"
-              max="100"
-              aria-label="{entry.target} dimmer"
-              value={parseFloat(entry.settings.dimmer ?? '100')}
-              oninput={(event) => (entry.settings.dimmer = `${event.currentTarget.value}%`)}
-            />
-            <output>{entry.settings.dimmer ?? 'unset'}</output>
-          </label>
-          <button aria-label="Remove {entry.target}" onclick={() => look.splice(index, 1)}>×</button>
-        </div>
-      {:else}
-        <p class="hint">Add a fixture or group to start a look. It shows on the front view and the lights as you edit.</p>
-      {/each}
-      {#if look.length && isPaused}
-        <p class="hint">Off the output while a cue is auditioned. Change the look to show it again.</p>
-      {/if}
-      <div class="row">
-        <select bind:value={adding} aria-label="Fixture or group to add">
-          <option value="">Fixture or group…</option>
-          {#each targets.filter((target) => !look.some((entry) => entry.target === target)) as target (target)}
-            <option>{target}</option>
-          {/each}
-        </select>
-        <button disabled={!adding} onclick={add}>Add</button>
-        <button disabled={!look.length} onclick={() => (look = [])}>Clear look</button>
-      </div>
-    </fieldset>
-    {/if}
 
     <fieldset class="cue" disabled={!editable || !song}>
       <legend>
@@ -459,38 +388,34 @@
       <div class="row">
         <label>Note <input type="number" min="0" max={LAST_NOTE} bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
-        {#if form.replaces === null}
-          <label>
-            Type
-            <select
-              value={form.cue.type}
-              onchange={(event) => changeType(event.currentTarget.value)}
-            >
-              {#each Object.keys(newCue) as type (type)}<option>{type}</option>{/each}
-            </select>
-          </label>
-        {:else}
-          <span>Type: {form.cue.type}</span>
-        {/if}
+        {#if form.replaces !== null}<span>Type: {form.cue.type}</span>{/if}
       </div>
       <div class="row">
-        {#if FADE_IN_TYPES.includes(form.cue.type)}
+        {#if isPixel}
           <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" /></label>
         {/if}
         <label>Release <input bind:value={form.cue.release} placeholder="0s" /></label>
       </div>
       <p class="hint">
-        {#if form.cue.type === 'scene'}
-          Saves the look above as this scene. Times take ms, s, beats or bars.
-        {:else if isPixel}
-          Saves the look on the stage as this cue, hidden areas included. Times take ms, s, beats or bars.
-        {:else if form.cue.type === 'swell' || form.cue.type === 'pattern'}
-          Shape the {form.cue.type} below, then save it. Times take ms, s, beats or bars.
+        {#if isPixel}
+          Saves the look on the stage as this cue, hidden areas included{form.replaces?.cue.type === 'scene' ? ': this scene becomes a pixel cue' : ''}.
         {:else}
-          Keeps the rest of this {form.cue.type} cue as it is; the look above is for scenes.
+          Shape the {form.cue.type} below, then save it.
         {/if}
+        Times take ms, s, beats or bars.
         {#if form.note == null}Pick an empty pad or a note for it.{:else if form.replaces !== null}A new note moves the cue there on save.{/if}
       </p>
+      {#if form.replaces === null}
+        <p class="hint">
+          {#if isPixel}
+            To drive other cues instead, make a
+            <button class="link" onclick={() => changeType('swell')}>swell cue</button> or a
+            <button class="link" onclick={() => changeType('pattern')}>pattern cue</button>.
+          {:else}
+            <button class="link" onclick={() => changeType('pixel')}>Make a look instead</button>
+          {/if}
+        </p>
+      {/if}
       <div class="row">
         <button disabled={form.note == null || !form.cue.name || (isPixel && !form.cue.layers.length)} onclick={() => attempt(saveCue)}>
           Save cue
@@ -507,8 +432,9 @@
   </div>
 
   <div>
-    {#if isPixel}
-      <fieldset class="composer" disabled={!song}>
+    <!-- Without a song there is no cue to build: the front view stays, to place fixtures. -->
+    {#if isPixel && song}
+      <fieldset class="composer">
         <!-- A cue opened from a pad, or a new one, starts with nothing selected. -->
         {#key form}
           <StageComposer
@@ -520,6 +446,15 @@
             {cues}
             savedName={form.replaces?.cue.name ?? null}
             onlink={(note) => attempt(() => linkIntensity(note))}
+            song={songName}
+            {barBeats}
+            {savedLayers}
+            audition={{
+              beats: editedStatus?.beats,
+              loopBeats: editedStatus?.loop_beats,
+              onaudition: () => attempt(() => audition(form.replaces.note)),
+              onrestart: restartEdited,
+            }}
           />
         {/key}
       </fieldset>
@@ -537,7 +472,7 @@
       pixelCues: [...new Set(cues.filter(({ cue }) => cue.type === 'pixel').map(({ cue }) => cue.name))],
       palettes: summary?.palettes,
       barBeats,
-      beats: editedBeats,
+      beats: editedStatus?.beats,
       saved: form.replaces?.cue ?? null,
       onaudition: () => attempt(() => audition(form.replaces.note)),
     }}
@@ -591,7 +526,6 @@
     min-width: 0;
   }
 
-  .look,
   .cue,
   .new-song {
     padding: 12px;
@@ -605,69 +539,12 @@
     color: var(--muted);
   }
 
-  .entry {
-    display: grid;
-    grid-template-columns: 7em minmax(0, 1fr) auto;
-    gap: 6px 10px;
-    align-items: center;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .target {
-    font-weight: 600;
-  }
-
-  .target small {
-    display: block;
-    font-weight: normal;
-  }
-
-  .swatches {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    grid-column: 2;
-  }
-
-  .swatch {
-    width: 22px;
-    height: 22px;
+  .link {
     padding: 0;
-    border-radius: 50%;
-  }
-
-  .swatch[aria-pressed='true'] {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  input[type='color'] {
-    width: 40px;
-    height: 26px;
-    padding: 0;
-    border: 0;
+    color: var(--accent);
+    text-decoration: underline;
     background: none;
-  }
-
-  .dimmer {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    grid-column: 2;
-  }
-
-  .dimmer input {
-    flex: 1;
-  }
-
-  .dimmer output {
-    min-width: 4em;
-    font: 13px var(--mono);
-  }
-
-  .look .row {
-    margin-top: 10px;
+    border: 0;
   }
 
   .cue .row + .row {

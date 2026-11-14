@@ -9,6 +9,26 @@ const SNAP_DISTANCE = 0.015;
 /** Elsewhere an edge lands on steps of a fortieth of the canvas. */
 const GRID_STEP = 0.025;
 
+/** A beat's punch, as a groove plays it. */
+const PUNCH = { shape: 'ramp-down', length: '0.5 beats', level: '100%' };
+
+/** Plan §16's example swell. */
+const SWELL = { duration: '4 bars', curve: 'ease-in' };
+
+/** The inspector's grooves for a bar of `barBeats` beats: each a layer's `pattern` or `swell`. */
+export function grooves(barBeats) {
+  const onBar = (beats) => beats.filter((at) => at - 1 < barBeats).map((at) => ({ at, ...PUNCH }));
+  const beats = Array.from({ length: Math.ceil(barBeats) }, (_, index) => index + 1);
+  const loop = (hits) => ({ pattern: { length: '1 bar', hits } });
+  return {
+    'on the beat': loop(onBar(beats)),
+    'off-beat': loop(onBar(beats.map((beat) => beat + 0.5))),
+    heartbeat: loop([{ at: 1, ...PUNCH }, { at: 1.5, ...PUNCH, level: '60%' }]),
+    backbeat: loop(onBar(beats.filter((beat) => beat % 2 === 0))),
+    swell: { swell: SWELL },
+  };
+}
+
 /** What each ingredient of the tray starts as, besides its colour; new areas cover what is below. */
 const RECIPES = {
   Wash: { shape: 'fill' },
@@ -16,13 +36,19 @@ const RECIPES = {
   Sweep: { shape: 'sweep', effect: 'move', params: { speed: '1 bar' } },
   Sparkle: { shape: 'fill', effect: 'sparkle', params: { width: 0.4, speed: '2 beats' } },
   Breathe: { shape: 'fill', effect: 'pulse', params: { speed: '2 bars' } },
+  Swell: { shape: 'fill', groove: 'swell' },
+  Hits: { shape: 'fill', groove: 'on the beat' },
 };
 export const INGREDIENTS = Object.keys(RECIPES);
 
-/** A new layer of `ingredient` in `color`, on `area` or, without one, the whole canvas. */
-export function newLayer(ingredient, color, area) {
-  const { params, ...recipe } = RECIPES[ingredient];
-  return { ...(area && { area }), ...recipe, params: { color, ...params }, blend: 'over' };
+/**
+ * A new layer of `ingredient` in `color`, on `area` or, without one, the whole canvas, its
+ * groove in bars of `barBeats` beats.
+ */
+export function newLayer(ingredient, color, area, barBeats) {
+  const { params, groove, ...recipe } = RECIPES[ingredient];
+  const rhythm = groove && grooves(barBeats)[groove];
+  return { ...(area && { area }), ...recipe, params: { color, ...params }, ...rhythm, blend: 'over' };
 }
 
 /** The cue with `layers`: one in the older form becomes the same layers over the whole canvas. */
@@ -31,6 +57,46 @@ export function asLayers(cue) {
   const { shape, effect, params, layer_2, ...rest } = cue;
   const first = { ...(shape && { shape }), ...(effect && { effect }), ...(params && { params }) };
   return { ...rest, layers: layer_2 ? [first, layer_2] : [first] };
+}
+
+/**
+ * A scene cue as a pixel cue (plan §16): a whole-stage `fill` per colour and dimmer the scene
+ * gives, muting the fixtures and grids that colour doesn't reach. A fixture given only a dimmer
+ * goes dark, as it does fired alone: a pixel cue has no colour from below to keep.
+ */
+export function sceneAsPixelCue({ type, values = {}, ...rest }, rig) {
+  const looks = new Map();
+  for (const [target, settings] of Object.entries(values)) {
+    for (const name of rig.groups[target] ?? [target]) looks.set(name, { ...looks.get(name), ...settings });
+  }
+  const recipes = new Map();
+  for (const [name, { color, dimmer = '100%' }] of looks) {
+    const isDark = !color || parseFloat(dimmer) === 0;
+    const level = isDark || parseFloat(dimmer) === 100 ? {} : { level: dimmer };
+    const layer = { shape: 'fill', params: { color: isDark ? '#000000' : color }, ...level, blend: 'over' };
+    const key = JSON.stringify(layer);
+    recipes.set(key, { layer, fixtures: [...(recipes.get(key)?.fixtures ?? []), name] });
+  }
+  const everything = [...rig.fixtures, ...(rig.grids ?? [])].map(({ name }) => name);
+  const layers = [...recipes.values()].map(({ layer, fixtures }) => {
+    const mute = muteList(everything.filter((name) => !fixtures.includes(name)), rig.groups);
+    return mute.length ? { ...layer, mute } : layer;
+  });
+  // ponytail: one rgbw for the whole cue, the first given; a scene mixing modes keeps only that one.
+  const rgbw = [...looks.values()].find((look) => look.rgbw)?.rgbw;
+  return { ...rest, type: 'pixel', ...(rgbw && { rgbw }), layers };
+}
+
+/** `names` as a `mute` list, whole groups by their name, the largest first. */
+function muteList(names, groups) {
+  const left = new Set(names);
+  const mute = [];
+  for (const [group, members] of Object.entries(groups).sort(([, a], [, b]) => b.length - a.length)) {
+    if (!members.length || !members.every((member) => left.has(member))) continue;
+    mute.push(group);
+    members.forEach((member) => left.delete(member));
+  }
+  return [...mute, ...left];
 }
 
 export const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
