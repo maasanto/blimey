@@ -18,7 +18,8 @@ use blimey_engine::colour::Rgb;
 use blimey_engine::cue::resolve_look;
 use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
-use blimey_engine::pixel::{self, PixelScene};
+use blimey_engine::pattern::Pattern;
+use blimey_engine::pixel::{self, PixelScene, RhythmTime};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
 use blimey_engine::{Show, Universes};
@@ -344,7 +345,7 @@ async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Respons
                     format!("no song {:?} in the show", preview.song),
                 ));
             };
-            let scene = PixelScene::parse(&show, preview.cue)
+            let scene = PixelScene::parse(&show, song.time_signature, preview.cue)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             Ok(Overlay::Pixel {
                 scene: Box::new(scene),
@@ -568,8 +569,12 @@ impl TimedLook {
                 look::render(rig, look, &mut out.enttec, &mut below);
             }
             Overlay::Pixel { scene, clock } => {
-                let started = clock.moment(*active.started.get_or_insert(at));
-                scene.draw(rig, clock, started, at, 1.0, out);
+                let note = *active.started.get_or_insert(at);
+                let rhythm_time = RhythmTime {
+                    bar_line: Pattern::start(clock, note),
+                    at,
+                };
+                scene.draw(rig, clock, clock.moment(note), at, rhythm_time, 1.0, out);
             }
         }
     }
@@ -717,6 +722,7 @@ mod tests {
             scene: Box::new(
                 PixelScene::parse(
                     &Show::default(),
+                    Default::default(),
                     json!({ "name": "glide", "type": "pixel", "effect": "move", "params": { "color": "#ff0000", "width": 0.25, "speed": "1s" } }),
                 )
                 .unwrap(),

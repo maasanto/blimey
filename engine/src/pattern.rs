@@ -35,6 +35,14 @@ pub(crate) struct PatternEntry {
     release: Option<Length>,
 }
 
+/// A pattern's loop without a target, as a pixel layer's `pattern` (plan §16).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LoopEntry {
+    length: Length,
+    hits: Vec<HitEntry>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HitEntry {
@@ -82,6 +90,24 @@ impl PatternEntry {
         time_signature: TimeSignature,
         pixel_cues: &PixelCues,
     ) -> Result<Pattern, String> {
+        let (beats, hits) = LoopEntry {
+            length: self.length,
+            hits: self.hits,
+        }
+        .resolve(time_signature)?;
+        Ok(Pattern {
+            target: resolve_target(show, &self.target, pixel_cues)?,
+            name: self.name,
+            beats,
+            hits,
+            release: self.release.unwrap_or(INSTANT),
+        })
+    }
+}
+
+impl LoopEntry {
+    /// The loop's length in beats, and its hits.
+    pub(crate) fn resolve(self, time_signature: TimeSignature) -> Result<(f64, Vec<Hit>), String> {
         let beats_per_bar = time_signature.beats_per_bar();
         let bars = match self.length {
             Length::Bars(bars) if bars.fract() == 0.0 && (1.0..=MAX_BARS).contains(&bars) => bars,
@@ -97,13 +123,7 @@ impl PatternEntry {
                     .map_err(|error| format!("hit {}: {error}", index + 1))
             })
             .collect::<Result<_, _>>()?;
-        Ok(Pattern {
-            target: resolve_target(show, &self.target, pixel_cues)?,
-            name: self.name,
-            beats,
-            hits,
-            release: self.release.unwrap_or(INSTANT),
-        })
+        Ok((beats, hits))
     }
 }
 
@@ -190,31 +210,41 @@ impl Pattern {
     /// The level, 0–1, at `at` of the loop started at `start` (see `start`): the highest of the
     /// hits sounding then. `None` before the loop starts.
     pub fn level(&self, clock: &ClockFollower, start: Moment, at: Duration) -> Option<f64> {
-        let elapsed = clock.beats(at) - start.beats;
-        if elapsed < 0.0 {
-            return None;
-        }
-        let position = elapsed % self.beats;
-        Some(
-            self.hits
-                .iter()
-                .map(|hit| {
-                    // Beats since this hit last started, in this pass or, while its start is still
-                    // ahead in this pass, the one before, so a hit running over the loop's end
-                    // carries on into the next pass.
-                    let mut since = position - hit.offset;
-                    if since < 0.0 {
-                        since += self.beats;
-                    }
-                    if since < hit.beats && since <= elapsed {
-                        hit.level * hit.shape.level(since / hit.beats)
-                    } else {
-                        0.0
-                    }
-                })
-                .fold(0.0, f64::max),
-        )
+        loop_level(self.beats, &self.hits, clock, start, at)
     }
+}
+
+/// `Pattern::level` of a loop `beats` long playing `hits`.
+pub(crate) fn loop_level(
+    beats: f64,
+    hits: &[Hit],
+    clock: &ClockFollower,
+    start: Moment,
+    at: Duration,
+) -> Option<f64> {
+    let elapsed = clock.beats(at) - start.beats;
+    if elapsed < 0.0 {
+        return None;
+    }
+    let position = elapsed % beats;
+    Some(
+        hits.iter()
+            .map(|hit| {
+                // Beats since this hit last started, in this pass or, while its start is still
+                // ahead in this pass, the one before, so a hit running over the loop's end
+                // carries on into the next pass.
+                let mut since = position - hit.offset;
+                if since < 0.0 {
+                    since += beats;
+                }
+                if since < hit.beats && since <= elapsed {
+                    hit.level * hit.shape.level(since / hit.beats)
+                } else {
+                    0.0
+                }
+            })
+            .fold(0.0, f64::max),
+    )
 }
 
 #[cfg(test)]

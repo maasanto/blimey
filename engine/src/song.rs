@@ -180,6 +180,7 @@ mod tests {
     use crate::cue::SwellTarget;
     use crate::duration::Length;
     use crate::envelope::Envelope;
+    use crate::pixel::Rhythm;
     use std::time::Duration;
 
     fn show() -> Show {
@@ -353,6 +354,50 @@ mod tests {
             )),
             "line 3: cue 40: a pixel cue has either layers or shape, effect, params and layer_2, not both"
         );
+    }
+
+    #[test]
+    fn a_layer_reads_its_swell_or_its_pattern_in_the_song_time_signature() {
+        const PIXEL: &str =
+            "program: 3\ntime_signature: 6/8\ncues:\n  40:\n    name: halves\n    type: pixel\n";
+        let layers = |layers: &str| format!("{PIXEL}    layers:\n{layers}");
+        let song = Song::parse(
+            "song",
+            &layers(
+                "      - { swell: { duration: 4 bars } }\n      - { pattern: { length: 2 bars, hits: [{ at: 6.75, shape: sine, length: 1 beat, level: 50% }] } }\n",
+            ),
+            &show(),
+        )
+        .unwrap();
+
+        let Cue::Pixel(scene) = &song.cues[&40] else {
+            panic!("cue 40 is a pixel cue");
+        };
+        assert_eq!(
+            scene.layers[0].rhythm,
+            Some(Rhythm::Swell {
+                duration: Length::Bars(4.0),
+                curve: Envelope::RampUp
+            })
+        );
+        let Some(Rhythm::Pattern { beats, hits }) = &scene.layers[1].rhythm else {
+            panic!("layer 2 has a pattern: {:?}", scene.layers[1].rhythm);
+        };
+        assert_eq!((*beats, hits[0].offset), (6.0, 5.75), "two bars of 6/8");
+
+        let refused = [
+            (
+                "      - { swell: { duration: 1 bar }, pattern: { length: 1 bar, hits: [] } }\n",
+                "layer 1: a layer has a swell or a pattern, not both",
+            ),
+            (
+                "      - {}\n      - { pattern: { length: 8 beats, hits: [] } }\n",
+                "layer 2: pattern: length must be 1, 2, 3 or 4 bars",
+            ),
+        ];
+        for (yaml, expected) in refused {
+            assert_eq!(error(&layers(yaml)), format!("line 4: cue 40: {expected}"));
+        }
     }
 
     #[test]

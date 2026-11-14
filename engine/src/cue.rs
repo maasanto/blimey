@@ -13,7 +13,7 @@ use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{self, Look, LookSettings, VirtualDimmers};
 use crate::pattern::{Pattern, PatternEntry, PatternTarget};
-use crate::pixel::{PixelEntry, PixelScene};
+use crate::pixel::{PixelEntry, PixelScene, RhythmTime};
 use crate::rig::Rig;
 use crate::{Show, Universes};
 
@@ -128,7 +128,7 @@ impl CueEntry {
             CueEntry::Pattern(entry) => entry
                 .resolve(show, time_signature, pixel_cues)
                 .map(Cue::Pattern),
-            CueEntry::Pixel(entry) => (*entry).resolve(show).map(Cue::Pixel),
+            CueEntry::Pixel(entry) => (*entry).resolve(show, time_signature).map(Cue::Pixel),
         }
     }
 }
@@ -254,7 +254,8 @@ impl Cue {
 
     /// Draws the cue at full opacity over `out` and the layers' virtual `dimmers`, as it is at
     /// `at` after it started at `started`, its dimmers scaled by `intensity` (0–1). A pattern's
-    /// dimmer target is its fixtures as below, darkened by `intensity`.
+    /// dimmer target is its fixtures as below, darkened by `intensity`. `rhythm_time` places a
+    /// pixel cue's layer rhythms.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -262,6 +263,7 @@ impl Cue {
         clock: &ClockFollower,
         started: Moment,
         at: Duration,
+        rhythm_time: RhythmTime,
         intensity: f32,
         out: &mut Universes,
         dimmers: &mut VirtualDimmers,
@@ -269,7 +271,9 @@ impl Cue {
         let frame = &mut out.enttec;
         let mut look = match self {
             // Pixel cues draw above every other cue, so no look reads virtual dimmers after them.
-            Cue::Pixel(scene) => return scene.draw(rig, clock, started, at, intensity, out),
+            Cue::Pixel(scene) => {
+                return scene.draw(rig, clock, started, at, rhythm_time, intensity, out);
+            }
             Cue::Scene(scene) => scene.look.clone(),
             Cue::Swell(swell) => match &swell.target {
                 SwellTarget::Look(look) => look.clone(),

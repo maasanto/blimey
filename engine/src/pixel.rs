@@ -19,6 +19,7 @@ use crate::cue::CueEntry;
 use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{Level, colour, draw_pixel};
+use crate::pattern::{Hit, LoopEntry, loop_level};
 use crate::rig::{Canvas, Fixture, Rig, line_key};
 use crate::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 
@@ -148,6 +149,15 @@ struct LayerEntry {
     blend: Blend,
     #[serde(default)]
     mute: Vec<String>,
+    swell: Option<SwellEntry>,
+    pattern: Option<LoopEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwellEntry {
+    duration: Length,
+    curve: Option<Envelope>,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +219,27 @@ pub struct Layer {
     pub level: f32,
     /// The fixtures and grids the layer leaves to the layers below, groups expanded.
     pub mute: BTreeSet<String>,
+    /// Scales the layer as `level` does.
+    pub rhythm: Option<Rhythm>,
+}
+
+/// A layer's own swell or pattern, timed as the cue types of the same name (plan §16).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rhythm {
+    /// From the note along `curve` over `duration`, then held.
+    Swell { duration: Length, curve: Envelope },
+    /// `hits` on a loop `beats` long from the bar line after the note, dark between them.
+    Pattern { beats: f64, hits: Vec<Hit> },
+}
+
+/// Where a pixel cue's layer rhythms are.
+#[derive(Debug, Clone, Copy)]
+pub struct RhythmTime {
+    /// Where a pattern's loop starts: `Pattern::start` of the note.
+    pub bar_line: Moment,
+    /// Now, or the note-off once there is one: a released cue fades out from the levels its
+    /// rhythms had, as a released pattern cue does.
+    pub at: Duration,
 }
 
 impl PixelEntry {
@@ -216,7 +247,11 @@ impl PixelEntry {
         &self.name
     }
 
-    pub(crate) fn resolve(self, show: &Show) -> Result<PixelScene, String> {
+    pub(crate) fn resolve(
+        self,
+        show: &Show,
+        time_signature: TimeSignature,
+    ) -> Result<PixelScene, String> {
         let has_top_layer = self.shape.is_some()
             || self.effect.is_some()
             || self.params.is_some()
@@ -228,7 +263,7 @@ impl PixelEntry {
                         .into(),
                 );
             }
-            Some(entries) => LayerEntry::resolve_all(entries, show)?,
+            Some(entries) => LayerEntry::resolve_all(entries, show, time_signature)?,
             None => {
                 let layer_1 = LayerEntry {
                     shape: self.shape.unwrap_or_default(),
@@ -236,11 +271,11 @@ impl PixelEntry {
                     params: self.params.unwrap_or_default(),
                     ..LayerEntry::default()
                 };
-                let mut layers = vec![layer_1.resolve(show)?];
+                let mut layers = vec![layer_1.resolve(show, time_signature)?];
                 if let Some(entry) = self.layer_2 {
                     layers.push(
                         entry
-                            .resolve(show)
+                            .resolve(show, time_signature)
                             .map_err(|error| format!("layer_2: {error}"))?,
                     );
                 }
@@ -259,7 +294,7 @@ impl PixelEntry {
 }
 
 impl SecondLayerEntry {
-    fn resolve(self, show: &Show) -> Result<Layer, String> {
+    fn resolve(self, show: &Show, time_signature: TimeSignature) -> Result<Layer, String> {
         LayerEntry {
             shape: self.shape,
             effect: self.effect,
@@ -267,12 +302,16 @@ impl SecondLayerEntry {
             blend: self.blend,
             ..LayerEntry::default()
         }
-        .resolve(show)
+        .resolve(show, time_signature)
     }
 }
 
 impl LayerEntry {
-    fn resolve_all(entries: Vec<LayerEntry>, show: &Show) -> Result<Vec<Layer>, String> {
+    fn resolve_all(
+        entries: Vec<LayerEntry>,
+        show: &Show,
+        time_signature: TimeSignature,
+    ) -> Result<Vec<Layer>, String> {
         if !(1..=MAX_LAYERS).contains(&entries.len()) {
             return Err(format!(
                 "{} layers; a pixel cue has 1 to {MAX_LAYERS}",
@@ -284,15 +323,29 @@ impl LayerEntry {
             .zip(1..)
             .map(|(entry, number)| {
                 entry
-                    .resolve(show)
+                    .resolve(show, time_signature)
                     .map_err(|error| format!("layer {number}: {error}"))
             })
             .collect()
     }
 
-    fn resolve(self, show: &Show) -> Result<Layer, String> {
+    fn resolve(self, show: &Show, time_signature: TimeSignature) -> Result<Layer, String> {
         let area = self.area.unwrap_or(WHOLE_CANVAS);
         check_area(area)?;
+        let rhythm = match (self.swell, self.pattern) {
+            (Some(_), Some(_)) => return Err("a layer has a swell or a pattern, not both".into()),
+            (Some(swell), None) => Some(Rhythm::Swell {
+                duration: swell.duration,
+                curve: swell.curve.unwrap_or(Envelope::RampUp),
+            }),
+            (None, Some(pattern)) => {
+                let (beats, hits) = pattern
+                    .resolve(time_signature)
+                    .map_err(|error| format!("pattern: {error}"))?;
+                Some(Rhythm::Pattern { beats, hits })
+            }
+            (None, None) => None,
+        };
         let mut mute = BTreeSet::new();
         for name in &self.mute {
             mute.extend(muted(&show.rig, name)?);
@@ -327,7 +380,24 @@ impl LayerEntry {
             blend: self.blend,
             level: self.level.map_or(1.0, |level| level.0),
             mute,
+            rhythm,
         })
+    }
+}
+
+impl Rhythm {
+    /// The level, 0–1, at `time.at` of a cue whose note came at `started`.
+    fn level(&self, clock: &ClockFollower, started: Moment, time: RhythmTime) -> f64 {
+        match self {
+            Rhythm::Swell { duration, curve } => {
+                curve.level(clock.progress(*duration, started, time.at))
+            }
+            // Until its loop starts, the layer shows as it is, as a pattern linked to the cue's
+            // intensity leaves the cue.
+            Rhythm::Pattern { beats, hits } => {
+                loop_level(*beats, hits, clock, time.bar_line, time.at).unwrap_or(1.0)
+            }
+        }
     }
 }
 
@@ -368,10 +438,15 @@ fn muted(rig: &Rig, name: &str) -> Result<Vec<String>, String> {
 }
 
 impl PixelScene {
-    /// A pixel cue as in a song file, `type: pixel` included, its colours from `show`.
-    pub fn parse(show: &Show, cue: serde_json::Value) -> Result<PixelScene, String> {
+    /// A pixel cue as in a song file, `type: pixel` included, its colours from `show` and its
+    /// patterns' bars from `time_signature`.
+    pub fn parse(
+        show: &Show,
+        time_signature: TimeSignature,
+        cue: serde_json::Value,
+    ) -> Result<PixelScene, String> {
         match CueEntry::deserialize(cue).map_err(|error| error.to_string())? {
-            CueEntry::Pixel(entry) => (*entry).resolve(show),
+            CueEntry::Pixel(entry) => (*entry).resolve(show, time_signature),
             _ => Err("expected a pixel cue, with type pixel".into()),
         }
     }
@@ -380,22 +455,40 @@ impl PixelScene {
     ///
     /// `intensity` (0–1) is the cue's input level, today the note's velocity: it goes on the
     /// dimmer channel of fixtures that have one, and scales the colours of the others.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         rig: &Rig,
         clock: &ClockFollower,
         started: Moment,
         at: Duration,
+        rhythm_time: RhythmTime,
         intensity: f32,
         out: &mut Universes,
     ) {
+        let mut rhythms: Vec<f32> = self
+            .layers
+            .iter()
+            .map(|layer| {
+                layer.rhythm.as_ref().map_or(1.0, |rhythm| {
+                    rhythm.level(clock, started, rhythm_time) as f32
+                })
+            })
+            .collect();
+        // A lone layer's rhythm goes on the cue's intensity, so a fixture with a dimmer channel
+        // follows it there, as it would a swell or pattern linked to the cue's intensity.
+        let intensity = match rhythms.as_mut_slice() {
+            [lone] => intensity * std::mem::replace(lone, 1.0),
+            _ => intensity,
+        };
         let frames: Vec<LayerFrame> = self
             .layers
             .iter()
+            .zip(rhythms)
             .zip(0..)
-            .map(|(layer, index)| {
+            .map(|((layer, rhythm), index)| {
                 let seed = self.seed ^ LAYER_SEED.wrapping_mul(index);
-                layer.at(rig, clock, started, at, seed)
+                layer.at(rig, clock, started, at, seed, rhythm)
             })
             .collect();
         let unmuted = |name: &str| -> Vec<&LayerFrame> {
@@ -460,7 +553,7 @@ const THUMBNAIL_BPM: f64 = 120.0;
 /// over one cycle of layer 1, each the grid's colours row by row from the top left as the
 /// audience sees it, at full intensity. `show` gives the palettes.
 pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, String> {
-    let scene = PixelScene::parse(show, cue)?;
+    let scene = PixelScene::parse(show, TimeSignature::default(), cue)?;
     let rig = Rig::parse(
         &format!(
             "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {THUMBNAIL_SIDE}, rows: {THUMBNAIL_SIDE}, colour_order: RGB, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
@@ -480,7 +573,11 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
             artnet: ArtNetFrames::new(),
         };
         let at = cycle.mul_f64(index as f64 / THUMBNAIL_FRAMES as f64);
-        scene.draw(&rig, &clock, started, at, 1.0, &mut out);
+        let rhythm_time = RhythmTime {
+            bar_line: started,
+            at,
+        };
+        scene.draw(&rig, &clock, started, at, rhythm_time, 1.0, &mut out);
         let (_, colours) = rig.pixel_colours(&out.enttec, &out.artnet).remove(0);
         colours
     });
@@ -513,6 +610,8 @@ struct LayerFrame<'frame> {
     cycles: f64,
     /// The pulse curve's level now; 1 for other effects.
     level: f64,
+    /// The layer's rhythm now, 1 without one.
+    rhythm: f32,
     seed: u64,
     /// For one-by-one: the lines across the direction of the cells the layer catches,
     /// ascending in its area.
@@ -527,6 +626,7 @@ impl Layer {
         started: Moment,
         at: Duration,
         seed: u64,
+        rhythm: f32,
     ) -> LayerFrame<'frame> {
         let lines = match (self.shape, self.direction) {
             (Shape::OneByOne, _) if self.area != WHOLE_CANVAS || !self.mute.is_empty() => {
@@ -559,6 +659,7 @@ impl Layer {
             position,
             cycles,
             level,
+            rhythm,
             seed,
             lines,
         }
@@ -702,21 +803,24 @@ impl LayerFrame<'_> {
             return below;
         }
         let (x, y) = self.layer.in_area((x, y));
-        self.layer
-            .blend
-            .apply(below, self.layer, self.level(x, y, cell) as f32)
+        self.layer.blend.apply(
+            below,
+            self.layer,
+            self.layer.level * self.rhythm,
+            self.level(x, y, cell) as f32,
+        )
     }
 }
 
 impl Blend {
-    /// `layer` over `below` where its shape is `lit` (0–1).
-    fn apply(self, below: Rgb, layer: &Layer, lit: f32) -> Rgb {
+    /// `layer` at `level` (0–1) over `below` where its shape is `lit` (0–1).
+    fn apply(self, below: Rgb, layer: &Layer, level: f32, lit: f32) -> Rgb {
         let combine = |combine: fn(f32, f32) -> f32, above: Rgb| Rgb {
             red: combine(below.red, above.red),
             green: combine(below.green, above.green),
             blue: combine(below.blue, above.blue),
         };
-        let dimmed = |colour: Rgb| mix(Rgb::default(), colour, layer.level);
+        let dimmed = |colour: Rgb| mix(Rgb::default(), colour, level);
         let colour = || {
             let background = layer.background.unwrap_or_default();
             dimmed(mix(background, layer.color, lit))
@@ -724,7 +828,7 @@ impl Blend {
         match self {
             Blend::Max => combine(f32::max, colour()),
             Blend::Add => combine(|a, b| (a + b).min(1.0), colour()),
-            Blend::Mask => mix(Rgb::default(), below, lit * layer.level),
+            Blend::Mask => mix(Rgb::default(), below, lit * level),
             Blend::Over => match layer.background {
                 Some(_) => colour(),
                 None => mix(below, dimmed(layer.color), lit),
@@ -806,11 +910,11 @@ mod tests {
                 "level": level,
                 "params": { "color": "#ff0000", "background": background },
             }] });
-            let scene = PixelScene::parse(&Show::default(), cue).unwrap();
+            let scene = PixelScene::parse(&Show::default(), TimeSignature::default(), cue).unwrap();
             let layer = &scene.layers[0];
 
             assert_eq!(
-                layer.blend.apply(below, layer, lit),
+                layer.blend.apply(below, layer, layer.level, lit),
                 expected,
                 "{blend}, background {background:?}, level {level}, lit {lit}"
             );
