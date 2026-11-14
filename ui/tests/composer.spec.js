@@ -395,6 +395,26 @@ test('a groove written by hand in another key and hit order still reads as that 
   await expect(page.getByRole('button', { name: 'Rhythm: backbeat' })).toHaveAttribute('aria-pressed', 'true');
 });
 
+test("an area keeps its own saved rhythm to audition after a reorder, and a new one has none", async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  const layers =
+    '      - { shape: fill, swell: { duration: 1 bar } }\n' +
+    '      - { shape: fill, params: { color: deep-blue }, pattern: { length: 2 bars, hits: [{ at: 1, shape: hold, length: 1 beat, level: 100% }] } }\n';
+  writeFileSync(path.join(show, 'songs/demo.yaml'), `program: 1\ncues:\n  40:\n    name: two\n    type: pixel\n    layers:\n${layers}`);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const audition = page.getByRole('button', { name: 'Audition loop' });
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'deep-blue wash everywhere', exact: true }).click();
+  await expect(audition).toBeEnabled();
+  await page.getByRole('button', { name: 'Send back: deep-blue wash everywhere' }).click();
+  await expect(audition, "the pattern's own saved loop, not the swell now below it").toBeEnabled();
+
+  await ingredient(page, 'Hits').click();
+  await expect(audition, 'not saved yet').toBeDisabled();
+});
+
 test.describe('on the Fossile show', () => {
   test.use({ showSource: 'shows/fossile' });
 

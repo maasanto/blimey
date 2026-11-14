@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import { engine } from './engine.svelte.js';
   import AreaInspector from './AreaInspector.svelte';
   import FrontView, { HEIGHT, WIDTH, screenX, screenY } from './FrontView.svelte';
@@ -62,6 +63,14 @@
   const rig = $derived(engine.rig);
   const edges = $derived(rig ? stageEdges(rig) : { x: [0, 1], y: [0, 1] });
   const selectedLayer = $derived(selected === null ? null : cue.layers[selected]);
+  /**
+   * Each layer as saved, by the layer being edited, so it follows it through reordering; a new
+   * layer has none. Paired up when the cue opens or saves, when the two lists are in step.
+   */
+  const savedOf = $derived.by(() => {
+    const saved = savedLayers;
+    return untrack(() => new Map(cue.layers.map((layer, index) => [layer, saved[index]])));
+  });
   const caught = $derived(selectedLayer && rig ? caughtPixels(rig, selectedLayer.area ?? FULL_STAGE) : null);
   const crossedOut = $derived(
     new Set(caught ? [...caught.keys()].filter((name) => mutedBy(selectedLayer, rig.groups, name)) : []),
@@ -303,7 +312,7 @@
           {tick}
           {editable}
           {barBeats}
-          saved={savedLayers[selected] ?? null}
+          saved={savedOf.get(selectedLayer) ?? null}
           {audition}
         />
       {/key}
