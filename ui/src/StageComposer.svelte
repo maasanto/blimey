@@ -302,7 +302,6 @@
           seed={cue.seed}
           {tick}
           {editable}
-          {song}
           {barBeats}
           saved={savedLayers[selected] ?? null}
           {audition}

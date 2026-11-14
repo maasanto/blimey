@@ -1,7 +1,7 @@
 <script>
-  import { lengthInBeats, parseLength } from './duration.js';
+  import { beatsIn } from './duration.js';
   import { curveLevels, curvePoints } from './envelope.svelte.js';
-  import { FULL_STAGE, grooves, mutedBy, withAreaField } from './layers.js';
+  import { FULL_STAGE, grooves, isSameRhythm, mutedBy, withAreaField } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
   import SwellEditor from './SwellEditor.svelte';
   import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, paint } from './thumbnails.svelte.js';
@@ -10,12 +10,12 @@
    * `layer`: the selected layer of the pixel cue, as in the song file. `palettes`: name → #rrggbb.
    * `groups`: the rig's groups. `caught`: what its area catches, fixture or grid name → pixel
    * indices, or null before the rig is known. `seed`: the cue's. `tick`: the thumbnails' frame.
-   * `editable`: false shows the recipe without changing it. `song` and `barBeats`: the song the
-   * cue is in and its bar. `saved`: this layer as saved, which an audition plays, or null.
-   * `audition`: the saved cue's `beats` and `loopBeats` while it plays (see the stream's
-   * `cues`), and `onaudition` and `onrestart`, as the swell and pattern editors take them.
+   * `editable`: false shows the recipe without changing it. `barBeats`: beats in the song's bar.
+   * `saved`: this layer as saved, which an audition plays, or null. `audition`: the saved cue's
+   * `beats` and `loopBeats` while it plays (see the stream's `cues`), and `onaudition` and
+   * `onrestart`, as the swell and pattern editors take them.
    */
-  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick, editable, song, barBeats, saved, audition } = $props();
+  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick, editable, barBeats, saved, audition } = $props();
 
   // docs/api.md, Pixel cues.
   const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one'];
@@ -35,8 +35,7 @@
   const grooveChoices = $derived(grooves(barBeats));
   const groove = $derived.by(() => {
     if (!rhythm) return 'steady';
-    const own = JSON.stringify(rhythm);
-    return Object.keys(grooveChoices).find((name) => JSON.stringify(grooveChoices[name]) === own) ?? 'custom';
+    return Object.keys(grooveChoices).find((name) => isSameRhythm(grooveChoices[name], rhythm)) ?? 'custom';
   });
   const rhythmChoices = $derived([
     ['steady', {}],
@@ -57,7 +56,7 @@
       ...SHAPES.map((shape) => [`shape:${shape}`, { ...own, shape }]),
       ...EFFECTS.map((effect) => [`effect:${effect}`, { ...own, effect }]),
     ];
-    const timer = setTimeout(() => thumbnails.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => thumbnails.load(variants, seed), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
@@ -68,9 +67,6 @@
     delete layer.pattern;
     Object.assign(layer, structuredClone(choice));
   }
-
-  /** A length in beats or bars, in beats; 0 for anything else. */
-  const beatsOf = (length) => lengthInBeats(parseLength(length) ?? { count: 0, unit: 'beats' }, barBeats) ?? 0;
 
   function setParam(key, value) {
     layer.params ??= {};
@@ -136,14 +132,14 @@
       {@const levels = curveLevels(swell.curve ?? 'ramp-up')}
       {#if levels}<polyline points={curvePoints(levels, { width: 1, height: 1 })} />{/if}
     {:else if pattern}
-      {@const loopBeats = beatsOf(pattern.length) || barBeats}
+      {@const loopBeats = beatsIn(pattern.length, barBeats) || barBeats}
       {#each pattern.hits as hit, index (index)}
         {@const levels = curveLevels(hit.shape)}
         {#if levels}
           <polyline
             points={curvePoints(levels, {
               x: (hit.at - 1) / loopBeats,
-              width: Math.min(beatsOf(hit.length), loopBeats) / loopBeats,
+              width: Math.min(beatsIn(hit.length, barBeats), loopBeats) / loopBeats,
               height: 1,
               scale: parseFloat(hit.level) / 100,
             })}

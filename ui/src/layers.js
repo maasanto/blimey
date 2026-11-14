@@ -29,6 +29,16 @@ export function grooves(barBeats) {
   };
 }
 
+/** `value` with its mappings' keys sorted and a pattern's hits in beat order, to compare. */
+function normalized(value) {
+  if (Array.isArray(value)) return value.map(normalized).sort((hit, other) => (hit.at ?? 0) - (other.at ?? 0));
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, normalized(value[key])]));
+}
+
+/** Whether two layer rhythms play the same, whatever order the file gives their keys and hits. */
+export const isSameRhythm = (rhythm, other) => JSON.stringify(normalized(rhythm)) === JSON.stringify(normalized(other));
+
 /** What each ingredient of the tray starts as, besides its colour; new areas cover what is below. */
 const RECIPES = {
   Wash: { shape: 'fill' },

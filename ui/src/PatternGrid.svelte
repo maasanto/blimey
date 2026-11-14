@@ -1,5 +1,5 @@
 <script>
-  import { formatLength, lengthInBeats, parseLength } from './duration.js';
+  import { beatsIn, formatLength, parseLength } from './duration.js';
   import { SHAPES, curveLevels, curvePoints, envelope } from './envelope.svelte.js';
   import TargetPicker from './TargetPicker.svelte';
 
@@ -65,7 +65,7 @@
     cue.length = formatLength(count, 'bars');
     cue.hits = cue.hits.filter((other) => other.at - 1 < beats);
     for (const other of cue.hits) {
-      if (lengthInBeats(parseLength(other.length) ?? { count: 0, unit: 'beats' }, barBeats) > beats) {
+      if (beatsIn(other.length, barBeats) > beats) {
         other.length = formatLength(count, 'bars');
       }
     }
@@ -81,7 +81,7 @@
   }
 
   /** The hit's drawn length in beats, at most the loop. */
-  const drawnBeats = (other) => Math.min(lengthInBeats(parseLength(other.length) ?? { count: 0, unit: 'beats' }, barBeats) ?? 0, loopBeats);
+  const drawnBeats = (other) => Math.min(beatsIn(other.length, barBeats), loopBeats);
 </script>
 
 <fieldset class="editor">

@@ -379,6 +379,22 @@ test("the 1 / 2 / 3.5 pattern built on one area saves the reference and plays as
   expect(inLayer, 'the rhythm shows').not.toBe(still);
 });
 
+test('a groove written by hand in another key and hit order still reads as that groove', async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  const backbeat =
+    '      - shape: fill\n        pattern:\n          hits:\n' +
+    '            - { level: 100%, length: 0.5 beats, shape: ramp-down, at: 4 }\n' +
+    '            - { at: 2, shape: ramp-down, level: 100%, length: 0.5 beats }\n' +
+    '          length: 1 bar\n';
+  writeFileSync(path.join(show, 'songs/demo.yaml'), `program: 1\ncues:\n  40:\n    name: back\n    type: pixel\n    layers:\n${backbeat}`);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'white wash everywhere', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Rhythm: backbeat' })).toHaveAttribute('aria-pressed', 'true');
+});
+
 test.describe('on the Fossile show', () => {
   test.use({ showSource: 'shows/fossile' });
 

@@ -1,5 +1,5 @@
 <script>
-  import { formatLength, lengthInBeats, parseLength } from './duration.js';
+  import { beatsIn, formatLength, lengthInBeats, parseLength } from './duration.js';
   import { SAMPLES, SHAPES, curveLevels, curvePoints, envelope } from './envelope.svelte.js';
   import TargetPicker from './TargetPicker.svelte';
 
@@ -32,7 +32,7 @@
   const units = $derived([...new Set(['beats', 'bars', length.unit])]);
   const swellBeats = $derived(lengthInBeats(length, barBeats));
   /** The saved swell's length in beats: null for one timed in s or ms, which has no playhead. */
-  const savedBeats = $derived(saved ? lengthInBeats(parseLength(saved.duration) ?? { count: 0, unit: 's' }, barBeats) : null);
+  const savedBeats = $derived(saved ? beatsIn(saved.duration, barBeats) : null);
   const progress = $derived(beats === undefined || !savedBeats ? null : Math.min(Math.max(beats / savedBeats, 0), 1));
 
   // Only an audition started here loops: a cue fired from Reaper or the cue list plays as fired.
