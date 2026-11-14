@@ -6,6 +6,7 @@
 //! count cycles of their `speed` from the note, and sparkle draws from a hash of the layer's
 //! seed, the pixel's position and the cycle, never from running state.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
@@ -438,28 +439,9 @@ impl PixelScene {
         intensity: f32,
         out: &mut Universes,
     ) {
-        let rhythm_now = timing.released.unwrap_or_else(|| clock.moment(at));
-        let mut rhythms: [f32; MAX_LAYERS] = std::array::from_fn(|index| {
-            let rhythm = self
-                .layers
-                .get(index)
-                .and_then(|layer| layer.rhythm.as_ref());
-            rhythm.map_or(1.0, |rhythm| rhythm.level(clock, timing, rhythm_now) as f32)
-        });
-        // A lone layer's rhythm goes on the cue's intensity, so a fixture with a dimmer channel
-        // follows it there, as it would a swell or pattern linked to the cue's intensity.
-        let intensity = match self.layers.len() {
-            1 => intensity * std::mem::replace(&mut rhythms[0], 1.0),
-            _ => intensity,
-        };
-        // The builder previews and thumbnails a scene on rigs other than the show's.
-        let other_rig;
-        let drawn = if self.drawn.rig == *rig {
-            &self.drawn
-        } else {
-            other_rig = Drawn::new(&self.layers, rig);
-            &other_rig
-        };
+        let (cue_rhythm, rhythms) = self.rhythms(clock, timing, at);
+        let intensity = intensity * cue_rhythm;
+        let drawn = self.drawn_on(rig);
         let frames: [Option<LayerFrame>; MAX_LAYERS] = std::array::from_fn(|index| {
             let seed = self.seed ^ LAYER_SEED.wrapping_mul(index as u64);
             let layer = self.layers.get(index)?;
@@ -472,9 +454,55 @@ impl PixelScene {
                 rhythms[index],
             ))
         });
-        // Plan §5: a pixel cue overrides only the channels it touches, its fixtures' emitters
-        // and dimmer. Fixtures without emitters, pixels no layer draws, and other channels keep
-        // the layers below.
+        self.draw_fixtures(rig, &drawn, &frames, intensity, out);
+        self.draw_grids(rig, &drawn, &frames, intensity, out);
+    }
+
+    /// The layers' rhythms at `at`, and the part of them that goes on the cue's intensity.
+    fn rhythms(
+        &self,
+        clock: &ClockFollower,
+        timing: CueTiming,
+        at: Duration,
+    ) -> (f32, [f32; MAX_LAYERS]) {
+        let now = timing.released.unwrap_or_else(|| clock.moment(at));
+        let mut rhythms: [f32; MAX_LAYERS] = std::array::from_fn(|index| {
+            let rhythm = self
+                .layers
+                .get(index)
+                .and_then(|layer| layer.rhythm.as_ref());
+            rhythm.map_or(1.0, |rhythm| rhythm.level(clock, timing, now) as f32)
+        });
+        // A lone layer's rhythm goes on the cue's intensity, so a fixture with a dimmer channel
+        // follows it there, as it would a swell or pattern linked to the cue's intensity.
+        let cue_rhythm = match self.layers.len() {
+            1 => std::mem::replace(&mut rhythms[0], 1.0),
+            _ => 1.0,
+        };
+        (cue_rhythm, rhythms)
+    }
+
+    /// What the layers draw on `rig`: worked out at load for the show's rig, and here for the
+    /// others the builder previews and thumbnails a scene on.
+    fn drawn_on(&self, rig: &Rig) -> Cow<'_, Drawn> {
+        if self.drawn.rig == *rig {
+            Cow::Borrowed(&self.drawn)
+        } else {
+            Cow::Owned(Drawn::new(&self.layers, rig))
+        }
+    }
+
+    /// Plan §5: a pixel cue overrides only the channels it touches, its fixtures' emitters and
+    /// dimmer. Fixtures without emitters, pixels no layer draws, and other channels keep the
+    /// layers below.
+    fn draw_fixtures(
+        &self,
+        rig: &Rig,
+        drawn: &Drawn,
+        frames: &[Option<LayerFrame>],
+        intensity: f32,
+        out: &mut Universes,
+    ) {
         let fixtures = rig.fixtures.iter().zip(&drawn.fixtures);
         for (fixture, layers) in fixtures.filter(|(fixture, layers)| {
             has_emitters(fixture) && layers.iter().any(|&layers| layers != 0)
@@ -489,7 +517,7 @@ impl PixelScene {
             };
             let centre = fixture.centre();
             for (pixel, &layers) in fixture.pixels.iter().zip(layers) {
-                let Some(lit) = stack(&frames, layers, pixel.x, pixel.y, centre) else {
+                let Some(lit) = stack(frames, layers, pixel.x, pixel.y, centre) else {
                     continue;
                 };
                 draw_pixel(
@@ -502,13 +530,23 @@ impl PixelScene {
                 );
             }
         }
+    }
+
+    fn draw_grids(
+        &self,
+        rig: &Rig,
+        drawn: &Drawn,
+        frames: &[Option<LayerFrame>],
+        intensity: f32,
+        out: &mut Universes,
+    ) {
         let grid_pixels = rig
             .grids
             .iter()
             .zip(&drawn.grids)
             .flat_map(|(grid, layers)| grid.pixels.iter().zip(layers));
         for (pixel, &layers) in grid_pixels {
-            let Some(lit) = stack(&frames, layers, pixel.x, pixel.y, (pixel.x, pixel.y)) else {
+            let Some(lit) = stack(frames, layers, pixel.x, pixel.y, (pixel.x, pixel.y)) else {
                 continue;
             };
             let frame = out.frame_mut(pixel.universe);
