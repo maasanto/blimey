@@ -1,3 +1,8 @@
+<script module>
+  // Once opened, the fine-tuning fields stay open across areas and scenes for the session.
+  let isTuningOpen = $state(false);
+</script>
+
 <script>
   import { beatsIn } from './duration.js';
   import { curveLevels, curvePoints } from './envelope.svelte.js';
@@ -213,11 +218,6 @@
       <output>{layer.params?.speed ?? '1 bar'}</output>
     </label>
     <label>
-      Phase
-      <input type="range" aria-label="Phase" min="0" max="1" step="0.05" value={layer.params?.phase ?? 0} oninput={(event) => setParam('phase', Number(event.currentTarget.value) || undefined)} />
-      <output>{layer.params?.phase ?? 0}</output>
-    </label>
-    <label>
       Level
       <input type="range" aria-label="Level" min="0" max="100" step="5" value={parseFloat(layer.level ?? '100')} oninput={(event) => setOptional('level', `${event.currentTarget.value}%`, '100%')} />
       <output>{layer.level ?? '100%'}</output>
@@ -229,11 +229,6 @@
       </select>
     </label>
   </div>
-  <div class="fields area">
-    {#each AREA_FIELDS as [key, label] (key)}
-      <label>{label} <input type="number" min="0" max="1" step="0.025" value={area[key]} onchange={(event) => setArea(key, event.currentTarget)} /></label>
-    {/each}
-  </div>
   <div class="mute" role="group" aria-label="Mute">
     <span class="name">Mute</span>
     {#each mutable as name (name)}
@@ -241,7 +236,7 @@
       <button
         aria-pressed={!!muted}
         aria-label="Mute {name}"
-        title={muted && muted !== name ? `Muted with ${muted}` : undefined}
+        title={muted && muted !== name ? `Muted with ${muted}` : 'Leave this one alone'}
         disabled={!!muted && muted !== name}
         onclick={() => toggleMute(name)}>{name}</button
       >
@@ -249,21 +244,45 @@
       <span class="hint">nothing caught to mute</span>
     {/each}
   </div>
+  <details class="more" bind:open={isTuningOpen}>
+    <summary>Position and phase</summary>
+    <div class="fields area">
+      {#each AREA_FIELDS as [key, label] (key)}
+        <label>{label} <input type="number" min="0" max="1" step="0.025" value={area[key]} onchange={(event) => setArea(key, event.currentTarget)} /></label>
+      {/each}
+      <label>
+        Phase
+        <input type="range" aria-label="Phase" min="0" max="1" step="0.05" value={layer.params?.phase ?? 0} oninput={(event) => setParam('phase', Number(event.currentTarget.value) || undefined)} />
+        <output>{layer.params?.phase ?? 0}</output>
+      </label>
+    </div>
+  </details>
 </fieldset>
 
 <style>
   .inspector {
     min-width: 0;
-    padding: 0;
+    padding: 12px 0 0;
     margin: 0;
     border: 0;
+    border-top: 1px solid var(--line);
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
 
   .name {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+
+  .picker + .name,
+  .mute,
+  .more {
+    margin-top: 6px;
   }
 
   .colour,
@@ -276,7 +295,7 @@
 
   .colour .name,
   .mute .name {
-    width: 6em;
+    width: 9.5em;
   }
 
   .swatches,
@@ -287,20 +306,29 @@
   }
 
   .swatch {
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border-radius: 50%;
   }
 
   .swatch.none {
-    background: #000;
+    background: repeating-linear-gradient(45deg, #111 0 4px, #333 4px 8px);
   }
 
   .swatch[aria-pressed='true'],
   .choice[aria-pressed='true'] {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+
+  .choice[aria-pressed='true'] {
+    color: var(--accent);
+  }
+
+  .mute button {
+    padding: 2px 10px;
+    font-size: 13px;
   }
 
   input[type='color'] {
@@ -345,6 +373,7 @@
     display: flex;
     gap: 6px;
     align-items: center;
+    font-size: 14px;
   }
 
   .fields input[type='range'] {
