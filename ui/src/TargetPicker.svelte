@@ -44,7 +44,7 @@
     <select value={drives} onchange={(event) => drive(event.currentTarget.value)}>
       <option value="dimmer">dimmer</option>
       <option value="colour">colour</option>
-      {#if pixelCues.length || drives === 'intensity'}<option value="intensity">pixel cue intensity</option>{/if}
+      {#if pixelCues.length || drives === 'intensity'}<option value="intensity">a look's intensity</option>{/if}
     </select>
   </label>
   {#if drives === 'dimmer' && typeof value === 'object'}

@@ -103,12 +103,12 @@ export function sceneAsPixelCue({ type, values = {}, ...rest }, rig) {
 function whyNotPixel(looks, colourless, layerCount) {
   const names = [...looks.keys()];
   const dimmerOnly = names.find((name) => !looks.get(name).color);
-  if (dimmerOnly) return `it gives ${dimmerOnly} only a dimmer, which keeps the colour of the cues below, and a pixel cue draws its own`;
+  if (dimmerOnly) return `it gives ${dimmerOnly} only a dimmer, which keeps the colour of the scenes below, and a look draws its own`;
   const unlit = names.find((name) => colourless.includes(name));
-  if (unlit) return `${unlit} has no colour emitters, which a pixel cue needs`;
-  if (layerCount > MAX_LAYERS) return `it needs ${layerCount} areas, more than the ${MAX_LAYERS} a pixel cue holds`;
+  if (unlit) return `${unlit} has no colour emitters, which a look needs`;
+  if (layerCount > MAX_LAYERS) return `it needs ${layerCount} areas, more than the ${MAX_LAYERS} a look holds`;
   const modes = new Set([...looks.values()].map((look) => look.rgbw ?? 'saturated'));
-  if (modes.size > 1) return 'it mixes rgbw modes, and a pixel cue has one';
+  if (modes.size > 1) return 'it mixes rgbw modes, and a look has one';
   return null;
 }
 

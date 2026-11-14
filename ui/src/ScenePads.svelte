@@ -1,0 +1,279 @@
+<script>
+  import { engine, request } from './engine.svelte.js';
+  import { curvePoints } from './envelope.svelte.js';
+
+  /**
+   * `cues`: the song file's scenes, number → scene. `isPlaying(number)`: whether the engine
+   * plays that scene. `onopen(number)` opens a scene in the editor, `onnew()` a new one;
+   * `onhold(number)` starts an audition and resolves once it is sent, `onrelease(number)` ends
+   * it; `onaudition(number)` starts or ends one from the keyboard. `editable`: false in show
+   * mode, where scenes still open, read-only, but don't audition.
+   */
+  let { songName, cues = {}, editable, isPlaying, onopen, onnew, onhold, onrelease, onaudition } = $props();
+
+  /** A press held this long auditions; a shorter one opens the scene. */
+  const HOLD_MS = 250;
+  /** Thumbnails are 8 frames over one cycle: about a second a loop, as in the pixel editor. */
+  const THUMBNAIL_FRAME_MS = 125;
+  // The 0–1 canvas at 16:9, as on the front view.
+  const WIDTH = 160;
+  const HEIGHT = 90;
+  const FIXTURE_RADIUS = 6;
+  /** Room above and below the canvas, so pixels and curves on its edges show whole. */
+  const MARGIN = FIXTURE_RADIUS;
+  const PICTURE_RATIO = `${WIDTH} / ${HEIGHT + 2 * MARGIN}`;
+  /** How much of the space between a grid's pixels each one fills. */
+  const GRID_PIXEL_FILL = 0.9;
+
+  let tick = $state(0);
+  /** `GET …/thumbnails` for `song`: number → thumbnail, replaced whole by the next one. */
+  let thumbnails = $state.raw({ song: null, byNote: {} });
+  let thumbnailError = $state('');
+  /** The press on a pad: a click until it is held. */
+  let pressed = $state(null);
+  let isClickSuppressed = false;
+
+  const numbers = $derived(
+    Object.keys(cues)
+      .map(Number)
+      .sort((a, b) => a - b),
+  );
+
+  /**
+   * Every pixel of the rig on the thumbnail. A fixture's pixels are drawn larger than life, so
+   * a wash reads as one bar of colour; a grid's are sized to their spacing, so it reads as a grid.
+   */
+  const lights = $derived([
+    ...(engine.rig?.fixtures ?? []).flatMap(({ name, pixels }) => pixels.map((pixel, index) => ({ name, index, ...pixel, radius: FIXTURE_RADIUS }))),
+    ...(engine.rig?.grids ?? []).flatMap(({ name, pixels }) => {
+      const spacing = Math.min(gap(pixels.map((pixel) => pixel.x)) * WIDTH, gap(pixels.map((pixel) => pixel.y)) * HEIGHT);
+      const radius = Math.min(FIXTURE_RADIUS, (GRID_PIXEL_FILL * spacing) / 2);
+      return pixels.map((pixel, index) => ({ name, index, ...pixel, radius }));
+    }),
+  ]);
+
+  function gap(positions) {
+    const sorted = [...new Set(positions)].sort((a, b) => a - b);
+    return Math.min(...sorted.slice(1).map((position, index) => position - sorted[index]));
+  }
+
+  // Only while a pad moves: still pads redraw nothing.
+  const isAnimated = $derived(numbers.some((number) => thumbnailOf(number)?.frames?.length > 1));
+  $effect(() => {
+    if (!isAnimated) return;
+    const timer = setInterval(() => (tick += 1), THUMBNAIL_FRAME_MS);
+    return () => clearInterval(timer);
+  });
+
+  // Rendered by the engine from the saved song, again whenever it or the rig changes.
+  $effect(() => {
+    const song = songName;
+    cues;
+    engine.rig;
+    let isCurrent = true;
+    request('GET', `/api/songs/${song}/thumbnails`)
+      .then((byNote) => {
+        if (!isCurrent) return;
+        thumbnails = { song, byNote };
+        thumbnailError = '';
+      })
+      .catch((failure) => {
+        if (!isCurrent) return;
+        thumbnails = { song, byNote: {} };
+        thumbnailError = failure.message;
+      });
+    return () => (isCurrent = false);
+  });
+
+  const thumbnailOf = (number) => (thumbnails.song === songName ? thumbnails.byNote[number] : undefined);
+
+  function press(event, number) {
+    // One press at a time: another finger or pointer is ignored until this one lets go.
+    if (!editable || pressed !== null || event.button !== 0) return;
+    pressed = { pointer: event.pointerId, number, gesture: 'click', started: null };
+    pressed.timer = setTimeout(() => {
+      pressed.gesture = 'hold';
+      // A scene already playing, from Reaper or the editor, is left to play.
+      if (!isPlaying(number)) pressed.started = onhold(number);
+    }, HOLD_MS);
+  }
+
+  function letGo(event) {
+    if (pressed === null || event.pointerId !== pressed.pointer) return;
+    const { number, gesture, started, timer } = pressed;
+    clearTimeout(timer);
+    pressed = null;
+    // The click that follows a hold isn't one.
+    isClickSuppressed = gesture !== 'click';
+    setTimeout(() => (isClickSuppressed = false));
+    started?.then(() => onrelease(number));
+  }
+
+  function click(number) {
+    if (!isClickSuppressed) onopen(number);
+  }
+</script>
+
+<svelte:window onpointerup={letGo} onpointercancel={letGo} />
+
+{#snippet picture(thumbnail)}
+  <svg viewBox="0 {-MARGIN} {WIDTH} {HEIGHT + 2 * MARGIN}" class="thumbnail" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">
+    {#if thumbnail?.levels}
+      <polyline class="level" points={curvePoints(thumbnail.levels, { width: WIDTH, height: HEIGHT })} />
+    {:else if thumbnail?.frames}
+      {@const frame = thumbnail.frames[tick % thumbnail.frames.length]}
+      {#each lights as light (`${light.name}:${light.index}`)}
+        <circle cx={light.x * WIDTH} cy={(1 - light.y) * HEIGHT} r={light.radius} fill={frame[light.name]?.[light.index] ?? '#000000'} />
+      {/each}
+    {/if}
+  </svg>
+{/snippet}
+
+<section aria-label="Scenes">
+  {#if thumbnailError}<p class="error" role="alert">Thumbnails: {thumbnailError}</p>{/if}
+  <ol class="pads">
+    {#each numbers as number (number)}
+      {@const isOn = isPlaying(number)}
+      <li class="slot">
+        <button
+          class="pad"
+          class:playing={isOn}
+          class:held={pressed?.gesture === 'hold' && pressed.number === number}
+          data-pad={number}
+          aria-label="Scene {number}: {cues[number].name}"
+          onpointerdown={(event) => press(event, number)}
+          onclick={() => click(number)}
+        >
+          {@render picture(thumbnailOf(number))}
+          <span class="label">
+            <span class="name">{cues[number].name}</span>
+            <span class="number">{number}</span>
+          </span>
+        </button>
+        <button
+          class="audition"
+          aria-label="{isOn ? 'Release' : 'Audition'} scene {number}"
+          title={isOn ? 'Release' : 'Audition'}
+          disabled={!editable}
+          onclick={() => onaudition(number)}>{isOn ? '■' : '▶'}</button
+        >
+      </li>
+    {/each}
+    <li class="slot">
+      <button class="pad new" disabled={!editable} onclick={onnew}>
+        <span class="thumbnail add" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">+</span>
+        <span class="label"><span class="name">New scene</span></span>
+      </button>
+    </li>
+  </ol>
+  <p class="hint">
+    {#if editable}
+      Click a scene to edit it; hold it, or use its ▶ button, to audition it.
+    {:else}
+      Show mode: scenes open read-only and don't audition.
+    {/if}
+  </p>
+</section>
+
+<style>
+  .pads {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+    padding: 0;
+    margin: 0 0 16px;
+    list-style: none;
+  }
+
+  .slot {
+    position: relative;
+    display: flex;
+  }
+
+  .pad {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 6px;
+    text-align: left;
+    background: #1c1e24;
+    border-radius: 8px;
+    user-select: none;
+    touch-action: none;
+  }
+
+  .pad.new {
+    background: none;
+    border-style: dashed;
+  }
+
+  .pad.playing {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgb(255 190 80 / 0.45);
+  }
+
+  .pad.held {
+    transform: scale(0.97);
+  }
+
+  .audition {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 0 8px;
+    font-size: 12px;
+    background: rgb(22 23 27 / 0.8);
+  }
+
+  .thumbnail {
+    display: block;
+    width: 100%;
+    background: #101114;
+    border-radius: 4px;
+  }
+
+  .add {
+    display: grid;
+    place-items: center;
+    font-size: 22px;
+    color: var(--muted);
+    background: none;
+  }
+
+  .level {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 3;
+  }
+
+  circle {
+    stroke: #3a3d47;
+    stroke-width: 0.5;
+  }
+
+  .label {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+    font-size: 13px;
+  }
+
+  .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .new .name {
+    color: var(--muted);
+  }
+
+  .number {
+    font: 12px var(--mono);
+    color: var(--muted);
+  }
+</style>

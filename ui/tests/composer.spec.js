@@ -106,11 +106,8 @@ test.describe('on three rows of washes', () => {
   test.use({ showSource: 'tests/fixtures/shows/three-rows' });
   const DARK = ['--set', 'all-wash', 'dimmer=0%'];
 
-  /** The builder on the example without its swell; C15's song with it sorts first. */
-  async function openChorusBuild(page, url) {
-    await page.goto(`${url}#builder`);
-    await page.getByLabel('Song').selectOption('chorus-build');
-  }
+  /** The example without its swell, scene 43 of chorus-build, in the scene editor. */
+  const openChorusBuild = (page, url) => page.goto(`${url}#builder/chorus-build/43`);
 
   test("plan §16's example look built on the stage saves C14's reference and plays its dump", async ({ page, show, startEngine }) => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
@@ -119,7 +116,6 @@ test.describe('on three rows of washes', () => {
     expect((await page.request.delete(`${url}api/songs/chorus-build/cues/43`)).status()).toBe(204);
     await openChorusBuild(page, url);
 
-    await pad(page, 43).click();
     await page.getByLabel('Name').fill('chorus-build');
     await page.getByLabel('Release').fill('1s');
 
@@ -150,8 +146,8 @@ test.describe('on three rows of washes', () => {
     await expect(
       page.getByText('Warm-white wash on the left, amber chase on the right, steel-blue sparkle across the top except inner-wash.'),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Save cue' }).click();
-    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     expect(readFileSync(songFile, 'utf8')).toBe(reference);
     expect(replayHeld(show, 43)).toBe(readFileSync(path.join(ROOT, 'tests/fixtures/dumps/pixel/layers/three-rows.dump'), 'utf8'));
   });
@@ -161,7 +157,6 @@ test.describe('on three rows of washes', () => {
     const saved = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
-    await pad(page, 43).click();
     const selected = page.locator('.area.selected');
 
     const point = await stagePoint(page, [0.25, 0.8]);
@@ -169,8 +164,8 @@ test.describe('on three rows of washes', () => {
     await expect(selected).toHaveAttribute('data-area', '2');
     await unsteadyClick(page, point);
     await expect(selected).toHaveAttribute('data-area', '0');
-    await page.getByRole('button', { name: 'Save cue' }).click();
-    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     expect(readFileSync(songFile, 'utf8'), 'no area moved').toBe(saved);
 
     // An area moved off every fixture says it catches nothing.
@@ -182,7 +177,6 @@ test.describe('on three rows of washes', () => {
   test('a cancelled press adds no area and puts a resized one back', async ({ page, startEngine }) => {
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
-    await pad(page, 43).click();
     await page.evaluate(() => addEventListener('pointerdown', (event) => (window.lastPointer = event.pointerId), true));
     const cancelPress = async () => {
       await page.evaluate(() => dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.lastPointer })));
@@ -214,7 +208,6 @@ test.describe('on three rows of washes', () => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
-    await pad(page, 43).click();
 
     await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
     await page.getByLabel('Area width').fill('1.5');
@@ -231,8 +224,8 @@ test.describe('on three rows of washes', () => {
     await muteInner.click();
     await expect(page.getByRole('button', { name: 'Mute inner-wash' })).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Save cue' }).click();
-    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     const written = readFileSync(songFile, 'utf8');
     expect(written).toContain('        params: { color: amber, width: 0.25, speed: 1 bar, phase: 0.5 }\n');
     expect(written).toContain('        area: { x: 0, y: 0.65, width: 0.2, height: 0.35 }\n');
@@ -242,7 +235,6 @@ test.describe('on three rows of washes', () => {
   test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {
     const engine = await startEngine({ look: DARK });
     await openChorusBuild(page, engine.url);
-    await pad(page, 43).click();
     await engine.stop();
     await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
 
@@ -259,15 +251,14 @@ test.describe('on three rows of washes', () => {
     const withoutSwell = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
-    await pad(page, 43).click();
 
     await page.getByRole('button', { name: 'warm-white wash on the left', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Rhythm: steady' })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: 'Rhythm: swell' }).click();
     await expect(page.getByLabel('Curve', { exact: true })).toHaveValue('ease-in');
-    await page.getByRole('button', { name: 'Save cue' }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     const warmWhite = '        params: { color: warm-white }\n';
     expect(readFileSync(songFile, 'utf8')).toBe(
       withoutSwell.replace(warmWhite, `${warmWhite}        swell: { duration: 4 bars, curve: ease-in }\n`),
@@ -283,15 +274,14 @@ test.describe('on three rows of washes', () => {
     const saved = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
-    await pad(page, 43).click();
     const lowLeft = page.locator('[data-fixture="low-1"] circle').first();
     await expect(lowLeft).toHaveAttribute('fill', '#ffd2a0');
 
     await page.getByRole('button', { name: 'Hide while editing: warm-white wash on the left' }).click();
     await expect(lowLeft, 'no layer left draws it: the dark look below shows').toHaveAttribute('fill', '#000000');
-    await page.getByRole('button', { name: 'Save cue' }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     expect(readFileSync(songFile, 'utf8')).toBe(saved);
   });
 });
@@ -314,9 +304,9 @@ test('an old-form pixel cue opened and saved untouched saves as layers and plays
   // Selecting a whole-stage area with an unsteady click doesn't give it an area of its own.
   await unsteadyClick(page, await stagePoint(page, [0.5, 0.5]));
   await expect(page.locator('.area.selected')).toHaveAttribute('data-area', '1');
-  await page.getByRole('button', { name: 'Save cue' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     'program: 1\nbpm: 150\ncues:\n  40:\n    name: bridge\n    type: pixel\n    seed: 7\n    layers:\n' +
       '      -\n        effect: chase\n        params: { color: deep-blue, width: 0.25, speed: 1 beat }\n' +
@@ -335,9 +325,8 @@ test("the 1 / 2 / 3.5 pattern built on one area saves the reference and plays as
   const header = 'program: 1\nbpm: 120\n';
   writeFileSync(songFile, header);
   const { url } = await startEngine();
-  await page.goto(`${url}#builder`);
+  await page.goto(`${url}#builder/demo/42`);
 
-  await pad(page, 42).click();
   await page.getByLabel('Name').fill('verse-pulse');
   await ingredient(page, 'Hits').click();
   await expect(page.getByRole('button', { name: 'Rhythm: on the beat' })).toHaveAttribute('aria-pressed', 'true');
@@ -351,9 +340,9 @@ test("the 1 / 2 / 3.5 pattern built on one area saves the reference and plays as
   await step(page, 3.5).click();
   await page.getByLabel('Hit shape').selectOption('ramp-up');
   await page.getByLabel('Hit level').fill('100');
-  await page.getByRole('button', { name: 'Save cue' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  await expect(page.getByText('Saved cue 42 in demo.')).toBeVisible();
+  await expect(page.getByText('Saved scene 42 in demo.')).toBeVisible();
   const layer = '      -\n        shape: fill\n        params: { color: deep-blue }\n';
   const pattern = `        pattern:\n          length: 1 bar\n${C5_HITS.replace(/^(?=.)/gm, '      ')}`;
   const cue = (layers) => `cues:\n  42:\n    name: verse-pulse\n    type: pixel\n    layers:\n${layers}`;
@@ -431,8 +420,9 @@ test.describe('on the Fossile show', () => {
     for (const [note, sentence] of Object.entries(scenes)) {
       await pad(page, note).click();
       await expect(page.getByText(sentence)).toBeVisible();
-      await page.getByRole('button', { name: 'Save cue' }).click();
-      await expect(page.getByText(`Saved cue ${note} in tell-me.`)).toBeVisible();
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(page.getByText(`Saved scene ${note} in tell-me.`)).toBeVisible();
+      await page.getByRole('link', { name: '← Scenes' }).click();
     }
     expect(readFileSync(songFile, 'utf8')).toContain(
       '  37:\n    name: chorus-amber\n    type: pixel\n    fade_in: 500ms\n    release: 500ms\n    layers:\n' +
@@ -448,7 +438,7 @@ test.describe('on the Fossile show', () => {
     }
   });
 
-  test('the blackout, a dimmer over the cues below, stays a scene that can still be auditioned and moved', async ({ page, show, startEngine }) => {
+  test('the blackout, a dimmer over the scenes below, stays a fixed look that can still be auditioned, duplicated and renumbered', async ({ page, show, startEngine }) => {
     const songFile = path.join(show, 'songs/tell-me.yaml');
     const before = readFileSync(songFile, 'utf8');
     const { url } = await startEngine();
@@ -456,18 +446,22 @@ test.describe('on the Fossile show', () => {
 
     await pad(page, 38).click();
     await expect(page.getByRole('status')).toContainText(
-      'This scene stays a scene, read-only on the stage: it gives wash-1 only a dimmer, which keeps the colour of the cues below',
+      'This fixed look stays as it is, read-only on the stage: it gives wash-1 only a dimmer, which keeps the colour of the scenes below',
     );
-    await expect(page.getByRole('button', { name: 'Save cue' })).toBeDisabled();
     await expect(ingredient(page, 'Wash')).toBeDisabled();
     await page.getByRole('button', { name: 'Audition', exact: true }).click();
-    await expect(pad(page, 38)).toHaveClass(/playing/);
     await page.getByRole('button', { name: 'Release', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Audition', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Duplicate' }).click();
-    await expect(pad(page, 41)).toHaveAccessibleName('Pad 41: blackout-copy');
+    await expect(page.getByText('Duplicated scene 38 as scene 41.')).toBeVisible();
+    await page.getByLabel('Number').fill('50');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByText('Saved scene 50 in tell-me.')).toBeVisible();
+
     const blackout = before.slice(before.indexOf('  38:\n'), before.indexOf('  39:\n'));
     const after = readFileSync(songFile, 'utf8');
-    expect(after, 'still a scene').toContain(blackout);
+    expect(after, 'moved').not.toContain('  38:\n');
+    expect(after, 'still a fixed look').toContain(blackout.replace('  38:', '  50:'));
     expect(after).toContain(blackout.replace('  38:', '  41:').replace('name: blackout', 'name: blackout-copy'));
   });
 });
@@ -475,7 +469,7 @@ test.describe('on the Fossile show', () => {
 test.describe('on three rows of washes, a scene of nine colours', () => {
   test.use({ showSource: 'tests/fixtures/shows/three-rows' });
 
-  test('needs more areas than a pixel cue holds, so it stays a scene', async ({ page, show, startEngine }) => {
+  test('needs more areas than a look holds, so it stays a fixed look', async ({ page, show, startEngine }) => {
     const colours = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff', '#ff00ff', '#ffffff', '#808080', '#ff8000'];
     const fixtures = ['low-1', 'low-2', 'low-3', 'low-4', 'mid-1', 'mid-2', 'mid-3', 'mid-4', 'high-1'];
     const values = fixtures.map((fixture, index) => `      ${fixture}: { color: "${colours[index]}" }\n`).join('');
@@ -485,7 +479,7 @@ test.describe('on three rows of washes, a scene of nine colours', () => {
     await page.getByLabel('Song').selectOption('rainbow');
 
     await pad(page, 36).click();
-    await expect(page.getByRole('status')).toContainText('it needs 9 areas, more than the 8 a pixel cue holds');
-    await expect(page.getByRole('button', { name: 'Save cue' })).toBeDisabled();
+    await expect(page.getByRole('status')).toContainText('it needs 9 areas, more than the 8 a look holds');
+    await expect(ingredient(page, 'Wash')).toBeDisabled();
   });
 });

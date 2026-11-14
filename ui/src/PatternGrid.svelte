@@ -192,7 +192,7 @@
   <div class="row">
     <button disabled={!saved} onclick={onaudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
     <span class="hint">
-      {saved ? 'Loops the saved cue from the next bar line. Save to hear changes.' : 'Save the cue to audition it.'}
+      {saved ? 'Loops the saved scene from the next bar line. Save to hear changes.' : 'Save the scene to audition it.'}
     </span>
   </div>
 </fieldset>

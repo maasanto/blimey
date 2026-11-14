@@ -15,24 +15,15 @@ function addSong(show, text = HEADER + BLACKOUT) {
 
 const ingredient = (page, name) => page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name });
 const pixel = (page, fixture) => page.locator(`[data-fixture="${fixture}"] circle`).first();
-const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
+const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
+const backToScenes = (page) => page.getByRole('link', { name: '← Scenes' });
 
-/** Drags the cue on one pad onto another. */
-async function dragPad(page, from, to) {
-  const [start, end] = [await pad(page, from).boundingBox(), await pad(page, to).boundingBox()];
-  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 5 });
-  await page.mouse.up();
-}
-
-test('a look built in the builder plays the same from note 36 after a restart', async ({ page, show, startEngine }) => {
+test('a look built in the builder plays the same from scene 36 after a restart', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);
   const first = await startEngine();
-  await page.goto(`${first.url}#builder`);
-
-  // 1. Build the look on an empty pad: all washes deep blue at 50%, then wash-1 green at full.
-  await pad(page, 36).click();
+  // 1. Build the look as a new scene 36: all washes deep blue at 50%, then wash-1 green at full.
+  await page.goto(`${first.url}#builder/demo/36`);
+  await expect(page.getByText('New scene', { exact: true })).toBeVisible();
   await ingredient(page, 'Wash').click();
   await page.getByRole('button', { name: 'Colour: deep-blue' }).click();
   await page.getByLabel('Level', { exact: true }).fill('50');
@@ -47,10 +38,10 @@ test('a look built in the builder plays the same from note 36 after a restart', 
   const built = await nextDmx(first.address);
   expect(built.slice(0, 4), 'wash-1 pixel 1: red, green, blue, white').toEqual([0, 255, 0, 0]);
 
-  // 2. Save it as cue 36.
+  // 2. Save it as scene 36.
   await page.getByLabel('Name').fill('verse-green');
-  await page.getByRole('button', { name: 'Save cue' }).click();
-  await expect(page.getByText('Saved cue 36 in demo.')).toBeVisible();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 36 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     HEADER +
       '  36:\n    name: verse-green\n    type: pixel\n    layers:\n' +
@@ -59,23 +50,21 @@ test('a look built in the builder plays the same from note 36 after a restart', 
       BLACKOUT,
   );
 
-  // Holding its pad fires it through the engine, the cue showing over a look edited since.
+  // An audition fires it through the engine, the saved scene showing over a look edited since.
   await page.getByLabel('Colour', { exact: true }).fill('#0000ff');
   await expect(pixel(page, 'wash-1')).toHaveAttribute('fill', '#0000ff');
-  await pad(page, 36).hover();
-  await page.mouse.down();
-  await expect(pixel(page, 'wash-1'), 'the cue, not the look being edited').toHaveAttribute('fill', '#00ff00');
-  await expect(page.getByText('Off the output while a cue is auditioned.')).toBeVisible();
-  await expect(pad(page, 36)).toHaveClass(/playing/);
-  await page.mouse.up();
-  await expect(pad(page, 36)).not.toHaveClass(/playing/);
+  await page.getByRole('button', { name: 'Audition', exact: true }).click();
+  await expect(pixel(page, 'wash-1'), 'the saved scene, not the look being edited').toHaveAttribute('fill', '#00ff00');
+  await expect(page.getByText('Off the output while a scene is auditioned.')).toBeVisible();
+  await page.getByRole('button', { name: 'Release', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Audition', exact: true })).toBeVisible();
 
   // 3. Restart the engine on the same show: the preview is gone.
   await first.stop();
   const second = await startEngine();
   expect((await nextDmx(second.address)).slice(0, 4), "fire's own look on wash-1").toEqual([255, 0, 0, 0]);
 
-  // 4. Fire note 36 as Reaper would: song select, then the note.
+  // 4. Fire scene 36 as Reaper would until it has its own control: song 1's program, then note 36.
   for (const message of [[0xc1, 1], [0x91, 36, 127]]) {
     expect((await page.request.post(`${second.url}api/midi`, { data: { message } })).status()).toBe(204);
   }
@@ -84,7 +73,7 @@ test('a look built in the builder plays the same from note 36 after a restart', 
   await expect.poll(() => nextDmx(second.address)).toEqual(built);
 });
 
-test('editing a pixel cue in the form keeps its layers, in the layers form', async ({ page, show, startEngine }) => {
+test('editing a look in the scene editor keeps its layers, in the layers form', async ({ page, show, startEngine }) => {
   const songFile = addSong(
     show,
     HEADER + BLACKOUT +
@@ -99,9 +88,9 @@ test('editing a pixel cue in the form keeps its layers, in the layers form', asy
   await page.getByLabel('Name').fill('bridge-sweep');
   await page.getByLabel('Fade in').fill('1 beat');
   await page.getByLabel('Release').fill('2s');
-  await page.getByRole('button', { name: 'Save cue' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     HEADER + BLACKOUT +
       '  40:\n    name: bridge-sweep\n    type: pixel\n    fade_in: 1 beat\n    release: 2s\n    seed: 7\n    layers:\n' +
@@ -134,7 +123,7 @@ test('the metronome tempo is saved to the song', async ({ page, show, startEngin
   await page.getByLabel('Metronome').fill('92');
   await page.getByRole('button', { name: 'Set tempo' }).click();
 
-  await expect(page.getByText('demo runs at 92 BPM when no MIDI clock comes in.')).toBeVisible();
+  await expect(page.getByText('demo runs at 92 BPM when no clock comes in.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(HEADER.replace('bpm: 120', 'bpm: 92') + BLACKOUT);
 });
 
@@ -144,10 +133,16 @@ test('undo restores the previous file byte for byte', async ({ page, show, start
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
 
-  await dragPad(page, 38, 40);
-  await expect(pad(page, 40)).toHaveAccessibleName('Pad 40: blackout');
-  await expect(pad(page, 38), 'moved, not copied').toHaveAccessibleName('Pad 38: empty');
+  // The fixed look stays one, and a new number moves it.
+  await pad(page, 38).click();
+  await page.getByLabel('Number').fill('40');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
+  await backToScenes(page).click();
+  await expect(pad(page, 40)).toHaveAccessibleName('Scene 40: blackout');
+  await expect(pad(page, 38), 'moved, not copied').toHaveCount(0);
   const saved = readFileSync(songFile, 'utf8');
+  expect(saved).toBe(`# By hand.\nprogram: 1\ncues:\n${BLACKOUT.replace('38:', '40:')}`);
   expect(saved).not.toBe(handWritten);
 
   // A hand edit since the save blocks the undo, which can be tried again once it is reverted.
@@ -159,64 +154,67 @@ test('undo restores the previous file byte for byte', async ({ page, show, start
 
   await expect(page.getByText('Undid the last save of songs/demo.yaml.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(handWritten);
-  await expect(pad(page, 38)).toHaveAccessibleName('Pad 38: blackout');
+  await expect(pad(page, 38)).toHaveAccessibleName('Scene 38: blackout');
   await expect(page.getByRole('button', { name: 'Undo (0)' })).toBeDisabled();
 });
 
-test('a new song takes a cue, and two undos remove the cue then the song', async ({ page, show, startEngine }) => {
+test('a new song takes the next free number and a scene, and two undos remove the scene then the song', async ({ page, show, startEngine }) => {
   const demoFile = addSong(show);
   const demo = readFileSync(demoFile, 'utf8');
   const encoreFile = path.join(show, 'songs/encore.yaml');
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
   const songPicker = page.locator('.bar select');
-  const program = page.getByLabel('Program', { exact: true });
+  const number = page.getByLabel('Number', { exact: true });
 
-  // Taken names and programs are refused by the engine.
   await page.getByRole('button', { name: 'New song' }).click();
+  await expect(number, 'song 1 is demo').toHaveValue('2');
+  // Taken names and numbers are refused by the engine.
   await page.getByLabel('Song name').fill('demo');
   await page.getByRole('button', { name: 'Create song' }).click();
   await expect(page.getByRole('alert')).toHaveText('songs/demo.yaml: the show already has song "demo"; pick another name');
   await page.getByLabel('Song name').fill('encore');
-  await program.fill('1');
+  await number.fill('1');
   await page.getByRole('button', { name: 'Create song' }).click();
-  await expect(page.getByRole('alert')).toContainText('program 1 already selects song');
+  await expect(page.getByRole('alert')).toHaveText('Song 1 is already demo: pick a free number.');
+  expect(existsSync(encoreFile)).toBe(false);
 
-  await program.fill('7');
+  await number.fill('2');
   await page.getByLabel('Tempo').fill('100');
   await page.getByRole('button', { name: 'Create song' }).click();
-  await expect(page.getByText('Created song encore.')).toBeVisible();
+  await expect(page.getByText('Created song 2 · encore.')).toBeVisible();
   await expect(songPicker).toHaveValue('encore');
-  expect(readFileSync(encoreFile, 'utf8')).toBe('program: 7\nbpm: 100\n');
+  expect(readFileSync(encoreFile, 'utf8')).toBe('program: 2\nbpm: 100\n');
 
-  await pad(page, 36).click();
+  await page.getByRole('button', { name: 'New scene' }).click();
   await ingredient(page, 'Wash').click();
   await page.getByLabel('Name').fill('first-look');
-  await page.getByRole('button', { name: 'Save cue' }).click();
-  await expect(pad(page, 36)).toHaveAccessibleName('Pad 36: first-look');
-  const withCue = readFileSync(encoreFile, 'utf8');
-  expect(withCue).toContain('    name: first-look\n');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 1 in encore.')).toBeVisible();
+  await backToScenes(page).click();
+  await expect(pad(page, 1)).toHaveAccessibleName('Scene 1: first-look');
+  const withScene = readFileSync(encoreFile, 'utf8');
+  expect(withScene).toContain('  1:\n    name: first-look\n');
 
   await page.getByRole('button', { name: 'Undo (2)' }).click();
-  await expect(pad(page, 36)).toHaveAccessibleName('Pad 36: empty');
-  expect(readFileSync(encoreFile, 'utf8')).toBe('program: 7\nbpm: 100\n');
+  await expect(page.locator('[data-pad]')).toHaveCount(0);
+  expect(readFileSync(encoreFile, 'utf8')).toBe('program: 2\nbpm: 100\n');
   await page.getByRole('button', { name: 'Undo (1)' }).click();
   await expect(page.getByText('Undid the last save of songs/encore.yaml.')).toBeVisible();
   expect(existsSync(encoreFile), 'the song is gone').toBe(false);
-  await expect(songPicker.locator('option')).toHaveText(['demo (program 1)']);
+  await expect(songPicker.locator('option')).toHaveText(['Song 1 · demo']);
   expect(readFileSync(demoFile, 'utf8')).toBe(demo);
 
   // Redo brings both back, as they were.
   await page.getByRole('button', { name: 'Redo (2)' }).click();
   await page.getByRole('button', { name: 'Redo (1)' }).click();
   await expect(page.getByRole('button', { name: 'Redo (0)' })).toBeDisabled();
-  expect(readFileSync(encoreFile, 'utf8')).toBe(withCue);
+  expect(readFileSync(encoreFile, 'utf8')).toBe(withScene);
 });
 
-test("a fixture dragged in the builder's front view is a step to undo", async ({ page, startEngine }) => {
+test('a fixture dragged on the front view is a step to undo in the builder', async ({ page, startEngine }) => {
   const { url } = await startEngine();
-  await page.goto(`${url}#builder`);
-  await expect(page.getByRole('button', { name: 'Undo (0)' })).toBeDisabled();
+  await page.goto(`${url}#front`);
   const pixel = await page.locator('[data-fixture="wash-2"] circle').first().boundingBox();
 
   await page.mouse.move(pixel.x + pixel.width / 2, pixel.y + pixel.height / 2);
@@ -224,6 +222,7 @@ test("a fixture dragged in the builder's front view is a step to undo", async ({
   await page.mouse.move(pixel.x + 60, pixel.y + 40, { steps: 5 });
   await page.mouse.up();
 
+  await page.getByRole('link', { name: 'Builder' }).click();
   await expect(page.getByRole('button', { name: 'Undo (1)' })).toBeEnabled();
 });
 
@@ -254,19 +253,24 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
 
   await expect(page.getByText('Show mode: the builder is read-only.')).toBeVisible();
   for (const control of [
-    ingredient(page, 'Wash'),
-    page.getByLabel('Name'),
     page.getByRole('button', { name: 'Set tempo' }),
     page.getByRole('button', { name: 'New song' }),
     page.getByRole('button', { name: /^Undo/ }),
-    pad(page, 38),
-    pad(page, 40),
+    page.getByRole('button', { name: 'New scene' }),
+    page.getByRole('button', { name: 'Audition scene 38' }),
   ]) {
     await expect(control).toBeDisabled();
   }
-  // The pads still show what each cue looks like: thumbnails are reads.
+  // The pads still show what each scene looks like: thumbnails are reads.
   await expect(pad(page, 38).locator('circle')).toHaveCount(16);
   expect((await page.request.get(`${url}api/songs/demo/thumbnails`)).status()).toBe(200);
+
+  // A scene still opens, read-only.
+  await pad(page, 38).click();
+  await expect(page.getByText('Scene 38', { exact: true })).toBeVisible();
+  for (const control of [ingredient(page, 'Wash'), page.getByLabel('Name'), page.getByLabel('Number'), page.getByRole('button', { name: 'Audition', exact: true })]) {
+    await expect(control).toBeDisabled();
+  }
 
   const refusals = [
     page.request.put(`${url}api/songs/demo/cues/40`, { data: { cue: { name: 'x', type: 'scene', values: {} } } }),

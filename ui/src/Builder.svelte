@@ -1,20 +1,22 @@
 <script module>
-  // Kept while other pages are open, so the look stays live on the output while you check it
-  // on the front view, and is still here when you come back.
+  // Kept while other pages are open, so the scene being edited is still here when you come back.
   let songName = $state('');
   /** The preview as it was when an audition took it off the output, until it is edited again. */
   let pausedLook = $state(null);
+  /** The scene open in the editor, `{ song, number }` as in its URL, or null on the scenes home. */
+  let opened = $state.raw(null);
   /**
-   * The cue being edited, as in the song file, and its note: a look on the stage unless made
-   * a swell or pattern cue. `replaces` is the cue as loaded, `{ note, cue }`, so the engine can
-   * refuse the save if the file changed since. `hidden` marks the pixel cue's layers left off
-   * the preview while editing. `sceneKept` says why a scene opened on the stage stays a scene,
-   * read-only, or is null.
+   * The scene being edited, as in the song file, and its number: a look on the stage unless made
+   * a swell or pattern. `replaces` is the scene as loaded, `{ note, cue }` as the save endpoint
+   * takes it, so the engine can refuse the save if the file changed since. `hidden` marks the
+   * look's layers left off the preview while editing. `sceneKept` says why a fixed look opened on
+   * the stage stays one, read-only, or is null. `unchanged` is the form as opened or last saved,
+   * to tell unsaved edits.
    */
   let form = $state(newForm());
 
   function newForm() {
-    return { note: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null };
+    return { number: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null, unchanged: null };
   }
 </script>
 
@@ -22,20 +24,25 @@
   import { engine, request } from './engine.svelte.js';
   import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
-  import PadBank, { LAST_NOTE } from './PadBank.svelte';
   import { asLayers, sceneAsPixelCue } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
+  import ScenePads from './ScenePads.svelte';
   import StageComposer from './StageComposer.svelte';
   import SwellEditor from './SwellEditor.svelte';
 
-  // Channel 2, where cues and song select live (docs/api.md, Playback).
+  // Until the Reaper control chunk, song N is channel-2 Program Change N and scene N channel-2
+  // note N (docs/api.md, Scenes and songs in the builder).
   const NOTE_ON = 0x91;
   const NOTE_OFF = 0x81;
   const PROGRAM_CHANGE = 0xc1;
   const FULL_VELOCITY = 127;
+  /** The highest scene or song number the engine takes: the highest MIDI note and program. */
+  const HIGHEST_NUMBER = 127;
   const DEFAULT_BPM = 120;
   /** Well inside the engine's 5 s preview lifetime (docs/api.md), so the look never flickers off. */
   const PREVIEW_REFRESH_MS = 2000;
+  /** What each type of scene is called in the builder. */
+  const KINDS = { pixel: 'Look', swell: 'Swell', pattern: 'Pattern', scene: 'Fixed look' };
 
   let error = $state('');
   let notice = $state('');
@@ -50,35 +57,37 @@
   let newSong = $state(null);
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
-  /** The cue's look can be edited and saved: not a scene that stays one. */
+  /** The scene's look can be edited on the stage: not a fixed look that stays one. */
   const isLookEditable = $derived(editable && !form.sceneKept);
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
   const isPixel = $derived(form.cue.type === 'pixel');
   const shownLayers = $derived(isPixel ? form.cue.layers.filter((_, index) => !form.hidden[index]) : []);
-  /** What the output previews while editing: the pixel cue's shown layers; null for nothing. */
+  /** What the output previews while editing: the look's shown layers; null for nothing. */
   const shown = $derived(
-    shownLayers.length && songName && !form.sceneKept
+    opened && shownLayers.length && songName && !form.sceneKept
       ? { path: '/api/preview/pixel', body: { song: songName, cue: { ...withoutEmptyTimes(form.cue), layers: $state.snapshot(shownLayers) } } }
       : null,
   );
   const isPaused = $derived(JSON.stringify(shown) === pausedLook);
   const cues = $derived(Object.entries(song?.cues ?? {}).map(([note, cue]) => ({ note: Number(note), cue })));
+  const songs = $derived([...(summary?.songs ?? [])].sort((a, b) => a.program - b.program));
   const barBeats = $derived(beatsPerBar(song?.time_signature));
-  /** The cue being edited as the stream reports it, while its saved version is auditioned. */
+  /** The scene being edited as the stream reports it, while its saved version is auditioned. */
   const editedStatus = $derived(
     engine.frame?.song === songName ? engine.frame.cues.find((cue) => cue.note === form.replaces?.note && !cue.released) : undefined,
   );
-  /** The pixel cue's layers as saved, which an audition plays. */
+  /** The look's layers as saved, which an audition plays. */
   const savedLayers = $derived(form.replaces?.cue.type === 'pixel' ? asLayers(form.replaces.cue).layers : []);
+  const isDirty = $derived(editable && opened !== null && form.unchanged !== null && unchangedOf(form) !== form.unchanged);
 
-  /** What a new cue of each type starts as. */
+  /** What a new scene of each type starts as. */
   const newCue = {
     swell: () => ({ type: 'swell', target: { [targets[0]]: { dimmer: '100%' } }, duration: '4 bars' }),
     pattern: () => ({ type: 'pattern', length: '1 bar', target: { [targets[0]]: 'dimmer' }, hits: [] }),
     pixel: () => ({ type: 'pixel', layers: [] }),
   };
 
-  /** Starts the new cue over as `type`, keeping what the form shows for every type. */
+  /** Starts the new scene over as `type`, keeping what the form shows for every type. */
   function changeType(type) {
     const { name, fade_in, release } = form.cue;
     const kept = { name, ...(release && { release }), ...(fade_in && type === 'pixel' && { fade_in }) };
@@ -96,7 +105,20 @@
     }
   }
 
+  /** The lowest number from `from` up that isn't in `taken`; undefined when all are. */
+  function freeNumber(taken, from = 1) {
+    for (let number = from; number <= HIGHEST_NUMBER; number += 1) if (!taken.has(number)) return number;
+  }
+
+  const sceneNumbers = () => new Set(cues.map(({ note }) => note));
   const songFile = () => `/api/show/songs/${songName}.yaml`;
+  const sceneHash = ({ song, number }) => `#builder/${song}/${number}`;
+
+  /** The scene `#builder/<song>/<number>` names, or null for the scenes home. */
+  function sceneInUrl() {
+    const [, name, number] = location.hash.slice(1).split('/');
+    return name && /^\d+$/.test(number ?? '') ? { song: name, number: Number(number) } : null;
+  }
 
   async function loadSong() {
     song = songName ? await request('GET', songFile()) : null;
@@ -114,7 +136,7 @@
 
   attempt(loadSummary);
 
-  // The front view beside the builder saves `rig.yaml` too; every saved rig comes back on the
+  // The front view in the editor saves `rig.yaml` too; every saved rig comes back on the
   // stream, so the step counts follow it.
   $effect(() => {
     if (engine.rig) loadSteps().catch((failure) => (error = failure.message));
@@ -127,6 +149,57 @@
   $effect(() => {
     songName;
     loadSong().catch((failure) => (error = failure.message));
+  });
+
+  /**
+   * Shows what the URL names, the scenes home or a scene in the editor, unless leaving the
+   * editor would lose unsaved edits the user wants to keep: then the URL goes back to the scene.
+   */
+  function followUrl() {
+    if (!location.hash.startsWith('#builder')) return;
+    const next = sceneInUrl();
+    if (next?.song === opened?.song && next?.number === opened?.number) return;
+    if (isDirty && !confirm('This scene has unsaved changes. Leave the editor and lose them?')) {
+      history.pushState(null, '', sceneHash(opened));
+      return;
+    }
+    opened = next;
+    form = newForm();
+    if (next) {
+      attempt(() =>
+        openScene(next).catch((failure) => {
+          location.replace('#builder');
+          throw failure;
+        }),
+      );
+    }
+  }
+
+  /**
+   * Opens the scene `number` of `song`, or a new scene with that number. A look opens in the
+   * `layers` form; a fixed look opens as it is, until the rig is known to convert it.
+   */
+  async function openScene(scene) {
+    songName = scene.song;
+    await loadSong();
+    if (opened !== scene) return;
+    const cue = song.cues?.[scene.number];
+    if (!cue) {
+      form = { ...newForm(), number: scene.number };
+    } else {
+      const edited = cue.type === 'pixel' ? asLayers($state.snapshot(cue)) : $state.snapshot(cue);
+      form = { ...newForm(), number: scene.number, replaces: { note: scene.number, cue: $state.snapshot(cue) }, cue: edited };
+    }
+    form.unchanged = unchangedOf(form);
+  }
+
+  // A fixed look opens on the stage once the rig is known: converting it needs its groups and fixtures.
+  $effect(() => {
+    if (form.cue.type !== 'scene' || !engine.rig) return;
+    const { cue, reason } = sceneAsPixelCue($state.snapshot(form.cue), engine.rig);
+    form.cue = cue;
+    form.sceneKept = reason;
+    form.unchanged = unchangedOf(form);
   });
 
   // One preview request at a time, always the latest, so the output never steps back.
@@ -164,91 +237,86 @@
   /** Takes the look off the output when the browser page goes; nobody is left to hear back. */
   const clearPreview = () => editable && fetch('/api/preview', { method: 'DELETE', keepalive: true });
 
-  /**
-   * Opens the pad's cue, or on an empty pad a new cue: the one being started, if any. A pixel
-   * cue opens in the `layers` form; a scene opens as it is, until the rig is known to convert it.
-   */
-  function openPad(note) {
-    const cue = song.cues?.[note];
-    if (!cue) {
-      if (form.replaces === null) form.note = note;
-      else form = { ...newForm(), note };
-      return;
-    }
-    const edited = cue.type === 'pixel' ? asLayers($state.snapshot(cue)) : $state.snapshot(cue);
-    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: edited, hidden: [], sceneKept: null };
-  }
-
-  // A scene opens on the stage once the rig is known: converting it needs its groups and fixtures.
-  $effect(() => {
-    if (form.cue.type !== 'scene' || !engine.rig) return;
-    const { cue, reason } = sceneAsPixelCue($state.snapshot(form.cue), engine.rig);
-    form.cue = cue;
-    form.sceneKept = reason;
-  });
-
   function withoutEmptyTimes(edited) {
     const cue = $state.snapshot(edited);
     for (const optional of ['fade_in', 'release']) if (!cue[optional]) delete cue[optional];
     return cue;
   }
 
-  async function saveCue() {
-    const cue = withoutEmptyTimes(form.cue);
-    await request('PUT', `/api/songs/${songName}/cues/${form.note}`, { cue, replaces: form.replaces });
-    notice = `Saved cue ${form.note} in ${songName}.`;
+  /** The scene as saved from `edited`: a fixed look that stays one keeps its values. */
+  function cueToSave(edited) {
+    if (!edited.sceneKept) return withoutEmptyTimes(edited.cue);
+    const { name, fade_in, release } = edited.cue;
+    return withoutEmptyTimes({ ...edited.replaces.cue, name, fade_in, release });
+  }
+
+  function unchangedOf(edited) {
+    return JSON.stringify({ number: edited.number, cue: cueToSave(edited) });
+  }
+
+  /** Saves the scene under its number, which moves it there if it had another. */
+  async function saveScene() {
+    const { number } = form;
+    try {
+      await request('PUT', `/api/songs/${songName}/cues/${number}`, { cue: cueToSave(form), replaces: form.replaces });
+    } catch (failure) {
+      const taken = song.cues?.[number];
+      if (failure.status === 409 && taken && number !== form.replaces?.note) {
+        throw new Error(`Scene ${number} is already ${taken.name}: pick a free number, or open that scene.`);
+      }
+      throw failure;
+    }
+    notice = `Saved scene ${number} in ${songName}.`;
     await reloadAfterSave();
-    form.replaces = { note: form.note, cue: $state.snapshot(song.cues[form.note]) };
+    form.replaces = { note: number, cue: $state.snapshot(song.cues[number]) };
+    form.unchanged = unchangedOf(form);
+    if (number !== opened.number) {
+      opened = { song: songName, number };
+      location.replace(sceneHash(opened));
+    }
   }
 
   /**
-   * Makes the swell or pattern on `note` drive the intensity of the pixel scene being edited,
-   * by the scene's name as saved: the engine refuses a name no saved pixel cue has.
+   * Makes the swell or pattern `number` drive the intensity of the look being edited, by the
+   * look's name as saved: the engine refuses a name no saved look has.
    */
-  async function linkIntensity(note) {
+  async function linkIntensity(number) {
     const { name } = form.replaces.cue;
-    const linked = $state.snapshot(song.cues[note]);
+    const linked = $state.snapshot(song.cues[number]);
     const cue = { ...linked, target: { [name]: 'intensity' } };
-    await request('PUT', `/api/songs/${songName}/cues/${note}`, { cue, replaces: { note, cue: linked } });
-    notice = `Cue ${note} now drives the intensity of ${name}.`;
+    await request('PUT', `/api/songs/${songName}/cues/${number}`, { cue, replaces: { note: number, cue: linked } });
+    notice = `Scene ${number} now drives the intensity of ${name}.`;
     await reloadAfterSave();
   }
 
-  async function deleteCue(note) {
-    await request('DELETE', `/api/songs/${songName}/cues/${note}`);
-    if (form.replaces?.note === note) form = newForm();
-    notice = `Deleted cue ${note}. Undo brings it back.`;
+  async function deleteScene(number) {
+    await request('DELETE', `/api/songs/${songName}/cues/${number}`);
+    notice = `Deleted scene ${number}. Undo brings it back.`;
+    form = newForm();
+    location.replace('#builder');
     await reloadAfterSave();
   }
 
-  /** Copies the saved cue to the first empty pad above it; the engine refuses a taken note. */
-  async function duplicateCue(note) {
-    const free = Array.from({ length: LAST_NOTE - note }, (_, index) => note + 1 + index).find((other) => !song.cues[other]);
-    if (free === undefined) throw new Error(`No empty pad above note ${note}: move or delete a cue there first.`);
-    const original = $state.snapshot(song.cues[note]);
+  /** Copies the saved scene to the next free number above it, or the lowest free one. */
+  async function duplicateScene(number) {
+    const taken = sceneNumbers();
+    const free = freeNumber(taken, number + 1) ?? freeNumber(taken);
+    if (free === undefined) throw new Error(`Every number up to ${HIGHEST_NUMBER} is taken: delete a scene first.`);
+    const original = $state.snapshot(song.cues[number]);
     await request('PUT', `/api/songs/${songName}/cues/${free}`, { cue: { ...original, name: `${original.name}-copy` }, replaces: null });
-    notice = `Duplicated cue ${note} to ${free}.`;
+    notice = `Duplicated scene ${number} as scene ${free}.`;
     await reloadAfterSave();
   }
 
-  /** Moves a saved cue to another pad; the engine refuses a taken note. */
-  async function moveCue(from, to) {
-    const cue = $state.snapshot(song.cues[from]);
-    await request('PUT', `/api/songs/${songName}/cues/${to}`, { cue, replaces: { note: from, cue } });
-    if (form.replaces?.note === from) {
-      form.note = to;
-      form.replaces.note = to;
-    }
-    // A new cue started on that pad has lost it: it waits for another.
-    const isNoteLost = form.replaces === null && form.note === to;
-    if (isNoteLost) form.note = null;
-    notice = `Moved cue ${from} to ${to}.${isNoteLost ? ' The new cue on that pad needs another one.' : ''}`;
-    await reloadAfterSave();
+  function openNewScene() {
+    const number = freeNumber(sceneNumbers());
+    if (number === undefined) error = `Every number up to ${HIGHEST_NUMBER} is taken: delete a scene first.`;
+    else location.hash = sceneHash({ song: songName, number });
   }
 
   async function setTempo() {
     await request('PUT', `/api/songs/${songName}/bpm`, { bpm: tempo });
-    notice = `${songName} runs at ${tempo} BPM when no MIDI clock comes in.`;
+    notice = `${songName} runs at ${tempo} BPM when no clock comes in.`;
     await reloadAfterSave();
   }
 
@@ -257,247 +325,231 @@
     const { file, undo, redo } = await request('POST', `/api/${action}`);
     steps = { undo, redo };
     notice = action === 'undo' ? `Undid the last save of ${file}.` : `Redid the save of ${file}.`;
-    // The cue being edited, or its whole song, may have changed or gone.
-    form = newForm();
-    const shown = songName;
+    const shownSong = songName;
     await loadSummary();
     // A song that went is replaced in the picker, and the switch loads the new one.
-    if (songName === shown) await loadSong();
+    if (songName === shownSong) await loadSong();
   }
 
   function openNewSong() {
-    const used = new Set(summary?.songs.map((entry) => entry.program));
-    let program = 0;
-    while (used.has(program)) program += 1;
-    newSong = { name: '', program, bpm: null, time_signature: '' };
+    newSong = { name: '', program: freeNumber(new Set(summary?.songs.map((entry) => entry.program))) ?? null, bpm: null, time_signature: '' };
   }
 
   async function createSong() {
     const { name, program, bpm, time_signature } = $state.snapshot(newSong);
-    await request('POST', '/api/songs', {
-      name,
-      program,
-      ...(bpm ? { bpm } : {}),
-      ...(time_signature ? { time_signature } : {}),
-    });
+    try {
+      await request('POST', '/api/songs', { name, program, ...(bpm ? { bpm } : {}), ...(time_signature ? { time_signature } : {}) });
+    } catch (failure) {
+      const taken = summary.songs.find((entry) => entry.program === program);
+      if (failure.status === 422 && taken) throw new Error(`Song ${program} is already ${taken.name}: pick a free number.`);
+      throw failure;
+    }
     newSong = null;
-    form = newForm();
     songName = name;
-    notice = `Created song ${name}. Undo removes it.`;
+    notice = `Created song ${program} · ${name}. Undo removes it.`;
     await Promise.all([loadSummary(), loadSteps()]);
   }
 
-  const isPlaying = (note) =>
-    engine.frame?.song === songName && engine.frame.cues.some((cue) => cue.note === note && !cue.released);
+  const isPlaying = (number) =>
+    engine.frame?.song === songName && engine.frame.cues.some((cue) => cue.note === number && !cue.released);
 
   const midi = (message) => request('POST', '/api/midi', { message });
 
   /** Plays the swell being edited again from the top, for a looped audition. */
   const restartEdited = () => midi([NOTE_ON, form.replaces.note, FULL_VELOCITY]).catch((failure) => (error = failure.message));
 
-  /** Fires or releases a saved cue through the engine, as Reaper would. */
-  async function audition(note) {
-    if (isPlaying(note)) return release(note);
-    await fire(note);
+  /** Fires or releases a saved scene through the engine, as Reaper would. */
+  async function audition(number) {
+    if (isPlaying(number)) return release(number);
+    await fire(number);
   }
 
-  const release = (note) => midi([NOTE_OFF, note, 0]);
+  const release = (number) => midi([NOTE_OFF, number, 0]);
 
-  async function fire(note) {
+  async function fire(number) {
     if (engine.frame?.song !== songName) {
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
     }
-    // The engine takes the preview off the output so the cue shows; editing brings it back.
+    // The engine takes the preview off the output so the scene shows; editing brings it back.
     if (shown) pausedLook = JSON.stringify(shown);
-    await midi([NOTE_ON, note, FULL_VELOCITY]);
+    await midi([NOTE_ON, number, FULL_VELOCITY]);
   }
+
+  followUrl();
 </script>
 
-<svelte:window onpagehide={clearPreview} />
+<svelte:window onpagehide={clearPreview} onhashchange={followUrl} />
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notice}<p class="notice" aria-live="polite">{notice}</p>{/if}
 {#if engine.rig && !editable}
   <p class="hint">
-    Show mode: the builder is read-only. Start the engine with <code>--edit</code> to build looks, save cues and audition them.
+    Show mode: the builder is read-only. Start the engine with <code>--edit</code> to build looks, save scenes and audition them.
   </p>
 {/if}
 
-<div class="bar">
-  <label>
-    Song
-    <select
-      bind:value={songName}
-      onchange={() => {
-        form = newForm();
-        error = '';
-      }}
-    >
-      {#each summary?.songs ?? [] as entry (entry.name)}
-        <option value={entry.name}>{entry.name} (program {entry.program})</option>
-      {/each}
-    </select>
-  </label>
-  <button disabled={!editable || newSong !== null} onclick={openNewSong}>New song</button>
-  <fieldset disabled={!editable || !song}>
-    <label>
-      Metronome
-      <input type="number" min="1" step="any" bind:value={tempo} />
-      BPM
-    </label>
-    <button onclick={() => attempt(setTempo)}>Set tempo</button>
-  </fieldset>
-  <span class="history">
-    <button disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
-    <button disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
-  </span>
-</div>
-{#if newSong}
-  <fieldset class="new-song" disabled={!editable}>
-    <legend>New song</legend>
-    <div class="row">
-      <label>Song name <input bind:value={newSong.name} placeholder="encore" /></label>
-      <label>Program <input type="number" min="0" max="127" bind:value={newSong.program} /></label>
-      <label>Tempo <input type="number" min="1" step="any" bind:value={newSong.bpm} placeholder="120" /> BPM</label>
-      <label>Time signature <input bind:value={newSong.time_signature} placeholder="4/4" /></label>
-    </div>
-    <p class="hint">
-      The name is letters, digits, - and _. The program is the channel-2 Program Change that selects the song, one per song.
-    </p>
-    <div class="row">
-      <button disabled={!newSong.name || newSong.program == null} onclick={() => attempt(createSong)}>Create song</button>
-      <button onclick={() => (newSong = null)}>Cancel</button>
-    </div>
-  </fieldset>
-{:else if summary && !summary.songs.length}
-  <p class="hint">This show has no songs yet: create one with New song to save cues.</p>
-{/if}
+{#if opened}
+  <p class="back"><a href="#builder">← Scenes</a></p>
 
-<div class="workspace">
-  <div>
-    {#if song}
-      <PadBank
-        {songName}
-        cues={song.cues}
-        selected={form.note}
-        {editable}
-        {isPlaying}
-        onopen={openPad}
-        onhold={(note) => attempt(() => fire(note))}
-        onrelease={(note) => attempt(() => release(note))}
-        onmove={(from, to) => attempt(() => moveCue(from, to))}
-      />
-    {/if}
-
-    <fieldset class="cue" disabled={!editable || !song}>
-      <legend>
-        {#if form.replaces !== null}Cue {form.replaces.note}{:else if form.note != null}New cue on note {form.note}{:else}New cue{/if}
-      </legend>
-      <div class="row">
-        <label>Note <input type="number" min="0" max={LAST_NOTE} bind:value={form.note} /></label>
-        <label>Name <input bind:value={form.cue.name} /></label>
-        {#if form.replaces !== null}<span>Type: {form.replaces.cue.type}</span>{/if}
-      </div>
-      <div class="row">
-        {#if isPixel}
-          <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" /></label>
-        {/if}
-        <label>Release <input bind:value={form.cue.release} placeholder="0s" /></label>
-      </div>
-      <p class="hint" role={form.sceneKept ? 'status' : undefined}>
-        {#if form.sceneKept}
-          This scene stays a scene, read-only on the stage: {form.sceneKept}. It plays as before; you can still audition, duplicate, move or delete it.
-        {:else if form.cue.type === 'scene'}
-          The scene opens on the stage once the engine sends the rig.
-        {:else if isPixel}
-          Saves the look on the stage as this cue, hidden areas included{form.replaces?.cue.type === 'scene' ? ': this scene becomes a pixel cue' : ''}.
-        {:else}
-          Shape the {form.cue.type} below, then save it.
-        {/if}
-        Times take ms, s, beats or bars.
-        {#if form.note == null}Pick an empty pad or a note for it.{:else if form.replaces !== null}A new note moves the cue there on save.{/if}
-      </p>
-      {#if form.replaces === null}
-        <p class="hint">
-          {#if isPixel}
-            To drive other cues instead, make a
-            <button class="link" onclick={() => changeType('swell')}>swell cue</button> or a
-            <button class="link" onclick={() => changeType('pattern')}>pattern cue</button>.
-          {:else}
-            <button class="link" onclick={() => changeType('pixel')}>Make a look instead</button>
-          {/if}
-        </p>
+  <fieldset class="scene" disabled={!editable || !song}>
+    <legend>
+      {#if form.replaces !== null}Scene {form.replaces.note}{:else}New scene{/if}
+    </legend>
+    <div class="row">
+      <label>Name <input bind:value={form.cue.name} /></label>
+      <label>Number <input type="number" min="0" max={HIGHEST_NUMBER} bind:value={form.number} /></label>
+      {#if isPixel}
+        <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" /></label>
       {/if}
-      <div class="row">
-        <button
-          disabled={form.note == null || !form.cue.name || form.cue.type === 'scene' || !!form.sceneKept || (isPixel && !form.cue.layers.length)}
-          onclick={() => attempt(saveCue)}
-        >
-          Save cue
-        </button>
-        {#if form.replaces !== null}
-          <button onclick={() => attempt(() => audition(form.replaces.note))}>
-            {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
-          </button>
-          <button onclick={() => attempt(() => duplicateCue(form.replaces.note))}>Duplicate</button>
-          <button onclick={() => attempt(() => deleteCue(form.replaces.note))}>Delete</button>
+      <label>Release <input bind:value={form.cue.release} placeholder="0s" /></label>
+      {#if form.replaces !== null}<span class="kind">{KINDS[form.replaces.cue.type]}</span>{/if}
+    </div>
+    <p class="hint" role={form.sceneKept ? 'status' : undefined}>
+      {#if form.sceneKept}
+        This fixed look stays as it is, read-only on the stage: {form.sceneKept}. It plays as before; you can still rename, renumber, audition,
+        duplicate or delete it.
+      {:else if form.cue.type === 'scene'}
+        The fixed look opens on the stage once the engine sends the rig.
+      {:else if isPixel}
+        Saves the look on the stage as this scene, hidden areas included{form.replaces?.cue.type === 'scene' ? ': this fixed look becomes a look' : ''}.
+      {:else}
+        Shape the {KINDS[form.cue.type].toLowerCase()} below, then save it.
+      {/if}
+      Times take ms, s, beats or bars.
+      {#if form.replaces !== null}A new number moves the scene there on save.{/if}
+    </p>
+    {#if form.replaces === null}
+      <p class="hint">
+        {#if isPixel}
+          To drive other scenes instead, make a
+          <button class="link" onclick={() => changeType('swell')}>swell scene</button> or a
+          <button class="link" onclick={() => changeType('pattern')}>pattern scene</button>.
+        {:else}
+          <button class="link" onclick={() => changeType('pixel')}>Make a look instead</button>
         {/if}
-      </div>
-    </fieldset>
-  </div>
+      </p>
+    {/if}
+    <div class="row">
+      <button
+        disabled={form.number == null || !form.cue.name || (form.cue.type === 'scene' && !form.sceneKept) || (isPixel && !form.sceneKept && !form.cue.layers.length)}
+        onclick={() => attempt(saveScene)}
+      >
+        Save
+      </button>
+      {#if form.replaces !== null}
+        <button onclick={() => attempt(() => audition(form.replaces.note))}>
+          {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
+        </button>
+        <button onclick={() => attempt(() => duplicateScene(form.replaces.note))}>Duplicate</button>
+        <button onclick={() => attempt(() => deleteScene(form.replaces.note))}>Delete</button>
+      {/if}
+    </div>
+  </fieldset>
 
-  <div>
-    <!-- Without a song there is no cue to build: the front view stays, to place fixtures. -->
-    {#if isPixel && song}
-      <fieldset class="composer">
-        <!-- A cue opened from a pad, or a new one, starts with nothing selected. -->
-        {#key form}
-          <StageComposer
-            bind:cue={form.cue}
-            bind:hidden={form.hidden}
-            palettes={summary?.palettes}
-            editable={isLookEditable}
-            paused={isPaused}
-            {cues}
-            savedName={form.replaces?.cue.name ?? null}
-            onlink={(note) => attempt(() => linkIntensity(note))}
-            song={songName}
-            {barBeats}
-            {savedLayers}
-            audition={{
-              beats: editedStatus?.beats,
-              loopBeats: editedStatus?.loop_beats,
-              onaudition: () => attempt(() => audition(form.replaces.note)),
-              onrestart: restartEdited,
-            }}
-          />
+  {#if isPixel && song}
+    <!-- A scene opened, or a new one, starts with nothing selected. -->
+    {#key form}
+      <StageComposer
+        bind:cue={form.cue}
+        bind:hidden={form.hidden}
+        palettes={summary?.palettes}
+        editable={isLookEditable}
+        paused={isPaused}
+        {cues}
+        savedName={form.replaces?.cue.name ?? null}
+        onlink={(number) => attempt(() => linkIntensity(number))}
+        song={songName}
+        {barBeats}
+        {savedLayers}
+        audition={{
+          beats: editedStatus?.beats,
+          loopBeats: editedStatus?.loop_beats,
+          onaudition: () => attempt(() => audition(form.replaces.note)),
+          onrestart: restartEdited,
+        }}
+      />
+    {/key}
+  {:else}
+    <div class="rhythm">
+      <fieldset disabled={!editable || !song}>
+        {#key form.replaces?.note}
+          {@const editorProps = {
+            targets,
+            // Saved looks only: the engine resolves a link by the name in the file.
+            pixelCues: [...new Set(cues.filter(({ cue }) => cue.type === 'pixel').map(({ cue }) => cue.name))],
+            palettes: summary?.palettes,
+            barBeats,
+            beats: editedStatus?.beats,
+            saved: form.replaces?.cue ?? null,
+            onaudition: () => attempt(() => audition(form.replaces.note)),
+          }}
+          {#if form.cue.type === 'swell'}
+            <SwellEditor bind:cue={form.cue} {...editorProps} onrestart={restartEdited} />
+          {:else if form.cue.type === 'pattern'}
+            <PatternGrid bind:cue={form.cue} {...editorProps} />
+          {/if}
         {/key}
       </fieldset>
-    {:else}
-      <FrontView />
-    {/if}
+      <div><FrontView /></div>
+    </div>
+  {/if}
+{:else}
+  <div class="bar">
+    <label>
+      Song
+      <select bind:value={songName} onchange={() => (error = '')}>
+        {#each songs as entry (entry.name)}
+          <option value={entry.name}>Song {entry.program} · {entry.name}</option>
+        {/each}
+      </select>
+    </label>
+    <button disabled={!editable || newSong !== null} onclick={openNewSong}>New song</button>
+    <fieldset disabled={!editable || !song}>
+      <label>
+        Metronome
+        <input type="number" min="1" step="any" bind:value={tempo} />
+        BPM
+      </label>
+      <button onclick={() => attempt(setTempo)}>Set tempo</button>
+    </fieldset>
+    <span class="history">
+      <button disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
+      <button disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
+    </span>
   </div>
-</div>
+  {#if newSong}
+    <fieldset class="new-song" disabled={!editable}>
+      <legend>New song</legend>
+      <div class="row">
+        <label>Song name <input bind:value={newSong.name} placeholder="encore" /></label>
+        <label>Number <input type="number" min="0" max={HIGHEST_NUMBER} bind:value={newSong.program} /></label>
+        <label>Tempo <input type="number" min="1" step="any" bind:value={newSong.bpm} placeholder="120" /> BPM</label>
+        <label>Time signature <input bind:value={newSong.time_signature} placeholder="4/4" /></label>
+      </div>
+      <p class="hint">The name is letters, digits, - and _. Each song has a number of its own.</p>
+      <div class="row">
+        <button disabled={!newSong.name || newSong.program == null} onclick={() => attempt(createSong)}>Create song</button>
+        <button onclick={() => (newSong = null)}>Cancel</button>
+      </div>
+    </fieldset>
+  {:else if summary && !summary.songs.length}
+    <p class="hint">This show has no songs yet: create one with New song to save scenes.</p>
+  {/if}
 
-<fieldset disabled={!editable || !song}>
-  {#key form.replaces?.note}
-    {@const editorProps = {
-      targets,
-      // Saved pixel cues only: the engine resolves a link by the name in the file.
-      pixelCues: [...new Set(cues.filter(({ cue }) => cue.type === 'pixel').map(({ cue }) => cue.name))],
-      palettes: summary?.palettes,
-      barBeats,
-      beats: editedStatus?.beats,
-      saved: form.replaces?.cue ?? null,
-      onaudition: () => attempt(() => audition(form.replaces.note)),
-    }}
-    {#if form.cue.type === 'swell'}
-      <SwellEditor bind:cue={form.cue} {...editorProps} onrestart={restartEdited} />
-    {:else if form.cue.type === 'pattern'}
-      <PatternGrid bind:cue={form.cue} {...editorProps} />
-    {/if}
-  {/key}
-</fieldset>
+  {#if song}
+    <ScenePads
+      {songName}
+      cues={song.cues}
+      {editable}
+      {isPlaying}
+      onopen={(number) => (location.hash = sceneHash({ song: songName, number }))}
+      onnew={openNewScene}
+      onhold={(number) => attempt(() => fire(number))}
+      onrelease={(number) => attempt(() => release(number))}
+      onaudition={(number) => attempt(() => audition(number))}
+    />
+  {/if}
+{/if}
 
 <style>
   fieldset {
@@ -530,18 +582,23 @@
     margin-left: auto;
   }
 
-  .workspace {
+  .back {
+    margin: 0 0 12px;
+  }
+
+  .back a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .rhythm {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
     gap: 20px;
     align-items: start;
   }
 
-  .composer {
-    min-width: 0;
-  }
-
-  .cue,
+  .scene,
   .new-song {
     padding: 12px;
     margin-bottom: 16px;
@@ -554,16 +611,16 @@
     color: var(--muted);
   }
 
+  .kind {
+    color: var(--muted);
+  }
+
   .link {
     padding: 0;
     color: var(--accent);
     text-decoration: underline;
     background: none;
     border: 0;
-  }
-
-  .cue .row + .row {
-    margin-top: 8px;
   }
 
   input[type='number'] {

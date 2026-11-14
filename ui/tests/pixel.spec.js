@@ -51,10 +51,8 @@ const isPainted = (button) =>
 test('a two-layer pixel look plays after a restart as the engine renders its saved file', async ({ page, show, startEngine }) => {
   const songFile = addSong(show, HEADER.replace('cues:\n', ''));
   const first = await startEngine();
-  await page.goto(`${first.url}#builder`);
-
-  // 1. A new pixel cue: a deep-blue gradient over the whole stage, plus a red bar added over it.
-  await pad(page, 40).click();
+  // 1. A new scene 40, a look: a deep-blue gradient over the whole stage, plus a red bar added over it.
+  await page.goto(`${first.url}#builder/demo/40`);
   await page.getByLabel('Name').fill('two-layer');
   await ingredient(page, 'Wash').click();
   const gradient = page.getByRole('button', { name: 'Shape: gradient' });
@@ -68,8 +66,8 @@ test('a two-layer pixel look plays after a restart as the engine renders its sav
   await page.getByLabel('Blend').selectOption('add');
 
   // 2. Save it.
-  await page.getByRole('button', { name: 'Save cue' }).click();
-  await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     HEADER +
       '  40:\n    name: two-layer\n    type: pixel\n    layers:\n' +
@@ -88,7 +86,7 @@ test('a two-layer pixel look plays after a restart as the engine renders its sav
   const second = await startEngine();
   expect((await nextDmx(second.address)).slice(0, 4), "fire's own look on wash-1").toEqual([255, 0, 0, 0]);
 
-  // 4. Fire note 40 as Reaper would: the output is the engine's render of the saved file.
+  // 4. Fire scene 40 as Reaper would, on note 40: the output is the engine's render of the saved file.
   for (const message of [SELECT_SONG, FIRE_40]) {
     expect((await page.request.post(`${second.url}api/midi`, { data: { message } })).status()).toBe(204);
   }
@@ -104,19 +102,23 @@ test("linking a pattern to a pixel scene's intensity saves it as the pattern's t
   await page.goto(`${url}#builder`);
 
   await pad(page, 40).click();
-  await expect(page.getByText('velocity only')).toBeVisible();
+  await expect(page.getByText('not linked')).toBeVisible();
   // A rename not saved yet: links go by the name in the file.
   await page.getByLabel('Name').fill('red-wash-2');
   await page.getByLabel('Swell or pattern to link').selectOption('42');
   await page.getByRole('button', { name: 'Link to intensity' }).click();
 
-  await expect(page.getByText('driven by cue 42, pulse (pattern)')).toBeVisible();
+  await expect(page.getByText('driven by scene 42, pulse (pattern)')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     `${HEADER}  40:\n    name: red-wash\n    type: pixel\n    params: { color: "#ff0000" }\n` +
       pattern.replace('{ all-wash: dimmer }', '{ red-wash: intensity }'),
   );
+  // The rename isn't saved: leaving the editor asks first.
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('link', { name: '← Scenes' }).click();
   await page.getByRole('button', { name: 'Undo (1)' }).click();
-  await expect(page.getByText('velocity only')).toBeHidden();
+  await pad(page, 40).click();
+  await expect(page.getByText('not linked')).toBeVisible();
 });
 
 test("a pattern's own target picker links it to a pixel scene's intensity", async ({ page, show, startEngine }) => {
@@ -131,9 +133,9 @@ test("a pattern's own target picker links it to a pixel scene's intensity", asyn
   await pad(page, 42).click();
   await page.getByLabel('Drives').selectOption('intensity');
   await expect(page.getByLabel('Target', { exact: true })).toHaveValue('red-wash');
-  await page.getByRole('button', { name: 'Save cue' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  await expect(page.getByText('Saved cue 42 in demo.')).toBeVisible();
+  await expect(page.getByText('Saved scene 42 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(`${HEADER}${pixelCue}${pattern.replace('{ all-wash: dimmer }', '{ red-wash: intensity }')}`);
 });
 
@@ -143,8 +145,8 @@ test('a thumbnail the engine refuses says why', async ({ page, show, startEngine
   await page.route('**/api/pixel-thumbnail?song=demo', (route) =>
     route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'speed is too long to render a cycle of' }) }),
   );
-  // An empty builder starts a look, whose tray asks for thumbnails in the song's bars.
-  await page.goto(`${url}#builder`);
+  // A new scene starts a look, whose tray asks for thumbnails in the song's bars.
+  await page.goto(`${url}#builder/demo/1`);
 
   await expect(page.getByRole('alert')).toHaveText('Thumbnails: speed is too long to render a cycle of');
 });
@@ -155,7 +157,7 @@ test('pixel grids show on the front view with the colours the engine sends them'
   writeFileSync(rig, readFileSync(rig, 'utf8').replace('\ngroups:', `${grid}\ngroups:`));
   addSong(show, `${HEADER}  40: { name: green, type: pixel, params: { color: "#00ff00" } }\n`);
   const { url } = await startEngine();
-  await page.goto(`${url}#builder`);
+  await page.goto(`${url}#front`);
   const tiles = page.locator('[data-grid="back-grid"] rect');
   await expect(tiles).toHaveCount(8);
   await expect(tiles.first()).toHaveAttribute('fill', '#000000');

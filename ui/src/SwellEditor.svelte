@@ -174,11 +174,11 @@
     <button disabled={!saved} onclick={toggleAudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
     <span class="hint">
       {#if !saved}
-        Save the cue to audition it.
+        Save the scene to audition it.
       {:else if savedBeats}
-        Plays the saved cue, again each time its end has held for a bar. Save to hear changes.
+        Plays the saved scene, again each time its end has held for a bar. Save to hear changes.
       {:else}
-        Plays the saved cue once: a swell timed in s or ms has no playhead or loop. Save to hear changes.
+        Plays the saved scene once: a swell timed in s or ms has no playhead or loop. Save to hear changes.
       {/if}
     </span>
   </div>

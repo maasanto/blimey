@@ -15,14 +15,14 @@
 <div class="link">
   <span class="name">Intensity</span>
   {#each linkable.filter(({ cue }) => isLinked(cue)) as { note, cue } (note)}
-    <span class="linked">driven by cue {note}, {cue.name} ({cue.type})</span>
+    <span class="linked">driven by scene {note}, {cue.name} ({cue.type})</span>
   {:else}
-    <span class="hint">velocity only</span>
+    <span class="hint">not linked</span>
   {/each}
   <select aria-label="Swell or pattern to link" bind:value={linking}>
     <option value="">Swell or pattern…</option>
     {#each linkable.filter(({ cue }) => !isLinked(cue)) as { note, cue } (note)}
-      <option value={String(note)}>{note}: {cue.name} ({cue.type})</option>
+      <option value={String(note)}>Scene {note}: {cue.name} ({cue.type})</option>
     {/each}
   </select>
   <button
@@ -34,7 +34,7 @@
   >
 </div>
 <p class="hint">
-  Linking saves that cue with this look's saved name as its target, in place of the target it had.
+  Linking saves that scene with this look's saved name as its target, in place of the target it had.
   {#if savedName === null}Save this look first.{:else if savedName !== name}Links follow the saved name, {savedName}, until you save.{/if}
 </p>
 

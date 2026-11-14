@@ -249,39 +249,41 @@
 
 <fieldset class="composer">
   <legend>Look on the stage</legend>
-  <div class="tray" role="group" aria-label="Ingredients">
-    {#each INGREDIENTS as ingredient (ingredient)}
-      <button
-        class="ingredient"
-        disabled={!editable || isFull}
-        onpointerdown={(event) => carry(event, ingredient)}
-        onclick={() => !isClickSuppressed && addLayer(ingredient)}
-      >
-        <canvas width="12" height="12" {@attach (canvas) => paint(canvas, tray.byKey[ingredient], tick)}></canvas>
-        <span>{ingredient}</span>
-      </button>
-    {/each}
-  </div>
-  {#if tray.error}<p class="error" role="alert">Thumbnails: {tray.error}</p>{/if}
-  <p class="hint">
-    {#if isFull}
-      A look holds {MAX_LAYERS} areas at most: delete one to add another.
-    {:else}
-      Drag an ingredient onto the stage, or click it to cover the whole stage. Drag an area to move it and its handles to resize it; click again to reach the area beneath.
+  <div class="column">
+    <div class="tray" role="group" aria-label="Ingredients">
+      {#each INGREDIENTS as ingredient (ingredient)}
+        <button
+          class="ingredient"
+          disabled={!editable || isFull}
+          onpointerdown={(event) => carry(event, ingredient)}
+          onclick={() => !isClickSuppressed && addLayer(ingredient)}
+        >
+          <canvas width="12" height="12" {@attach (canvas) => paint(canvas, tray.byKey[ingredient], tick)}></canvas>
+          <span>{ingredient}</span>
+        </button>
+      {/each}
+    </div>
+    {#if tray.error}<p class="error" role="alert">Thumbnails: {tray.error}</p>{/if}
+    <p class="hint">
+      {#if isFull}
+        A look holds {MAX_LAYERS} areas at most: delete one to add another.
+      {:else}
+        Drag an ingredient onto the stage, or click it to cover the whole stage. Drag an area to move it and its handles to resize it; click again to reach the area beneath.
+      {/if}
+    </p>
+
+    <FrontView bind:this={frontView} overlay={areas} {caught} {crossedOut} />
+
+    <p class="sentence" aria-live="polite">{describeLook(cue.layers)}</p>
+    {#if caught && !caught.size}
+      <p class="hint" role="status">This area catches no pixels: move it over some fixtures.</p>
     {/if}
-  </p>
+    {#if paused}
+      <p class="hint">Off the output while a scene is auditioned. Change the look to show it again.</p>
+    {/if}
+  </div>
 
-  <FrontView bind:this={frontView} overlay={areas} {caught} {crossedOut} />
-
-  <p class="sentence" aria-live="polite">{describeLook(cue.layers)}</p>
-  {#if caught && !caught.size}
-    <p class="hint" role="status">This area catches no pixels: move it over some fixtures.</p>
-  {/if}
-  {#if paused}
-    <p class="hint">Off the output while a cue is auditioned. Change the look to show it again.</p>
-  {/if}
-
-  <div class="panels">
+  <div class="column">
     <ol class="layers" aria-label="Layers, top first">
       {#each cue.layers.map((layer, index) => ({ layer, index })).reverse() as { layer, index } (layer)}
         {@const description = describeLayer(layer)}
@@ -319,33 +321,42 @@
     {:else}
       <p class="hint">Click an area on the stage or in the list to open its recipe.</p>
     {/if}
-  </div>
 
-  <fieldset class="whole-cue" disabled={!editable}>
-    <div class="row">
-      <label>
-        RGBW
-        <select value={cue.rgbw ?? 'saturated'} onchange={(event) => (cue.rgbw = event.currentTarget.value)}>
-          <option>saturated</option>
-          <option>white-rich</option>
-        </select>
-      </label>
-      <label>Seed <input type="number" min="0" step="1" value={cue.seed ?? 0} oninput={(event) => (cue.seed = Number(event.currentTarget.value))} /></label>
-    </div>
-    <IntensityLink {cues} {savedName} name={cue.name} {onlink} />
-  </fieldset>
+    <fieldset class="whole-cue" disabled={!editable}>
+      <div class="row">
+        <label>
+          RGBW
+          <select value={cue.rgbw ?? 'saturated'} onchange={(event) => (cue.rgbw = event.currentTarget.value)}>
+            <option>saturated</option>
+            <option>white-rich</option>
+          </select>
+        </label>
+        <label>Seed <input type="number" min="0" step="1" value={cue.seed ?? 0} oninput={(event) => (cue.seed = Number(event.currentTarget.value))} /></label>
+      </div>
+      <IntensityLink {cues} {savedName} name={cue.name} {onlink} />
+    </fieldset>
+  </div>
 </fieldset>
 
 <style>
+  /* The stage on the left, the layers and the recipe of the selected area beside it. */
   .composer {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
+    gap: 20px;
+    align-items: start;
     min-width: 0;
     padding: 12px;
     margin: 0 0 16px;
     border: 1px solid var(--line);
     border-radius: 8px;
+  }
+
+  .column {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
   }
 
   .whole-cue {
@@ -438,12 +449,6 @@
     stroke-width: 3;
     stroke-dasharray: 8 8;
     pointer-events: none;
-  }
-
-  .panels {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
   }
 
   .layers {
