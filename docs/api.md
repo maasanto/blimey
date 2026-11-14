@@ -584,7 +584,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
 - `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `song`: the selected song's name, or `null`.
-- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off. `beats` is the musical time since the cue started, at the frame's time and tempo; for a pattern it counts from the bar line its loop starts on, so it is negative while the loop waits for it.
+- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off. `beats` is the musical time since the cue started, at the frame's time and tempo; for a pattern it counts from the bar line its loop starts on, so it is negative while the loop waits for it. A pixel cue with a `pattern` on a layer also has `loop_beats`, counted the same way from the bar line its layers' loops start on.
 - `master`: the master dimmer, 0–1.
 - `live_parameters`: CC 20–27 on channel 2, as 0–1.
 

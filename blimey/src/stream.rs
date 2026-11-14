@@ -488,13 +488,24 @@ mod tests {
         live_parameters[2] = 0.5;
         let status = Status {
             song: Some("tell-me".into()),
-            cues: vec![CueStatus {
-                note: 36,
-                name: "verse-blue".into(),
-                intensity: 1.0,
-                released: false,
-                beats: 2.5,
-            }],
+            cues: vec![
+                CueStatus {
+                    note: 36,
+                    name: "verse-blue".into(),
+                    intensity: 1.0,
+                    released: false,
+                    beats: 2.5,
+                    loop_beats: None,
+                },
+                CueStatus {
+                    note: 40,
+                    name: "hits".into(),
+                    intensity: 1.0,
+                    released: false,
+                    beats: 2.5,
+                    loop_beats: Some(-0.5),
+                },
+            ],
             master: 0.25,
             live_parameters,
         };
@@ -510,7 +521,10 @@ mod tests {
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
             message["cues"],
-            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }])
+            json!([
+                { "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 },
+                { "note": 40, "name": "hits", "intensity": 1.0, "released": false, "beats": 2.5, "loop_beats": -0.5 },
+            ])
         );
         assert_eq!(message["master"], 0.25);
         assert_eq!(message["live_parameters"][2], 0.5);
