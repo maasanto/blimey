@@ -1,17 +1,33 @@
 :root {
+  --bg: #16171b;
+  --panel: #1c1e24;
+  --well: #101114;
   --text: #e6e7ea;
   --muted: #8a8f9c;
   --line: #2c2f37;
+  --line-strong: #3a3d47;
   --accent: #ffbe50;
+  --accent-ink: #16171b;
+  --danger: #ff7b7b;
   --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --radius: 8px;
   color-scheme: dark;
   color: var(--text);
-  background: #16171b;
+  background: var(--bg);
   font: 15px/1.5 system-ui, sans-serif;
 }
 
 body {
   margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 header {
@@ -40,28 +56,31 @@ nav a {
   border-radius: 6px;
 }
 
+nav a:hover {
+  color: var(--text);
+}
+
 nav a[aria-current='page'] {
   color: var(--text);
   background: var(--line);
 }
 
 .mode {
-  padding: 2px 10px;
-  font-size: 13px;
+  padding: 1px 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  border: 1px solid currentColor;
   border-radius: 999px;
 }
 
 .mode[data-mode='edit'] {
-  color: #16171b;
-  background: var(--accent);
+  color: var(--accent);
 }
 
 .mode[data-mode='show'] {
-  color: var(--text);
-  background: #7a2630;
+  color: #ff8a94;
 }
 
 .connection {
@@ -70,7 +89,7 @@ nav a[aria-current='page'] {
 }
 
 .connection[data-connected='false'] {
-  color: #ff7b7b;
+  color: var(--danger);
 }
 
 .banner {
@@ -80,13 +99,16 @@ nav a[aria-current='page'] {
 }
 
 main {
-  padding: 16px 20px;
+  padding: 16px 20px 40px;
 }
 
 h2 {
-  margin: 20px 0 8px;
-  font-size: 15px;
+  margin: 24px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
 }
 
 section:first-child h2 {
@@ -106,35 +128,44 @@ dd {
 
 .pending,
 .hint {
+  font-size: 13px;
   color: var(--muted);
 }
 
 .error {
-  color: #ff7b7b;
+  color: var(--danger);
+}
+
+code {
+  font: 13px var(--mono);
 }
 
 /* The builder's swell and pattern editors. */
 .editor {
-  margin: 0 0 16px;
+  margin: 0;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
 }
 
 .editor legend {
   padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
 }
 
 .editor .row {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px 12px;
   align-items: center;
 }
 
 .editor .row + .row {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .editor input[type='number'] {
@@ -147,17 +178,112 @@ dd {
   font: 13px var(--mono);
 }
 
-button {
-  padding: 3px 14px;
+label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+}
+
+input:not([type='range'], [type='color']),
+select {
+  padding: 4px 8px;
   color: var(--text);
-  background: var(--line);
-  border: 1px solid #3a3d47;
+  background: var(--well);
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
   font: inherit;
+}
+
+input:focus-visible,
+select:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+input::placeholder {
+  color: #5d6170;
+}
+
+input[type='range'] {
+  accent-color: var(--accent);
+}
+
+button {
+  padding: 4px 14px;
+  color: var(--text);
+  background: var(--line);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font: inherit;
+  line-height: 1.4;
   cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: #50546a;
 }
 
 button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+button.primary {
+  color: var(--accent-ink);
+  font-weight: 600;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.primary:hover:not(:disabled) {
+  background: #ffcb70;
+  border-color: #ffcb70;
+}
+
+/* A quiet button: an icon or a secondary action that shouldn't compete with the content. */
+button.quiet {
+  background: none;
+  border-color: transparent;
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--line);
+  border-color: transparent;
+}
+
+button.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+button.link {
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+}
+
+details.more summary {
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+details.more summary:hover {
+  color: var(--text);
+}
+
+details.more[open] summary {
+  margin-bottom: 8px;
+}
+
+kbd {
+  padding: 0 4px;
+  font: 11px var(--mono);
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
 }
