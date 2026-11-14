@@ -694,7 +694,8 @@ pub fn cycle(
     Ok(frames.collect())
 }
 
-fn has_emitters(fixture: &Fixture) -> bool {
+/// Whether `fixture` has colour emitters, the only channels a pixel cue lights besides a dimmer.
+pub fn has_emitters(fixture: &Fixture) -> bool {
     fixture.pixels.iter().any(|pixel| {
         let channels = pixel.channels;
         [channels.red, channels.green, channels.blue, channels.white]

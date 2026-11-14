@@ -543,7 +543,8 @@ Server to client only, one JSON object per text message. Every message has a `ty
       "mode": "16ch",
       "address": 1,
       "channels": ["Red 1", "Green 1", "Blue 1", "White 1", "…"],
-      "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"]
+      "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"],
+      "colour": true
     }
   ],
   "grids": [
@@ -556,6 +557,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `protocol` is bumped only by a breaking change to this stream.
 - `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
+- `colour`: whether the fixture has colour emitters. A pixel cue lights only those, so the builder keeps a scene that targets a fixture without them a scene.
 - `pixels` are canvas positions, in pixel order; for a grid, in wiring order.
 - `grids`: the rig's [pixel grids](#rigyaml), apart from `fixtures` since they have no profile, mode or single address.
 
