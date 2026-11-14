@@ -517,7 +517,9 @@
           {/if}
         {/key}
       </fieldset>
-      <div><FrontView /></div>
+      <!-- An overlay locks the rig: this front view previews the scene, it doesn't move fixtures. -->
+      {#snippet preview()}{/snippet}
+      <div><FrontView overlay={preview} /></div>
     </div>
   {/if}
 {:else}
