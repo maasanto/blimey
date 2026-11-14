@@ -149,3 +149,91 @@ test('holding a pad sends note-on and letting go sends note-off; a click only op
   await expect(pad(page, 36)).not.toHaveClass(/playing/);
   midi.close();
 });
+
+const SELECTED_36 = [[0xc1, 1], [0x91, 36, 127]];
+
+test('a second pointer pressed while a pad is held is ignored, so the held cue is always released', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url, address } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const midi = await recordMidi(address);
+  const pointer = async (note, pointerId) => {
+    const box = await pad(page, note).boundingBox();
+    return { pointerId, button: 0, bubbles: true, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
+  };
+
+  await pad(page, 36).dispatchEvent('pointerdown', await pointer(36, 1));
+  await pad(page, 37).dispatchEvent('pointerdown', await pointer(37, 2));
+  await expect.poll(() => midi.messages).toEqual(SELECTED_36);
+  await pad(page, 37).dispatchEvent('pointerup', await pointer(37, 2));
+  await page.waitForTimeout(500);
+  expect(midi.messages, 'the second pointer neither fires nor releases').toEqual(SELECTED_36);
+
+  await pad(page, 36).dispatchEvent('pointerup', await pointer(36, 1));
+  await expect.poll(() => midi.messages).toEqual([...SELECTED_36, [0x81, 36, 0]]);
+  midi.close();
+});
+
+test('holding the pad of a cue already playing leaves it playing', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url, address } = await startEngine();
+  await page.goto(`${url}#builder`);
+  for (const message of SELECTED_36) await page.request.post(`${url}api/midi`, { data: { message } });
+  await expect(pad(page, 36)).toHaveClass(/playing/);
+  const midi = await recordMidi(address);
+
+  await pad(page, 36).hover();
+  await page.mouse.down();
+  await page.waitForTimeout(500);
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+
+  expect(midi.messages, 'no note-on to restart it, no note-off to stop it').toEqual([]);
+  await expect(pad(page, 36)).toHaveClass(/playing/);
+  midi.close();
+});
+
+test('moving a cue onto the pad of a new cue being started sends that cue to find another', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 41).click();
+  await page.getByLabel('Name').fill('new-look');
+  const legend = page.locator('.cue legend');
+  await expect(legend).toHaveText('New cue on note 41');
+  await dragPad(page, 40, 41);
+
+  await expect(page.getByText('Moved cue 40 to 41. The new cue on that pad needs another one.')).toBeVisible();
+  await expect(legend).toHaveText('New cue');
+  await expect(page.getByRole('button', { name: 'Save cue' })).toBeDisabled();
+});
+
+test('from the keyboard, the cue form auditions a cue and moves it to a free note', async ({ page, show, startEngine }) => {
+  const songFile = addSong(show);
+  const { url, address } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const midi = await recordMidi(address);
+
+  await pad(page, 40).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('Cue 40', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Audition', exact: true }).press('Enter');
+  await expect.poll(() => midi.messages).toEqual([[0xc1, 1], [0x91, 40, 127]]);
+  await page.getByRole('button', { name: 'Release', exact: true }).press('Enter');
+  await expect.poll(() => midi.messages).toEqual([[0xc1, 1], [0x91, 40, 127], [0x81, 40, 0]]);
+
+  await page.getByLabel('Note', { exact: true }).fill('36');
+  await page.getByRole('button', { name: 'Save cue' }).press('Enter');
+  await expect(page.getByRole('alert')).toHaveText(
+    'songs/demo.yaml: note 36 already fires cue "verse"; pick a free note, or edit that cue',
+  );
+  expect(readFileSync(songFile, 'utf8')).toBe(SONG);
+
+  await page.getByLabel('Note', { exact: true }).fill('44');
+  await page.getByRole('button', { name: 'Save cue' }).press('Enter');
+  await expect(pad(page, 44)).toHaveAccessibleName('Pad 44: chase');
+  await expect(pad(page, 40)).toHaveAccessibleName('Pad 40: empty');
+  expect(readFileSync(songFile, 'utf8')).toBe(SONG.replace('  40:', '  44:'));
+  midi.close();
+});

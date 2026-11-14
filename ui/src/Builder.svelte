@@ -21,7 +21,7 @@
   import { engine, request } from './engine.svelte.js';
   import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
-  import PadBank from './PadBank.svelte';
+  import PadBank, { LAST_NOTE } from './PadBank.svelte';
   import PatternGrid from './PatternGrid.svelte';
   import PixelSceneEditor, { newPixelCue } from './PixelSceneEditor.svelte';
   import SwellEditor from './SwellEditor.svelte';
@@ -31,7 +31,6 @@
   const NOTE_OFF = 0x81;
   const PROGRAM_CHANGE = 0xc1;
   const FULL_VELOCITY = 127;
-  const LAST_NOTE = 127;
   const DEFAULT_BPM = 120;
   /** Cue types with a `fade_in` (schema/song.schema.json). */
   const FADE_IN_TYPES = ['scene', 'pixel'];
@@ -240,7 +239,10 @@
       form.note = to;
       form.replaces.note = to;
     }
-    notice = `Moved cue ${from} to ${to}.`;
+    // A new cue started on that pad has lost it: it waits for another.
+    const isNoteLost = form.replaces === null && form.note === to;
+    if (isNoteLost) form.note = null;
+    notice = `Moved cue ${from} to ${to}.${isNoteLost ? ' The new cue on that pad needs another one.' : ''}`;
     await reloadAfterSave();
   }
 
@@ -458,9 +460,10 @@
 
     <fieldset class="cue" disabled={!editable || !song}>
       <legend>
-        {#if form.replaces !== null}Cue {form.replaces.note}{:else if form.note !== null}New cue on note {form.note}{:else}New cue{/if}
+        {#if form.replaces !== null}Cue {form.replaces.note}{:else if form.note != null}New cue on note {form.note}{:else}New cue{/if}
       </legend>
       <div class="row">
+        <label>Note <input type="number" min="0" max={LAST_NOTE} bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
         {#if form.replaces === null}
           <label>
@@ -492,11 +495,14 @@
         {:else}
           Keeps the rest of this {form.cue.type} cue as it is; the look above is for scenes.
         {/if}
-        {#if form.note === null}Pick an empty pad for it.{/if}
+        {#if form.note == null}Pick an empty pad or a note for it.{:else if form.replaces !== null}A new note moves the cue there on save.{/if}
       </p>
       <div class="row">
-        <button disabled={form.note === null || !form.cue.name} onclick={() => attempt(saveCue)}>Save cue</button>
+        <button disabled={form.note == null || !form.cue.name} onclick={() => attempt(saveCue)}>Save cue</button>
         {#if form.replaces !== null}
+          <button onclick={() => attempt(() => audition(form.replaces.note))}>
+            {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
+          </button>
           <button onclick={() => attempt(() => duplicateCue(form.replaces.note))}>Duplicate</button>
           <button onclick={() => attempt(() => deleteCue(form.replaces.note))}>Delete</button>
         {/if}
