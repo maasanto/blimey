@@ -14,11 +14,14 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
+use blimey_engine::colour::Rgb;
 use blimey_engine::pixel;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
     ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status, Universes,
 };
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -136,7 +139,7 @@ impl DmxSink for StreamSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
         let rig = self.rig.borrow();
         let message = frame_message(&rig, at, frame, &self.artnet, &self.status);
-        self.frames.send_replace(message.to_string().into());
+        self.frames.send_replace(message.into());
         Ok(())
     }
 
@@ -301,15 +304,52 @@ fn rig_message(rig: &Rig, mode: Mode) -> Value {
 
 /// `{ "<fixture or grid>": ["#rrggbb", …] }`: the colour each pixel shows, in rig order.
 pub fn pixel_colours(rig: &Rig, frame: &Frame, artnet: &ArtNetFrames) -> Value {
-    let pixels: serde_json::Map<String, Value> = rig
-        .pixel_colours(frame, artnet)
-        .into_iter()
-        .map(|(name, colours)| {
-            let hex: Vec<String> = colours.into_iter().map(|colour| colour.to_hex()).collect();
-            (name.to_string(), json!(hex))
-        })
-        .collect();
-    Value::Object(pixels)
+    serde_json::to_value(PixelColours { rig, frame, artnet }).expect("pixel colours serialize")
+}
+
+/// Serialized straight to text, without a `Value` per pixel: it goes out every frame.
+#[derive(Serialize)]
+struct FrameMessage<'frame> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    at_ms: u64,
+    dmx: &'frame [u8],
+    pixels: PixelColours<'frame>,
+    #[serde(flatten)]
+    status: &'frame Status,
+}
+
+/// `{ "<fixture or grid>": ["#rrggbb", …] }`, written without a `String` per pixel.
+struct PixelColours<'frame> {
+    rig: &'frame Rig,
+    frame: &'frame Frame,
+    artnet: &'frame ArtNetFrames,
+}
+
+impl Serialize for PixelColours<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let colours = self.rig.pixel_colours(self.frame, self.artnet);
+        let mut map = serializer.serialize_map(Some(colours.len()))?;
+        for (name, colours) in &colours {
+            map.serialize_entry(name, &HexColours(colours))?;
+        }
+        map.end()
+    }
+}
+
+struct HexColours<'colours>(&'colours [Rgb]);
+
+impl Serialize for HexColours<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        let mut hex = String::with_capacity(7);
+        for colour in self.0 {
+            hex.clear();
+            colour.push_hex(&mut hex);
+            seq.serialize_element(&hex)?;
+        }
+        seq.end()
+    }
 }
 
 fn frame_message(
@@ -318,17 +358,15 @@ fn frame_message(
     frame: &Frame,
     artnet: &ArtNetFrames,
     status: &Status,
-) -> Value {
-    json!({
-        "type": "frame",
-        "at_ms": at.as_millis() as u64,
-        "dmx": frame.as_slice(),
-        "pixels": pixel_colours(rig, frame, artnet),
-        "song": status.song,
-        "cues": status.cues,
-        "master": status.master,
-        "live_parameters": status.live_parameters,
-    })
+) -> String {
+    let message = FrameMessage {
+        kind: "frame",
+        at_ms: at.as_millis() as u64,
+        dmx: frame,
+        pixels: PixelColours { rig, frame, artnet },
+        status,
+    };
+    serde_json::to_string(&message).expect("a frame message serializes")
 }
 
 fn midi_message(event: &MidiEvent) -> Value {
@@ -512,13 +550,14 @@ mod tests {
             live_parameters,
         };
 
-        let message = frame_message(
+        let message: Value = serde_json::from_str(&frame_message(
             &Rig::default(),
             Duration::ZERO,
             &[0; 512],
             &ArtNetFrames::new(),
             &status,
-        );
+        ))
+        .unwrap();
 
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
@@ -543,13 +582,14 @@ mod tests {
         universe[4] = 255; // GRB: the second pixel's red
 
         let rig_message = rig_message(&rig, Mode::Show);
-        let frame = frame_message(
+        let frame: Value = serde_json::from_str(&frame_message(
             &rig,
             Duration::ZERO,
             &[0; 512],
             &ArtNetFrames::from([(3, universe)]),
             &Status::default(),
-        );
+        ))
+        .unwrap();
 
         assert_eq!(rig_message["fixtures"], json!([]));
         assert_eq!(
