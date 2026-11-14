@@ -717,20 +717,26 @@ fn the_layered_example_cue_with_its_swell_matches_its_reference_on_three_rows_of
     assert_reference(&frames, "layers/three-rows-swell.dump");
     let pixel =
         |frame: &RecordedFrame, address: usize| frame.values[address - 1..address + 3].to_vec();
-    let (low_1, low_4) = (1, 49);
+    let low_1 = 1;
     let swell_end = 4 * BAR_FRAMES as usize;
     assert_eq!(
         [pixel(&frames[0], low_1), pixel(&frames[swell_end], low_1)],
         [[0, 0, 0, 0], [255, 210, 160, 0]],
         "warm white from dark to full over 4 bars"
     );
-    let without_swell = play(&three_rows, &[note_on], BAR_FRAMES);
-    assert!(
-        frames
-            .iter()
-            .zip(&without_swell)
-            .all(|(with, without)| pixel(with, low_4) == pixel(without, low_4)),
-        "the chase as without the swell"
+    let without_swell = play(&three_rows, &[note_on], 4 * BAR_FRAMES + 8);
+    // Every channel of the right-hand washes, three and four of each row: DMX 33-64, 97-128 and
+    // 161-192.
+    let right_half = |frames: &[RecordedFrame]| -> Vec<Vec<u8>> {
+        let rows = [32..64, 96..128, 160..192];
+        (frames.iter())
+            .flat_map(|frame| rows.clone().map(|channels| frame.values[channels].to_vec()))
+            .collect()
+    };
+    assert_eq!(
+        right_half(&frames),
+        right_half(&without_swell),
+        "the chase and sparkle as without the swell"
     );
 }
 
