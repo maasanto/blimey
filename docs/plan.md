@@ -161,6 +161,8 @@ A column is a grid with one column. One universe holds 170 RGB or 128 RGBW pixel
 
 The builder is version 1's main interface. Everything it makes is saved into the song's YAML file, and changes show live on the stage preview and the real lights.
 
+Section 16 replaces this builder with areas placed on the front view; what follows is the record of what C7, C8 and C10 built.
+
 ### Scene builder
 
 1. **Pixel scenes.** Pick a preset shape (bar, sweep, circle, split, gradient, fixtures one by one), an effect that animates it (static, move, pulse, chase, sparkle), colours from the palettes and a speed in beats. Up to 2 layers.
@@ -405,3 +407,117 @@ Agents validate on the DMX output; the rig comes out twice. Every check below ru
 ### What this can't catch
 
 How a look reads on real LEDs (colour rendering, dimming curve at low levels, brightness in a room) and electrical problems. The preview is an approximation, so expect some colour and level touch-ups at the rehearsal.
+
+## 16. Builder v2: areas on the stage
+
+Nov 14, 2026 · draft. Replaces the scene builder of section 8 and lifts the two-layer limit of section 7. Sections 1–15 stay as the record of v1; the ground rules of section 14 and the validation of section 15 apply to the chunks below.
+
+### Why
+
+The v1 builder works, but it is four forms. You choose a cue type from a list before you see anything, the front view only shows the result, and a rhythm is tied to a pixel scene through a second cue and a dropdown. The rig will also gain height, so a look has to be composed on the front view, with pixel mapping as the one model for every light.
+
+### The model
+
+- **A look is a stack of areas.** An area is a rectangle of the front view with a recipe: colour, shape, motion, rhythm. Example: a swell over the left half, a chase over the right half, a sparkle across the top row, laid over both.
+- **One model, no cue type to choose.** A still look is an area that is filled and stands still; a pixel effect is an area with a shape that moves; a swell or a beat pattern is an area's rhythm. The builder saves pixel cues only.
+- **Mute instead of odd-shaped areas.** An area can skip fixtures or groups. "The outer washes" is a full-width area with the inner washes muted.
+- **One cue is the whole picture.** Everything a look needs sits in one cue, on one note. Two pixel cues held together do not mix: the later one replaces the earlier one, as today.
+- **The song is a bank of pads.** One pad per note, each showing what its cue looks like. A pad opens its cue on the stage.
+
+### In the show file
+
+A pixel cue gains `layers`, bottom first:
+
+```yaml
+  43:
+    name: chorus-build
+    type: pixel
+    release: 1s
+    layers:
+      - area: { x: 0, y: 0, width: 0.5, height: 1 }
+        shape: fill
+        params: { color: warm-white }
+        swell: { duration: 4 bars, curve: ease-in }
+      - area: { x: 0.5, y: 0, width: 0.5, height: 1 }
+        shape: bar
+        effect: chase
+        params: { color: amber, width: 0.25, speed: 1 bar }
+        blend: over
+      - area: { x: 0, y: 0.65, width: 1, height: 0.35 }
+        shape: fill
+        effect: sparkle
+        params: { color: steel-blue, width: 0.4, speed: 2 beats }
+        blend: add
+        mute: [inner-wash]
+```
+
+- `area` is in canvas units, as in `rig.yaml`: `x`, `y` is the bottom-left corner, `y: 0` the floor. It defaults to the whole canvas.
+- The shape runs inside its area: `width` and `direction` are relative to the area, not to the canvas.
+- `shape: fill` lights the whole area.
+- `level` scales the layer, like a scene's `dimmer`: `level: 60%`.
+- `mute` lists fixtures or groups the layer leaves alone.
+- `swell` or `pattern`, one at most, is the layer's own rhythm, with the fields and the timing of the cue types of the same name. A swell runs from note-on and then holds; a pattern starts on the bar line and loops, dark between hits.
+- `blend` says how the layer meets what is below it. `over` is new: the layer covers what is below by how lit it is, so a lit pixel replaces and a dark one lets the layer below show (with a `background`, the layer is opaque over its whole area). `max`, `add` and `mask` work as today, a mask now acting inside its own area only. The default stays `max`; the builder writes `over` on new areas, so an amber area over a magenta one shows amber, not a mix.
+- Up to 8 layers. Sparkle gets a different seed per layer.
+
+### What stays
+
+- **Old pixel cues.** `shape`, `effect`, `params` and `layer_2` at the top of the cue keep loading, as one or two layers over the whole canvas, and render the same frames: no reference is regenerated. A cue has one form or the other.
+- **Scene, swell and pattern cues** keep playing and stay in the schema. A swell or pattern cue can still target a pixel cue's intensity; it scales the whole cue, every layer at once.
+- **Playback order.** Legacy, then scenes, swells and patterns, then pixel cues, then the master dimmer.
+
+### Not in this version
+
+Areas that aren't rectangles (mute covers the need), held cues that mix, rotated fixtures, custom-drawn shapes, tapping a rhythm in, generated variations of a look.
+
+### Chunks
+
+| # | Chunk | Depends on | Can run in parallel with |
+| --- | --- | --- | --- |
+| C14 | Pixel layers: areas, mute, blend | C9 | C16 |
+| C15 | Per-layer swell and pattern | C14 | C16 |
+| C16 | Builder: pad bank | C10 | C14, C15 |
+| C17 | Builder: stage composer | C14, C16 | C15 |
+| C18 | Builder: rhythm per area, and the old cue types | C15, C17 | — |
+
+### C14 — Pixel layers: areas, mute, blend
+
+- **Goal:** one pixel cue composes up to eight layers, each confined to an area of the canvas.
+- **Build:** `layers` on the pixel cue, the old form parsed into the same structure; `area`, with shape, `width` and `direction` evaluated in the area's own 0–1 space; `mute` by fixture or group; `level`; the `fill` shape; the `over` blend, and `mask` limited to the masking layer's area; a sparkle seed per layer; the pixel preview and thumbnail endpoints take the new form; load errors for an area that is empty or outside the canvas, an unknown name in `mute`, and a cue mixing both forms; a three-row wash rig in `tests/fixtures/`.
+- **Acceptance:** every existing pixel reference dump is unchanged; a dump test of the cue above, without its swell, on the three-row rig and on an 8×8 grid; a property test that a shape in an area gives the same frames as that shape on the full canvas with the rig squeezed into the area; table tests for the four blends and for mute; 8 layers over 8 universes render in under 5 ms per frame (benchmark in CI).
+- **Human check:** none. Skim the preview sheet of the example cue.
+
+### C15 — Per-layer swell and pattern
+
+- **Goal:** each area has its own rhythm inside one cue.
+- **Build:** `swell` or `pattern` on a layer, with the timing rules of the cue types; multiplied with the layer's `level`, the cue's velocity and fades, and any swell or pattern cue that targets the cue's intensity.
+- **Acceptance:** a one-layer cue with a `pattern` gives the same dump as that cue without it plus a pattern cue targeting its intensity, fired on the same tick, and the same for a swell; at 92 and 140 BPM a layer's 4-bar swell ends within one frame of the bar line; two layers with different rhythms don't affect each other; a release mid-hit follows the cue's release time.
+- **Human check:** none. Timing is asserted on the DMX output.
+
+### C16 — Builder: pad bank
+
+- **Goal:** the builder opens on the song as pads, each showing what its cue looks like.
+- **Build:** a thumbnail endpoint for any cue, rendered at the rig's pixel positions (a swell or pattern cue returns its envelope); pads by note in banks of 16 aligned on note 36, with a bank switcher that marks the banks holding cues; a pad shows a live thumbnail, the name and the note; a click opens the cue in its editor (the v1 editors until C17); press and hold auditions it through the engine; new cue on an empty pad, duplicate to the next free pad, move by dragging to an empty pad, delete; the song bar (song, new song, tempo, undo and redo) carried over. Replaces the cue table.
+- **Acceptance:** Playwright against the engine with `FakeDmx`: the pads match the song file after a load, a save and an undo; duplicate and move write the expected YAML and refuse an occupied note; hold sends note-on and letting go sends note-off; show mode is read-only.
+- **Human check:** browse `tell-me` from the pads at the laptop; note anything slow or unclear.
+
+### C17 — Builder: stage composer
+
+- **Goal:** build a look by placing areas on the front view, without choosing a cue type.
+- **Build:** the front view edits a `layers` pixel cue. A tray of ingredients (Wash, Chase, Sweep, Sparkle, Breathe: recipe defaults kept in the UI) to drag onto the stage, or click for a full-stage area. Move and resize with snapping to fixture edges; a click selects, a second click goes one area deeper; the selected area outlines the pixels it catches and says so when it catches none. A layer list: order, hide while editing (every layer is still saved), delete. An inspector: colour and background from the palettes, shape and motion as live thumbnails, direction, width, speed, level, blend, and the fixtures the area catches as mute toggles, crossed out on the stage when muted. Live on the front view and the output through the pixel preview. Old-form pixel cues open as layers and save in the new form. One sentence reads the look back ("warm-white wash on the left, amber chase on the right").
+- **Acceptance:** Playwright: build the cue above, without its swell, by drag, resize and inspector; the saved YAML equals the C14 reference and the fired note's dump matches it; an old-form cue opened and saved untouched renders the same dump.
+- **Human check:** rebuild the example and one real look from the set at the laptop; note what feels fiddly.
+
+### C18 — Builder: rhythm per area, and the old cue types
+
+- **Goal:** a rhythm is part of an area's recipe, and the v1 forms go.
+- **Build:** grooves in the inspector as thumbnails (on the beat, off-beat, heartbeat, backbeat, swell); the swell editor and the sequencer grid reused inside the inspector for a custom rhythm, writing the layer's `swell` or `pattern`, with the looped audition and playhead of C8; the Swell and Hits ingredients. Scene cues open in the composer as `fill` areas with `mute` lists and save as pixel cues. Swell and pattern cues keep their editors, reached from their pad. The look list, the cue form with its type list and the two-layer pixel editor are removed.
+- **Acceptance:** Playwright: the 1 / 2 / 3.5 pattern built on one area saves the reference YAML and its dump matches C15's; each scene of `tell-me`, converted and fired alone, matches the original scene's dump within one DMX step per channel; editing one area's rhythm leaves the other layers' YAML untouched.
+- **Human check:** rebuild one song section end to end from the pads at the laptop.
+
+### Open questions
+
+1. A converted scene becomes a pixel cue, which sits above scenes in the playback order. Songs built in the composer don't notice; a song mixing old scenes and converted ones might.
+2. A bar hung vertically needs a rotation on its `canvas` entry, which a fixture doesn't have today. Wait for the fixture.
+3. A light with no colour pixels (a plain dimmer) is outside pixel cues and still needs a scene cue. Not the case of any fixture in the rig.
+4. Should the pixels a cue doesn't cover be see-through, so that held cues mix? Left out; revisit if the Reaper sessions want to stack looks.
