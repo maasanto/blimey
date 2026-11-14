@@ -5,10 +5,15 @@ const shoot = (page, state) => capture(page, 'ux', state);
 const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
 const WIDE = { width: 1920, height: 1080 };
 
-/** Waits for the engine-rendered thumbnail on a picker button. */
+/**
+ * Waits for the engine-rendered thumbnail on a picker button to show a lit frame. A rhythm's
+ * thumbnail is dark between hits, so the polls step out of phase with its one-second cycle.
+ */
 const painted = (button) =>
   expect
-    .poll(() => button.locator('canvas').evaluate((canvas) => canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 !== 3 && value > 0)))
+    .poll(() => button.locator('canvas').evaluate((canvas) => canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 !== 3 && value > 0)), {
+      intervals: [100, 170, 230, 310],
+    })
     .toBe(true);
 
 async function stagePoint(page, [x, y]) {
@@ -47,6 +52,11 @@ test('Fossile: monitor, patch, front view, scenes home and the old cue types', a
   await expect(page.locator('[data-fixture="wash-2"] circle').first()).not.toHaveAttribute('fill', '#000000');
   await painted(page.getByRole('button', { name: 'Chase', exact: true }));
   await shoot(page, 'converted-scene');
+
+  await page.getByLabel('Number').fill('36');
+  await expect(page.getByText('Taken by verse-blue', { exact: true })).toBeVisible();
+  await shoot(page, 'number-taken');
+  await page.getByLabel('Number').fill('37');
 
   await page.goto(`${url}#builder/tell-me/38`);
   await expect(page.getByRole('status')).toContainText('fixed look');
@@ -103,8 +113,10 @@ test.describe('on three rows of washes', () => {
     await page.getByRole('group', { name: 'Rhythm' }).scrollIntoViewIfNeeded();
     await shoot(page, 'scene-editor-rhythm-and-mute');
 
-    page.once('dialog', (dialog) => dialog.accept());
-    await page.goto(`${url}#builder/chorus-build/44`);
+    await page.evaluate(() => (location.hash = '#builder/chorus-build/44'));
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await shoot(page, 'leave-prompt');
+    await page.getByRole('dialog').getByRole('button', { name: 'Leave without saving' }).click();
     await expect(page.getByText('Nothing on stage yet.')).toBeVisible();
     await painted(page.getByRole('button', { name: 'Hits', exact: true }));
     await shoot(page, 'new-scene-empty');
