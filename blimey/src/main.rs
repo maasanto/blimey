@@ -182,7 +182,7 @@ struct Outputs {
     #[arg(long)]
     dmx_port: Option<String>,
     /// Serve the web UI and the WebSocket stream at http://<LISTEN>/ (see docs/api.md).
-    /// Port 0 picks a free port.
+    /// Port 0 picks a free port. If it can't be bound, the engine says so and runs without them.
     #[arg(long)]
     listen: Option<SocketAddr>,
     /// Edit mode: reload the show whenever one of its files changes, and let the web UI save
@@ -215,10 +215,16 @@ impl Outputs {
         let mode = self.mode();
         Ok(LiveOutput {
             dmx: self.dmx_port.clone().map(EnttecPro::new),
-            stream: self
-                .listen
-                .map(|address| StreamSink::start(address, show_dir, rig, mode))
-                .transpose()?,
+            // The UI never keeps the light from starting.
+            stream: self.listen.and_then(|address| {
+                StreamSink::start(address, show_dir, rig, mode)
+                    .map_err(|error| {
+                        eprintln!(
+                            "stream: NO UI: cannot serve on {address}: {error}; DMX and MIDI run without it. Free the port, or pick another with --listen, then restart"
+                        )
+                    })
+                    .ok()
+            }),
             artnet: self.artnet.start(rig)?,
             artnet_frames: ArtNetFrames::new(),
             artnet_error: None,

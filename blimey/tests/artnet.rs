@@ -105,6 +105,33 @@ fn output_carries_on_when_stderr_cannot_be_written() {
     assert!(engine.0.try_wait().unwrap().is_none(), "the engine exited");
 }
 
+/// The UI is a convenience: a port already taken, as by a previous engine still shutting
+/// down, must not keep the light from starting.
+#[test]
+fn output_starts_without_the_ui_when_its_port_is_taken() {
+    let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+    receiver
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_blimey"))
+        .arg("fire")
+        .arg(format!("{FIXTURES}/shows/four-washes"))
+        .args(["--set", "all-wash", "color=deep-blue", "dimmer=60%"])
+        .arg("--listen")
+        .arg(taken.local_addr().unwrap().to_string())
+        .arg("--artnet")
+        .arg(receiver.local_addr().unwrap().to_string())
+        .spawn()
+        .unwrap();
+    let _engine = Running(child);
+
+    let mut buffer = [0; 1024];
+    let size = receiver.recv(&mut buffer).expect("an Art-Net frame");
+
+    assert_eq!(decode(&buffer[..size]).channels, reference_channels());
+}
+
 #[test]
 fn a_universe_without_artnet_is_refused() {
     let output = Command::new(env!("CARGO_BIN_EXE_blimey"))
