@@ -105,6 +105,29 @@ fn the_rig_schema_ties_universe_to_art_net_grids() {
 }
 
 #[test]
+fn the_song_schema_takes_a_pixel_cue_in_one_form_or_the_other() {
+    let schema = fs::read_to_string(Path::new(ROOT).join("schema/song.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&serde_json::from_str(&schema).unwrap()).unwrap();
+    let song = |cue: serde_json::Value| {
+        let mut cue = cue;
+        cue["name"] = "look".into();
+        cue["type"] = "pixel".into();
+        validator.is_valid(&serde_json::json!({ "program": 1, "cues": { "40": cue } }))
+    };
+    let layer = serde_json::json!({ "area": { "x": 0, "y": 0, "width": 0.5, "height": 1 }, "shape": "fill", "blend": "over" });
+
+    assert!(song(serde_json::json!({ "layers": [layer.clone()] })));
+    assert!(song(
+        serde_json::json!({ "shape": "bar", "layer_2": { "blend": "mask" } })
+    ));
+    assert!(!song(
+        serde_json::json!({ "shape": "bar", "layers": [layer.clone()] })
+    ));
+    assert!(!song(serde_json::json!({ "layers": [] })));
+    assert!(!song(serde_json::json!({ "layers": vec![layer; 9] })));
+}
+
+#[test]
 fn the_fossile_show_loads() {
     let show = Show::load(&Path::new(ROOT).join("shows/fossile")).unwrap();
 

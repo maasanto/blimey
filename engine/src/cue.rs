@@ -35,7 +35,7 @@ pub(crate) enum CueEntry {
         release: Option<Length>,
     },
     Pattern(PatternEntry),
-    Pixel(PixelEntry),
+    Pixel(Box<PixelEntry>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,7 +128,7 @@ impl CueEntry {
             CueEntry::Pattern(entry) => entry
                 .resolve(show, time_signature, pixel_cues)
                 .map(Cue::Pattern),
-            CueEntry::Pixel(entry) => entry.resolve(show).map(Cue::Pixel),
+            CueEntry::Pixel(entry) => (*entry).resolve(show).map(Cue::Pixel),
         }
     }
 }
