@@ -36,7 +36,8 @@ test('C19 scenes home and scene editor', async ({ page, startEngine }) => {
   await expect(page.locator('.curve polyline')).toBeVisible();
   await page.getByRole('button', { name: 'Audition loop' }).click();
   await expect(page.locator('.curve .playhead')).toHaveCount(1);
-  await expect(page.locator('[data-fixture="wash-1"] circle').first()).not.toHaveAttribute('fill', '#000000');
+  // A dimmer-only swell over the dark stage lights nothing, so the shot shows the moving playhead.
+  await page.waitForTimeout(1500);
   await shoot(page, 'swell-scene-in-the-editor');
   await page.getByRole('button', { name: 'Stop audition' }).click();
 });
