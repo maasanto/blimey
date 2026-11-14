@@ -152,8 +152,9 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
     in_order(Value::Object(song), &schema["properties"])
 }
 
-/// A pixel cue's `params`, its `layer_2` and each of its `layers`, with their `params` and
-/// `area`, in schema order too, so a file doesn't depend on the order the builder set them in.
+/// A pixel cue's `params`, its `layer_2` and each of its `layers`, with their `params`, `area`,
+/// `swell` and `pattern`, in schema order too, so a file doesn't depend on the order the builder
+/// set them in.
 fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
     let params_in_order = |layer: &mut Value| {
         if let Some(params) = layer.get_mut("params") {
@@ -170,8 +171,10 @@ fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
         let layer_properties = &schema["$defs"]["pixelLayer"]["properties"];
         for layer in layers {
             *layer = in_order(layer.take(), layer_properties);
-            if let Some(area) = layer.get_mut("area") {
-                *area = in_order(area.take(), &layer_properties["area"]["properties"]);
+            for key in ["area", "swell", "pattern"] {
+                if let Some(value) = layer.get_mut(key) {
+                    *value = in_order(value.take(), &layer_properties[key]["properties"]);
+                }
             }
             params_in_order(layer);
         }
@@ -758,11 +761,20 @@ mod tests {
         let cue = json!({
             "layers": [
                 {
+                    "swell": { "curve": "ease-in", "duration": "4 bars" },
                     "params": { "speed": "1 bar", "color": "amber" },
                     "shape": "fill",
                     "area": { "height": 1, "width": 0.5, "y": 0, "x": 0 },
                 },
-                { "mute": ["inner-wash"], "blend": "over", "level": "60%" },
+                {
+                    "mute": ["inner-wash"],
+                    "blend": "over",
+                    "pattern": {
+                        "hits": [{ "at": 1, "shape": "sine", "length": "1 beat", "level": "100%" }],
+                        "length": "1 bar",
+                    },
+                    "level": "60%",
+                },
             ],
             "type": "pixel",
             "name": "layered",
@@ -773,7 +785,7 @@ mod tests {
         let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
         assert!(
             written.ends_with(
-                "  50:\n    name: layered\n    type: pixel\n    layers:\n      - area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n      - level: 60%\n        blend: over\n        mute: [inner-wash]\n"
+                "  50:\n    name: layered\n    type: pixel\n    layers:\n      - area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n        swell: { duration: 4 bars, curve: ease-in }\n      - level: 60%\n        pattern:\n          length: 1 bar\n          hits:\n            - { at: 1, shape: sine, length: 1 beat, level: 100% }\n        blend: over\n        mute: [inner-wash]\n"
             ),
             "{written}"
         );

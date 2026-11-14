@@ -128,6 +128,28 @@ fn the_song_schema_takes_a_pixel_cue_in_one_form_or_the_other() {
 }
 
 #[test]
+fn the_song_schema_takes_a_swell_or_a_pattern_on_a_layer_not_both() {
+    let schema = fs::read_to_string(Path::new(ROOT).join("schema/song.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&serde_json::from_str(&schema).unwrap()).unwrap();
+    let layer = |rhythm: serde_json::Value| {
+        let cue = serde_json::json!({ "name": "look", "type": "pixel", "layers": [rhythm] });
+        validator.is_valid(&serde_json::json!({ "program": 1, "cues": { "40": cue } }))
+    };
+    let swell = serde_json::json!({ "duration": "4 bars", "curve": "ease-in" });
+    let pattern = serde_json::json!({ "length": "1 bar", "hits": [{ "at": 2, "shape": "sine", "length": "1 beat", "level": "60%" }] });
+
+    assert!(layer(serde_json::json!({ "swell": swell })));
+    assert!(layer(serde_json::json!({ "pattern": pattern })));
+    assert!(!layer(
+        serde_json::json!({ "swell": swell, "pattern": pattern })
+    ));
+    assert!(!layer(serde_json::json!({ "swell": { "curve": "sine" } })));
+    assert!(!layer(
+        serde_json::json!({ "pattern": { "length": "1 bar", "hits": [], "target": {} } })
+    ));
+}
+
+#[test]
 fn the_fossile_show_loads() {
     let show = Show::load(&Path::new(ROOT).join("shows/fossile")).unwrap();
 
