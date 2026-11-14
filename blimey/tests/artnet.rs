@@ -132,6 +132,35 @@ fn output_starts_without_the_ui_when_its_port_is_taken() {
     assert_eq!(decode(&buffer[..size]).channels, reference_channels());
 }
 
+/// With the UI as its only output, an engine that can't serve it has nothing to do: it exits,
+/// so launchd tries again.
+#[test]
+fn an_engine_whose_only_output_is_a_ui_it_cannot_serve_exits() {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_blimey"))
+        .arg("fire")
+        .arg(format!("{FIXTURES}/shows/four-washes"))
+        .args(["--set", "all-wash", "color=deep-blue"])
+        .arg("--listen")
+        .arg(taken.local_addr().unwrap().to_string())
+        .spawn()
+        .unwrap();
+    let mut engine = Running(child);
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = engine.0.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > Duration::from_secs(5) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert_eq!(status.and_then(|status| status.code()), Some(1));
+}
+
 #[test]
 fn a_universe_without_artnet_is_refused() {
     let output = Command::new(env!("CARGO_BIN_EXE_blimey"))

@@ -254,18 +254,30 @@ impl Outputs {
 
     fn start(&self, show_dir: &Path, rig: &Rig) -> io::Result<LiveOutput> {
         let mode = self.mode();
+        let has_light = self.dmx_port.is_some() || self.artnet.artnet.is_some();
+        let started = self
+            .listen
+            .map(|address| (address, StreamSink::start(address, show_dir, rig, mode)));
+        let stream = match started {
+            None => None,
+            Some((_, Ok(stream))) => Some(stream),
+            // The UI never keeps the light from starting; with no light, it has to work.
+            Some((address, Err(error))) if has_light => {
+                eprintln!(
+                    "stream: NO UI: cannot serve on {address}: {error}; DMX and MIDI run without it. Free the port, or pick another with --listen, then restart"
+                );
+                None
+            }
+            Some((address, Err(error))) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("cannot serve on {address}, the only output: {error}"),
+                ));
+            }
+        };
         Ok(LiveOutput {
             dmx: self.dmx_port.clone().map(EnttecPro::new),
-            // The UI never keeps the light from starting.
-            stream: self.listen.and_then(|address| {
-                StreamSink::start(address, show_dir, rig, mode)
-                    .map_err(|error| {
-                        eprintln!(
-                            "stream: NO UI: cannot serve on {address}: {error}; DMX and MIDI run without it. Free the port, or pick another with --listen, then restart"
-                        )
-                    })
-                    .ok()
-            }),
+            stream,
             artnet: self.artnet.start(rig)?,
             artnet_frames: ArtNetFrames::new(),
             artnet_error: None,
