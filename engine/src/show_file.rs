@@ -152,8 +152,8 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
     in_order(Value::Object(song), &schema["properties"])
 }
 
-/// A pixel cue's `params`, and its `layer_2` with that layer's `params`, in schema order too,
-/// so a file doesn't depend on the order the builder set them in.
+/// A pixel cue's `params`, its `layer_2` and each of its `layers`, with their `params` and
+/// `area`, in schema order too, so a file doesn't depend on the order the builder set them in.
 fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
     let params_in_order = |layer: &mut Value| {
         if let Some(params) = layer.get_mut("params") {
@@ -165,6 +165,16 @@ fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
         let layer_2_properties = &schema["$defs"]["pixel"]["properties"]["layer_2"]["properties"];
         *layer_2 = in_order(layer_2.take(), layer_2_properties);
         params_in_order(layer_2);
+    }
+    if let Some(Value::Array(layers)) = cue.get_mut("layers") {
+        let layer_properties = &schema["$defs"]["pixelLayer"]["properties"];
+        for layer in layers {
+            *layer = in_order(layer.take(), layer_properties);
+            if let Some(area) = layer.get_mut("area") {
+                *area = in_order(area.take(), &layer_properties["area"]["properties"]);
+            }
+            params_in_order(layer);
+        }
     }
     cue
 }
@@ -738,6 +748,33 @@ mod tests {
     }
 
     #[test]
+    fn a_pixel_cues_layers_are_written_in_schema_order() {
+        let show = fossile_copy("pixel-layers-order");
+        let cue = json!({
+            "layers": [
+                {
+                    "params": { "speed": "1 bar", "color": "amber" },
+                    "shape": "fill",
+                    "area": { "height": 1, "width": 0.5, "y": 0, "x": 0 },
+                },
+                { "mute": ["inner-wash"], "blend": "over", "level": "60%" },
+            ],
+            "type": "pixel",
+            "name": "layered",
+        });
+
+        save_cue(&show, "tell-me", 50, None, cue).unwrap();
+
+        let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        assert!(
+            written.ends_with(
+                "  50:\n    name: layered\n    type: pixel\n    layers:\n      -\n        area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n      -\n        level: 60%\n        blend: over\n        mute: [inner-wash]\n"
+            ),
+            "{written}"
+        );
+    }
+
+    #[test]
     fn a_cue_on_a_taken_note_is_refused_and_a_renumbered_one_moves() {
         let show = fossile_copy("cue-notes");
         let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
@@ -963,6 +1000,41 @@ mod tests {
         assert_eq!(
             text(&show, "songs/encore.yaml").unwrap(),
             "program: 9\nbpm: 100\ntime_signature: 6/8\n"
+        );
+    }
+
+    #[test]
+    fn a_pattern_hit_with_a_custom_curve_round_trips_byte_for_byte() {
+        let show = fossile_copy("custom-hit-round-trip");
+        let song = "program: 9\n\
+                    cues:\n  \
+                      42:\n    \
+                        name: pulse\n    \
+                        type: pattern\n    \
+                        length: 1 bar\n    \
+                        target: { all-wash: dimmer }\n    \
+                        hits:\n      \
+                          -\n        \
+                            at: 1\n        \
+                            shape:\n          \
+                              points:\n            \
+                                - [0, 0]\n            \
+                                - [0.5, 1]\n        \
+                            length: 1 beat\n        \
+                            level: 100%\n      \
+                          - { at: 3, shape: sine, length: 1 beat, level: 50% }\n";
+        fs::write(show.join("songs/pattern.yaml"), song).unwrap();
+
+        write(
+            &show,
+            "songs/pattern.yaml",
+            read(&show, "songs/pattern.yaml").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(show.join("songs/pattern.yaml")).unwrap(),
+            song
         );
     }
 

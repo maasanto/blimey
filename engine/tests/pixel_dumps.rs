@@ -1,6 +1,6 @@
-//! Pixel cues (plan §7, §15): every shape × effect on four rigs, compared to reference dumps in
-//! `tests/fixtures/dumps/pixel/<rig>/<shape>-<effect>.dump`, plus the mapping and determinism
-//! checks behind them.
+//! Pixel cues (plan §7, §15, §16): every shape × effect on four rigs, compared to reference
+//! dumps in `tests/fixtures/dumps/pixel/<rig>/<shape>-<effect>.dump`, the mapping and
+//! determinism checks behind them, and layers with areas and mutes.
 //!
 //! Each case selects a 150 BPM song and fires one pixel cue at 0 ms: red, width 0.25, speed
 //! 0.25 beats (100 ms, 4 frames), seed 7. A reference holds those 4 frames: one cycle.
@@ -71,6 +71,11 @@ fn render_show(
 ) -> Vec<RecordedFrame> {
     let song = format!("program: 1\nbpm: 150\ncues:\n{cues}");
     show.songs = vec![Song::parse("pixels", &song, &show).unwrap()];
+    play(&show, messages, frames)
+}
+
+/// Renders `show`, its song on program 1 selected at 0 ms, then `messages`.
+fn play(show: &Show, messages: &[(Duration, Vec<u8>)], frames: u32) -> Vec<RecordedFrame> {
     let select = (Duration::ZERO, vec![0xC1, 1]);
     let mut midi = Events(
         std::iter::once(&select)
@@ -85,7 +90,7 @@ fn render_show(
     run(
         &mut FakeClock::default(),
         &mut midi,
-        &show,
+        show,
         &Look::default(),
         &mut sink,
         frames,
@@ -436,4 +441,262 @@ fn the_same_seed_gives_the_same_frames_and_a_frame_depends_only_on_time_since_th
     for (early, late) in first[..40].iter().zip(&later[40..]) {
         assert_eq!(early.values, late.values, "{:?}", late.at);
     }
+}
+
+/// Compares `frames` with the reference dump at `name` under `dumps/pixel/`, or writes it when
+/// blessing.
+fn assert_reference(frames: &[RecordedFrame], name: &str) {
+    let path = format!("{FIXTURES}/dumps/pixel/{name}");
+    if std::env::var_os("BLIMEY_BLESS").is_some() {
+        fs::create_dir_all(Path::new(&path).parent().unwrap()).unwrap();
+        fs::write(&path, format_dump(frames)).unwrap();
+    }
+    let reference = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{path}: {error}; bless to create it"));
+    assert_eq!(
+        first_difference(frames, &parse_dump(&reference).unwrap()),
+        None,
+        "{name}"
+    );
+}
+
+/// At 150 BPM: the example's chase cycle.
+const BAR_FRAMES: u32 = 64;
+
+/// Plan §16's example cue without its swell, held for a bar: on the three-row rig, and on the
+/// 8×8 grid without its `mute`, since that rig has no inner washes.
+#[test]
+fn the_layered_example_cue_matches_its_reference_on_three_rows_of_washes_and_on_a_grid() {
+    let three_rows = Show::load(Path::new(&format!("{FIXTURES}/shows/three-rows"))).unwrap();
+    let note_on = [(Duration::ZERO, vec![0x91, 43, 127])];
+
+    let frames = play(&three_rows, &note_on, BAR_FRAMES);
+
+    assert_reference(&frames, "layers/three-rows.dump");
+    // Each wash's first pixel, RGBW, by its address.
+    let pixel =
+        |frame: &RecordedFrame, address: usize| frame.values[address - 1..address + 3].to_vec();
+    let warm_white = [255, 210, 160, 0];
+    let (low_1, low_4, high_1, high_2) = (1, 49, 129, 145);
+    assert!(
+        frames
+            .iter()
+            .all(|frame| pixel(frame, low_1) == warm_white && pixel(frame, high_2) == warm_white),
+        "the left half holds warm white, sparkle muted on the inner washes"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|frame| pixel(frame, high_1) != warm_white),
+        "the top row sparkles on the outer washes"
+    );
+    assert_eq!(
+        [pixel(&frames[0], low_4), pixel(&frames[40], low_4)],
+        [[0, 0, 0, 0], [255, 160, 30, 0]],
+        "the amber chase reaches the right wash on its third step"
+    );
+
+    let song = fs::read_to_string(format!(
+        "{FIXTURES}/shows/three-rows/songs/chorus-build.yaml"
+    ))
+    .unwrap();
+    let mute = "        mute: [inner-wash]\n";
+    assert!(song.contains(mute));
+    let mut grid = Show {
+        rig: Show::load(Path::new(&format!("{FIXTURES}/shows/pixel-grid-8x8")))
+            .unwrap()
+            .rig,
+        palettes: three_rows.palettes,
+        ..Show::default()
+    };
+    grid.songs = vec![Song::parse("chorus-build", &song.replace(mute, ""), &grid).unwrap()];
+
+    assert_reference(
+        &play(&grid, &note_on, BAR_FRAMES),
+        "layers/pixel-grid-8x8.dump",
+    );
+}
+
+/// Plan §16: a shape runs in its area's own 0–1 space. For every shape, effect and direction, a
+/// layer in an area gives the same frames as that shape on the whole canvas of a rig squeezed
+/// into the area. Positions are short binary fractions, so squeezing them is exact in floats.
+#[test]
+fn a_shape_in_an_area_matches_it_on_the_whole_canvas_of_a_rig_squeezed_into_the_area() {
+    const DIRECTIONS: [&str; 4] = [
+        "left-to-right",
+        "right-to-left",
+        "bottom-to-top",
+        "top-to-bottom",
+    ];
+    // x, y, width, height.
+    let areas = [
+        [0.25, 0.5, 0.5, 0.25],
+        [0.0, 0.0, 0.5, 1.0],
+        [0.5, 0.25, 0.5, 0.75],
+    ];
+    // Two grids of different sizes, one above the other, filling the area squeezed into.
+    let rig = |[x, y, width, height]: [f32; 4]| {
+        let grid = |name: &str, columns: u32, rows: u32, address: u32, canvas: [f32; 4]| {
+            format!(
+                "  - {{ name: {name}, type: pixel-grid, columns: {columns}, rows: {rows}, colour_order: RGB, address: {address}, canvas: {{ x: {}, y: {}, width: {}, height: {} }} }}\n",
+                x + width * canvas[0],
+                y + height * canvas[1],
+                width * canvas[2],
+                height * canvas[3],
+            )
+        };
+        let yaml = format!(
+            "fixtures:\n{}{}",
+            grid("low", 8, 4, 1, [0.0, 0.0, 1.0, 0.5]),
+            grid("high", 4, 4, 97, [0.25, 0.5, 0.5, 0.5]),
+        );
+        Show {
+            rig: Rig::parse(&yaml, Path::new(".")).unwrap(),
+            ..Show::default()
+        }
+    };
+    let note_on = [(Duration::ZERO, vec![0x91, CUE_NOTE, 127])];
+    let mut shapes = SHAPES.to_vec();
+    shapes.push("fill");
+    for area in areas {
+        let [x, y, width, height] = area;
+        for shape in &shapes {
+            for effect in EFFECTS {
+                for direction in DIRECTIONS {
+                    let layer = format!(
+                        "shape: {shape}, effect: {effect}, params: {{ color: \"#ff0000\", background: \"#000040\", width: 0.25, speed: 0.25 beats, direction: {direction} }}"
+                    );
+                    let cue = |area: &str| {
+                        format!(
+                            "  {CUE_NOTE}:\n    name: pixels\n    type: pixel\n    seed: 7\n    layers:\n      - {{ {area}{layer} }}\n"
+                        )
+                    };
+                    let in_area = render_show(
+                        rig(area),
+                        &cue(&format!(
+                            "area: {{ x: {x}, y: {y}, width: {width}, height: {height} }}, "
+                        )),
+                        &note_on,
+                        4,
+                    );
+                    let whole = render_show(rig([0.0, 0.0, 1.0, 1.0]), &cue(""), &note_on, 4);
+
+                    assert_eq!(in_area, whole, "{shape} {effect} {direction} in {area:?}");
+                }
+            }
+        }
+    }
+}
+
+/// A pixel on the edge two areas share belongs to the one it starts, and one on the canvas's
+/// right edge to the area that ends there.
+#[test]
+fn a_pixel_on_a_shared_edge_belongs_to_one_area() {
+    // RGB pixels at x 1/6, 0.5 and 5/6, then one at x 1.
+    let rig = "fixtures:\n  - { name: row, type: pixel-grid, columns: 3, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n  - { name: edge, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, address: 10, canvas: { x: 1, y: 0.5 } }\n";
+    let show = Show {
+        rig: Rig::parse(rig, Path::new(".")).unwrap(),
+        ..Show::default()
+    };
+    let cues = "  60:\n    name: halves\n    type: pixel\n    layers:\n      - { area: { x: 0, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#ff0000\" } }\n      - { area: { x: 0.5, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#0000ff\" } }\n";
+
+    let frame = &render_show(show, cues, &[(Duration::ZERO, vec![0x91, 60, 127])], 1)[0];
+
+    assert_eq!(
+        frame.values[0..12],
+        [255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 255],
+        "red, then blue from the middle to the canvas's edge"
+    );
+}
+
+/// A fixture without colour emitters, such as a hazer's dimmer, is no step of a one-by-one,
+/// muted or not.
+#[test]
+fn one_by_one_steps_through_the_fixtures_it_draws_whatever_is_muted() {
+    let rig = "fixtures:\n  - { name: left, profile: rgb-strobe, mode: 4ch, address: 1, canvas: { x: 0.25, y: 0.5 } }\n  - { name: hazer, profile: dimmer-only, mode: 1ch, address: 5, canvas: { x: 0.5, y: 0.5 } }\n  - { name: right, profile: rgb-strobe, mode: 4ch, address: 6, canvas: { x: 0.75, y: 0.5 } }\n";
+    let show = || Show {
+        rig: Rig::parse(
+            rig,
+            Path::new(&format!("{FIXTURES}/shows/pixel-layers/fixtures")),
+        )
+        .unwrap(),
+        ..Show::default()
+    };
+    let cues = |mute: &str| {
+        format!(
+            "  60:\n    name: chase\n    type: pixel\n    layers:\n      - {{ shape: one-by-one, effect: chase, params: {{ color: \"#ff0000\", speed: 100ms }}, mute: {mute} }}\n"
+        )
+    };
+    let note_on = [(Duration::ZERO, vec![0x91, 60, 127])];
+    let reds = |frame: &RecordedFrame| [frame.values[0], frame.values[5]];
+
+    let frames = render_show(show(), &cues("[]"), &note_on, 4);
+
+    assert_eq!(
+        frames.iter().map(reds).collect::<Vec<_>>(),
+        [[255, 0], [255, 0], [0, 255], [0, 255]],
+        "two steps, left then right"
+    );
+    assert_eq!(frames, render_show(show(), &cues("[hazer]"), &note_on, 4));
+}
+
+/// A pixel no layer of a pixel cue draws keeps what the cues below the pixel cue give it: here
+/// a scene's amber on the inner washes, muted on the cue's only layer.
+#[test]
+fn pixels_no_layer_draws_show_the_scene_below_the_pixel_cue() {
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/three-rows"))).unwrap();
+    let cues = "  50: { name: amber-inside, type: scene, values: { inner-wash: { color: amber } } }\n  60:\n    name: outside\n    type: pixel\n    layers:\n      - { shape: fill, params: { color: steel-blue }, mute: [inner-wash] }\n";
+    let note_on = |note: u8| (Duration::ZERO, vec![0x91, note, 127]);
+
+    let frames = render_show(show, cues, &[note_on(50), note_on(60)], 2);
+
+    assert_reference(&frames, "layers/mute-shows-below.dump");
+    // Each row's four washes' first pixel, RGBW, by address.
+    let row = |first: usize| {
+        [first, first + 16, first + 32, first + 48]
+            .map(|address| frames[1].values[address - 1..address + 3].to_vec())
+    };
+    let (amber, steel_blue) = (vec![255, 160, 30, 0], vec![180, 210, 255, 0]);
+    for first in [1, 65, 129] {
+        assert_eq!(
+            row(first),
+            [
+                steel_blue.clone(),
+                amber.clone(),
+                amber.clone(),
+                steel_blue.clone()
+            ]
+        );
+    }
+}
+
+/// A muted fixture, or the fixtures of a muted group, show the layers below.
+#[test]
+fn a_layer_leaves_the_fixtures_and_groups_it_mutes_to_the_layers_below() {
+    let cases = [
+        ("[]", ["blue", "blue", "blue", "blue"]),
+        ("[wash-2]", ["blue", "red", "blue", "blue"]),
+        ("[outer-wash]", ["red", "blue", "blue", "red"]),
+        ("[outer-wash, wash-2]", ["red", "red", "blue", "red"]),
+        ("[all-wash]", ["red", "red", "red", "red"]),
+    ];
+    for (mute, expected) in cases {
+        let cues = format!(
+            "  60:\n    name: muted\n    type: pixel\n    layers:\n      - {{ shape: fill, params: {{ color: \"#ff0000\" }} }}\n      - {{ shape: fill, blend: over, params: {{ color: \"#0000ff\" }}, mute: {mute} }}\n"
+        );
+        let frame = &render_song("four-washes", &cues, &[(Duration::ZERO, 60)], 1)[0];
+
+        // Wash addresses in the test rig; each pixel is RGBW.
+        let colours =
+            [1, 17, 33, 101].map(|address| match frame.values[address - 1..address + 2] {
+                [255, 0, 0] => "red",
+                [0, 0, 255] => "blue",
+                _ => "neither",
+            });
+        assert_eq!(colours, expected, "mute: {mute}");
+    }
+
+    let cues = "  60:\n    name: muted\n    type: pixel\n    layers:\n      - { shape: fill, params: { color: \"#ff0000\" } }\n      - { shape: fill, blend: over, params: { color: \"#0000ff\" }, mute: [grid] }\n";
+    let frame = &render_song("pixel-grid-8x8", cues, &[(Duration::ZERO, 60)], 1)[0];
+    assert_eq!(frame.values[0..3], [0, 255, 0], "a muted grid, GRB");
 }
