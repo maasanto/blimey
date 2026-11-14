@@ -191,29 +191,29 @@ impl Pattern {
     /// hits sounding then. `None` before the loop starts.
     pub fn level(&self, clock: &ClockFollower, start: Moment, at: Duration) -> Option<f64> {
         let elapsed = clock.beats(at) - start.beats;
-        if elapsed < 0.0 {
-            return None;
-        }
+        (elapsed >= 0.0).then(|| self.level_after(elapsed))
+    }
+
+    /// The level, 0–1, `elapsed` beats (0 or more) after the loop started.
+    pub fn level_after(&self, elapsed: f64) -> f64 {
         let position = elapsed % self.beats;
-        Some(
-            self.hits
-                .iter()
-                .map(|hit| {
-                    // Beats since this hit last started, in this pass or, while its start is still
-                    // ahead in this pass, the one before, so a hit running over the loop's end
-                    // carries on into the next pass.
-                    let mut since = position - hit.offset;
-                    if since < 0.0 {
-                        since += self.beats;
-                    }
-                    if since < hit.beats && since <= elapsed {
-                        hit.level * hit.shape.level(since / hit.beats)
-                    } else {
-                        0.0
-                    }
-                })
-                .fold(0.0, f64::max),
-        )
+        self.hits
+            .iter()
+            .map(|hit| {
+                // Beats since this hit last started, in this pass or, while its start is still
+                // ahead in this pass, the one before, so a hit running over the loop's end
+                // carries on into the next pass.
+                let mut since = position - hit.offset;
+                if since < 0.0 {
+                    since += self.beats;
+                }
+                if since < hit.beats && since <= elapsed {
+                    hit.level * hit.shape.level(since / hit.beats)
+                } else {
+                    0.0
+                }
+            })
+            .fold(0.0, f64::max)
     }
 }
 

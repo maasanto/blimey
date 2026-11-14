@@ -297,13 +297,8 @@ fn rig_message(rig: &Rig, mode: Mode) -> Value {
     })
 }
 
-fn frame_message(
-    rig: &Rig,
-    at: Duration,
-    frame: &Frame,
-    artnet: &ArtNetFrames,
-    status: &Status,
-) -> Value {
+/// `{ "<fixture or grid>": ["#rrggbb", …] }`: the colour each pixel shows, in rig order.
+pub fn pixel_colours(rig: &Rig, frame: &Frame, artnet: &ArtNetFrames) -> Value {
     let pixels: serde_json::Map<String, Value> = rig
         .pixel_colours(frame, artnet)
         .into_iter()
@@ -312,11 +307,21 @@ fn frame_message(
             (name.to_string(), json!(hex))
         })
         .collect();
+    Value::Object(pixels)
+}
+
+fn frame_message(
+    rig: &Rig,
+    at: Duration,
+    frame: &Frame,
+    artnet: &ArtNetFrames,
+    status: &Status,
+) -> Value {
     json!({
         "type": "frame",
         "at_ms": at.as_millis() as u64,
         "dmx": frame.as_slice(),
-        "pixels": pixels,
+        "pixels": pixel_colours(rig, frame, artnet),
         "song": status.song,
         "cues": status.cues,
         "master": status.master,

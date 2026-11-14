@@ -38,6 +38,8 @@ function replayFirstFrame(show, messages) {
   return frame;
 }
 
+const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
+
 /** Whether the picker's thumbnail canvas has a lit pixel. */
 const isPainted = (button) =>
   button.locator('canvas').evaluate((canvas) => {
@@ -51,8 +53,8 @@ test('a two-layer pixel scene plays after a restart as the engine renders its sa
   await page.goto(`${first.url}#builder`);
 
   // 1. A new pixel cue: gradient in deep blue, plus a red bar added on layer 2.
+  await pad(page, 40).click();
   await page.getByLabel('Type').selectOption('pixel');
-  await page.getByLabel('Note').fill('40');
   await page.getByLabel('Name').fill('two-layer');
   const gradient = page.getByRole('button', { name: 'Layer 1 shape: gradient' });
   await expect.poll(() => isPainted(gradient), 'thumbnails rendered by the engine').toBe(true);
@@ -101,7 +103,7 @@ test("linking a pattern to a pixel scene's intensity saves it as the pattern's t
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
 
-  await page.locator('tr[data-note="40"]').getByRole('button', { name: 'Edit' }).click();
+  await pad(page, 40).click();
   await expect(page.getByText('velocity only')).toBeVisible();
   // A rename not saved yet: links go by the name in the file.
   await page.getByLabel('Name').fill('red-wash-2');
@@ -126,7 +128,7 @@ test("a pattern's own target picker links it to a pixel scene's intensity", asyn
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
 
-  await page.locator('tr[data-note="42"]').getByRole('button', { name: 'Edit' }).click();
+  await pad(page, 42).click();
   await page.getByLabel('Drives').selectOption('intensity');
   await expect(page.getByLabel('Target', { exact: true })).toHaveValue('red-wash');
   await page.getByRole('button', { name: 'Save cue' }).click();

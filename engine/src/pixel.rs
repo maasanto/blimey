@@ -523,6 +523,16 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
         Path::new("."),
     )
     .expect("the sample grid fits the Enttec universe");
+    let frames = cycle(&scene, &rig)?.into_iter().map(|out| {
+        let (_, colours) = rig.pixel_colours(&out.enttec, &out.artnet).remove(0);
+        colours
+    });
+    Ok(frames.collect())
+}
+
+/// `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames evenly over one cycle
+/// of layer 1, beats running at `THUMBNAIL_BPM`.
+pub fn cycle(scene: &PixelScene, rig: &Rig) -> Result<Vec<Universes>, String> {
     let clock = ClockFollower::new(THUMBNAIL_BPM, TimeSignature::default());
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
@@ -542,9 +552,8 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
             artnet: ArtNetFrames::new(),
         };
         let at = cycle.mul_f64(index as f64 / THUMBNAIL_FRAMES as f64);
-        scene.draw(&rig, &clock, started, at, 1.0, &mut out);
-        let (_, colours) = rig.pixel_colours(&out.enttec, &out.artnet).remove(0);
-        colours
+        scene.draw(rig, &clock, started, at, 1.0, &mut out);
+        out
     });
     Ok(frames.collect())
 }

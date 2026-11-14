@@ -18,8 +18,10 @@ function addSong(show, text) {
   return file;
 }
 
+const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
+
 async function newCue(page, note, name, type) {
-  await page.getByLabel('Note').fill(String(note));
+  await pad(page, note).click();
   await page.getByLabel('Name').fill(name);
   await page.getByLabel('Type').selectOption(type);
 }
@@ -68,7 +70,7 @@ test('editing a pattern changes only the hits edited', async ({ page, show, star
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
 
-  await page.locator('tr[data-note="42"]').getByRole('button', { name: 'Edit' }).click();
+  await pad(page, 42).click();
   await expect(page.getByLabel('Drives')).toHaveValue('colour');
   await expect(page.getByLabel('Target colour')).toHaveValue('deep-blue');
   await step(page, 7).click();
@@ -150,7 +152,7 @@ test('only the editor loops a swell, timed by the saved cue rather than unsaved 
   await page.goto(`${url}#builder`);
   const playhead = page.locator('.curve .playhead');
 
-  await page.locator('tr[data-note="39"]').getByRole('button', { name: 'Edit' }).click();
+  await pad(page, 39).click();
   await page.getByLabel('Swell length', { exact: true }).fill('4');
   await page.getByLabel('Swell length unit').selectOption('bars');
   await page.getByRole('button', { name: 'Audition loop' }).click();
@@ -160,13 +162,13 @@ test('only the editor loops a swell, timed by the saved cue rather than unsaved 
   await page.getByRole('button', { name: 'Stop audition' }).click();
   await expect(playhead).toHaveCount(0);
 
-  // Fired from the cue list, as from Reaper, it plays once and holds its end.
-  const row = page.locator('tr[data-note="39"]');
-  await row.getByRole('button', { name: 'Audition' }).click();
+  // Held on its pad, as fired from Reaper, it plays once and holds its end.
+  await pad(page, 39).hover();
+  await page.mouse.down();
   await expect(playhead).toHaveAttribute('x1', '600', { timeout: 2000 });
   await page.waitForTimeout(3500);
   await expect(playhead, 'past the bar the editor would hold it for').toHaveAttribute('x1', '600');
-  await row.getByRole('button', { name: 'Release' }).click();
+  await page.mouse.up();
 });
 
 test('crowded points still rise when dragged, and a curve the engine refuses is shown', async ({ page, show, startEngine }) => {
@@ -177,7 +179,7 @@ test('crowded points still rise when dragged, and a curve the engine refuses is 
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
 
-  await page.locator('tr[data-note="40"]').getByRole('button', { name: 'Edit' }).click();
+  await pad(page, 40).click();
   await page.locator('.curve').scrollIntoViewIfNeeded();
   const curve = await page.locator('.curve').boundingBox();
   const middle = await page.locator('.curve .point[data-point="1"]').boundingBox();
@@ -209,7 +211,7 @@ test('a new cue keeps its release across types; a shorter loop keeps its hits pl
   await expect(page.getByLabel('Release')).toHaveValue('2s');
 
   // Two bars of 7/8 are 7 beats, the second bar starting on beat 3.5.
-  await page.locator('tr[data-note="42"]').getByRole('button', { name: 'Edit' }).click();
+  await pad(page, 42).click();
   await expect(page.locator('.lane .bar-line')).toHaveCount(2);
   await expect(page.locator('.lane .bar-line').nth(1)).toHaveAttribute('x1', '3.5');
   await page.getByLabel('Bars').selectOption('1');
