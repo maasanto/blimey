@@ -313,11 +313,13 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 `run` needs at least one of `--dmx-port`, `--listen` and `--artnet`. In edit mode it reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
 
-`run` survives losing its devices: a MIDI port that is missing at start, disappears or comes back as a new port with the same name is reconnected within about half a second, and an Enttec box that is unplugged is reopened on every frame until it is back. Both are reported on stderr.
+`run` survives losing its devices: a MIDI port that is missing at start, disappears or comes back as a new port with the same name is reconnected within about half a second, and an Enttec box that is unplugged or stops taking frames is reopened on every frame until it is back, on a thread of its own so the render loop never waits for it. Both are reported on stderr, once when a device goes and once when it is back.
+
+`run` also survives its own bugs and a broken show. A cue that fails to draw (a panic) is dropped until it is fired again, with a line on stderr naming the song and cue; the rest of the frame renders. A panic on any other engine thread, such as the MIDI or Enttec ones, exits the engine with the panic message, for launchd to restart it. A show that fails to load at start is reported, and the last show that loaded stands in (see the state folder below); without one, `run` exits with the error. After a stall, frames more than 4 periods late are skipped, and output picks up at the frame due.
 
 `fire` goes through the same render loop as `blimey run`, with no MIDI port; with `--listen` in edit mode, MIDI posted to `POST /api/midi` still plays. Without `--dmx-port`, `--listen` or `--artnet` it prints a [frame dump](frame-dump.md) with a single frame at 0 ms. With any of them, it renders at 40 Hz until killed, reloading the show in edit mode; the look keeps applying to the fixtures it names.
 
-`--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
+`--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port. An address that can't be bound, such as a port already taken, is reported on stderr and the engine runs without the UI, DMX and MIDI included.
 
 **Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, new songs, cue edits, undo and redo, previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
@@ -325,7 +327,9 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 ## State, event log and service
 
-`run` keeps two files in its state folder, `~/Library/Application Support/Blimey/` unless `--state-dir` says otherwise. Nothing goes in the show folder. Both are diagnostics, written on a background thread: a state folder the engine can't create or write is reported on stderr, and the show runs without them.
+`run` keeps its files in its state folder, `~/Library/Application Support/Blimey/` unless `--state-dir` says otherwise. Nothing goes in the show folder. `state.json` and `events.log` are diagnostics, written on a background thread: a state folder the engine can't create or write is reported on stderr, and the show runs without them.
+
+- `last-good-show.json`: the YAML files of the last show that loaded, by path, rewritten atomically each time the show loads, at start and on every hot reload. If the show fails to load at start, `run` unpacks them to `last-good-show/` and plays that, saying so on stderr. Saves still go to the show folder, and in edit mode the show folder reloads over the copy once it loads again.
 
 - `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. The background thread saves a change a few milliseconds after the frame that shows it; a crash inside that window resumes the state from before the change. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
 - `events.log`: one JSON object per line, for post-gig diagnosis. Each line is written unbuffered as soon as the writer gets it, so a crash loses at most the lines still queued. Past 10 MB it rotates to `events.log.1`, up to `events.log.4`; if rotating fails, logging carries on in `events.log`.
