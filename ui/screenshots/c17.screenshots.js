@@ -21,6 +21,8 @@ const painted = (button) =>
 test('C17 stage composer', async ({ page, startEngine }) => {
   const { url } = await startEngine({ look: DARK });
   await page.goto(`${url}#builder`);
+  // The example without its swell: C15's song with it sorts first.
+  await page.getByLabel('Song').selectOption('chorus-build');
 
   await pad(page, 43).click();
   await expect(page.getByText('Warm-white wash on the left, amber chase on the right')).toBeVisible();
