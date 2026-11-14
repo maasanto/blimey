@@ -288,7 +288,7 @@ Every fixture has a colour and an intensity. A fixture with a dimmer channel sho
 - A fixture given a colour takes every channel from the look, with channels the look doesn't drive at their profile default: the colour as written, at the look's dimmer. A colour at 100% shows exactly as written, a dim palette colour included.
 - A fixture given only a dimmer keeps everything below but its intensity: the colour from below, at full, at the look's dimmer. `deep-blue` at 60% under `{ dimmer: 100% }` becomes `deep-blue` at full, on a dimmer channel or a virtual one. A `{ dimmer: 0% }` blackout keeps that colour, so a dimmer-only swell after it brings the scene back up. With nothing below, there is no colour to light and the fixture stays dark. Legacy notes and other raw DMX below count as a colour at full, at intensity 100%. The colour below is already converted, so `rgbw` without a `color` (from this entry or an earlier one of the same look) is refused: `all-wash: rgbw needs a color for "wash-1": …`.
 
-This applies wherever looks are used: scene `values`, swell `target`, a pattern's look target, the `safe_look` and `fire --set`. A scene or swell fades from the layers below toward that look, so `chorus-swell`'s `{ all-wash: { dimmer: 100% } }` brings the scene under it to full. Velocity scales the look's dimmer, as for any look. The builder's previews are the exception: see [Look preview](#look-preview-put-and-delete-apipreview).
+This applies wherever looks are used: scene `values`, swell `target`, a pattern's look target, the `safe_look` and `fire --set`. A scene or swell fades from the layers below toward that look, so `chorus-swell`'s `{ all-wash: { dimmer: 100% } }` brings the scene under it to full. Velocity scales the look's dimmer, as for any look.
 
 ## CLI
 
@@ -319,7 +319,7 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 `--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
 
-**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, new songs, cue edits, undo and redo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
+**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, new songs, cue edits, undo and redo, previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
 `--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. The same node also gets every Art-Net universe the rig's pixel grids use, one packet each per frame, blackout included; each universe numbers its packets on its own. If a grid uses universe 0 and `--artnet-universe` isn't given, the grid keeps universe 0 and the Enttec frame isn't mirrored (the engine says so on stderr): give `--artnet-universe` to mirror it elsewhere. An `--artnet-universe` that is also a grid's universe is refused. Without `--artnet`, a rig with Art-Net grids starts with a warning that they get no output. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
@@ -447,23 +447,17 @@ The engine keeps the last 50 saves made through the API, across all show files: 
 
 If the file has changed since the save or undo (by hand, say), the step is refused with `409` rather than lose that change; it stays in the history, to try again once the file is put back. A step whose earlier content no longer passes the checks, such as an undo back to a song that was broken before a fix, never could be made: it is refused with `422` and dropped, so it doesn't block the steps before it.
 
-### Look preview: `PUT` and `DELETE /api/preview`
-
-`PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. Nothing is saved.
-
-Both previews, this one and the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel), draw on the frame as output, after the master. A pixel scene sets its own colours, so it shows as it will play. A look entry with only a `dimmer` reads the colour below from that frame's DMX, at intensity 100%, instead of from the virtual dimmers playback keeps: on a fixture without a dimmer channel it can dim what is shown but not bring a dimmed colour back to full, as the same look does when it plays as a cue.
-
-It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves no look on stage. `DELETE`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
-
 ### Pixel scene preview: `PUT /api/preview/pixel`
 
-Shows a pixel cue on every output while the builder edits it, in place of the look preview (`204`). The body is the song and the cue as in its file:
+Shows a pixel cue on every output while the builder edits it (`204`). The body is the song and the cue as in its file:
 
 ```json
 { "song": "tell-me", "cue": { "name": "bridge-chase", "type": "pixel", "effect": "chase", "params": { "color": "amber", "width": 0.25 } } }
 ```
 
-The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, as the look preview does, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. Layer rhythms play too: a swell from that first frame, a pattern's loop from the next bar line counted from engine start, in the song's `time_signature`. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it, unless a layer's `swell` or `pattern` changed: then it starts again, so the edited rhythm plays from its start. It lasts, refreshes and clears like the look preview, with which it shares `DELETE /api/preview`; one replaces the other. Nothing is saved.
+The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, on the frame as output after the master dimmer, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. Layer rhythms play too: a swell from that first frame, a pattern's loop from the next bar line counted from engine start, in the song's `time_signature`. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it, unless a layer's `swell` or `pattern` changed: then it starts again, so the edited rhythm plays from its start. Nothing is saved.
+
+It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves nothing on stage. `DELETE /api/preview`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
 
 ### Pixel thumbnail: `POST /api/pixel-thumbnail`
 
@@ -515,7 +509,7 @@ Plays one MIDI message as if it came in from the MIDI port, to audition cues wit
 { "message": [145, 36, 127] }
 ```
 
-`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the look preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
+`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the pixel scene preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
 ### Curve levels: `POST /api/envelope`
 

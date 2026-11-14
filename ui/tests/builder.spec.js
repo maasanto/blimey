@@ -110,7 +110,7 @@ test('editing a pixel cue in the form keeps its layers, in the layers form', asy
   );
 });
 
-test('the look preview draws above a playing pixel cue', async ({ page, show, startEngine }) => {
+test('the pixel scene preview draws above a playing pixel cue', async ({ page, show, startEngine }) => {
   addSong(show, `${HEADER}  40:\n    name: all-blue\n    type: pixel\n    params: { color: deep-blue }\n`);
   const { url, address } = await startEngine();
   for (const message of [[0xc1, 1], [0x91, 40, 127]]) {
@@ -119,7 +119,8 @@ test('the look preview draws above a playing pixel cue', async ({ page, show, st
   await expect.poll(async () => (await nextDmx(address)).slice(16, 20), 'wash-2 lit by the pixel cue').not.toEqual([0, 0, 0, 0]);
   const pixelCue = (await nextDmx(address)).slice(16, 20);
 
-  await page.request.put(`${url}api/preview`, { data: { 'wash-1': { color: '#00ff00' } } });
+  const onWash1 = { shape: 'fill', params: { color: '#00ff00' }, mute: ['wash-2', 'wash-3', 'wash-4'] };
+  await page.request.put(`${url}api/preview/pixel`, { data: { song: 'demo', cue: { name: 'green', type: 'pixel', layers: [onWash1] } } });
 
   await expect.poll(async () => (await nextDmx(address)).slice(0, 4), 'wash-1 shows the preview').toEqual([0, 255, 0, 0]);
   expect((await nextDmx(address)).slice(16, 20), 'wash-2 keeps the pixel cue').toEqual(pixelCue);
@@ -234,7 +235,6 @@ test('malformed request bodies are refused with 422', async ({ page, show, start
     ['api/songs/demo/cues/40', 'put'],
     ['api/songs/demo/bpm', 'put'],
     ['api/midi', 'post'],
-    ['api/preview', 'put'],
     ['api/preview/pixel', 'put'],
     ['api/pixel-thumbnail', 'post'],
   ]) {
@@ -274,7 +274,7 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
     page.request.put(`${url}api/songs/demo/bpm`, { data: { bpm: 90 } }),
     page.request.post(`${url}api/songs`, { data: { name: 'encore', program: 7 } }),
     page.request.post(`${url}api/redo`),
-    page.request.put(`${url}api/preview`, { data: { 'all-wash': { color: '#ffffff' } } }),
+    page.request.delete(`${url}api/preview`),
     page.request.put(`${url}api/preview/pixel`, { data: { song: 'demo', cue: { name: 'x', type: 'pixel' } } }),
     page.request.post(`${url}api/midi`, { data: { message: [0x91, 38, 127] } }),
     page.request.post(`${url}api/undo`),

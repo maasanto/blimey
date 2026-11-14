@@ -11,11 +11,11 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
-use blimey_engine::cue::{Cue, CueTiming, resolve_look};
+use blimey_engine::cue::{Cue, CueTiming};
 use blimey_engine::duration::TimeSignature;
 use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
@@ -28,14 +28,13 @@ use blimey_engine::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
 use crate::stream;
 
 pub const TEST_FLASH_LENGTH: Duration = Duration::from_secs(1);
-/// How long a look preview lasts after its last `PUT`: the builder refreshes it more often, so
-/// a builder that closed or crashed leaves no look on stage.
+/// How long a pixel scene preview lasts after its last `PUT`: the builder refreshes it more
+/// often, so a builder that closed or crashed leaves nothing on stage.
 pub const PREVIEW_LIFETIME: Duration = Duration::from_secs(5);
 /// Channel-2 note-on: fires a cue.
 const CUE_NOTE_ON: u8 = 0x91;
@@ -143,7 +142,7 @@ pub fn routes(api: Api) -> Router {
         .route("/api/history", get(history))
         .route("/api/undo", post(undo))
         .route("/api/redo", post(redo))
-        .route("/api/preview", put(set_preview).delete(clear_preview))
+        .route("/api/preview", delete(clear_preview))
         .route("/api/preview/pixel", put(set_pixel_preview))
         .route("/api/pixel-thumbnail", post(render_thumbnail))
         .route("/api/midi", post(inject_midi))
@@ -305,32 +304,6 @@ fn step(api: &Api, action: fn(&mut History, &std::path::Path) -> io::Result<Stri
             let mut done = steps(&history);
             done["file"] = file.into();
             Json(done).into_response()
-        }
-        Err(error) => error_response(&error),
-    }
-}
-
-async fn set_preview(State(api): State<Api>, values: JsonBody) -> Response {
-    if let Some(refused) = refused_in_show_mode(api.mode) {
-        return refused;
-    }
-    let values = match json_body(values) {
-        Ok(values) => values,
-        Err(error) => return error_response(&error),
-    };
-    let Ok(values) = serde_json::from_value::<Mapping>(values) else {
-        return unprocessable(
-            "the preview is a mapping of fixture or group names to look settings",
-        );
-    };
-    let look = Show::load(&api.show_dir).and_then(|show| {
-        resolve_look(&show, &values)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    });
-    match look {
-        Ok(look) => {
-            api.preview.show(Overlay::Look(look));
-            StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => error_response(&error),
     }
@@ -611,8 +584,8 @@ fn error_response(error: &io::Error) -> Response {
     (status, Json(json!({ "error": error.to_string() }))).into_response()
 }
 
-/// What the UI puts above every layer: a look, or a pixel scene animated from the first frame
-/// it is drawn on, at its song's tempo.
+/// What the UI puts above every layer: a look, as a fixture test's flash, or a pixel scene
+/// animated from the first frame it is drawn on, at its song's tempo.
 pub enum Overlay {
     Look(Look),
     Pixel {
