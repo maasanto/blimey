@@ -630,9 +630,13 @@ const THUMBNAIL_BPM: f64 = 120.0;
 /// the preview sheet (`examples/pixel_sheet.rs`) renders it: `THUMBNAIL_FRAMES` frames evenly
 /// over one cycle of its slowest moving layer (1 bar if none moves), each the grid's colours
 /// row by row from the top left as the audience sees it, at full intensity. `show` gives the
-/// palettes.
-pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, String> {
-    let scene = PixelScene::parse(show, TimeSignature::default(), cue)?;
+/// palettes, `time_signature` the song's bars.
+pub fn thumbnail(
+    show: &Show,
+    time_signature: TimeSignature,
+    cue: serde_json::Value,
+) -> Result<Vec<Vec<Rgb>>, String> {
+    let scene = PixelScene::parse(show, time_signature, cue)?;
     let rig = Rig::parse(
         &format!(
             "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {THUMBNAIL_SIDE}, rows: {THUMBNAIL_SIDE}, colour_order: RGB, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
@@ -640,7 +644,7 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
         Path::new("."),
     )
     .expect("the sample grid fits the Enttec universe");
-    let clock = ClockFollower::new(THUMBNAIL_BPM, TimeSignature::default());
+    let clock = ClockFollower::new(THUMBNAIL_BPM, time_signature);
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
     let cycles_in_a_second = |speed| clock.cycles(speed, started, second);
@@ -973,7 +977,7 @@ mod tests {
             { "effect": "chase", "params": { "color": "#ff0000", "width": 0.25, "speed": "2 bars" } },
         ] });
 
-        let frames = thumbnail(&Show::default(), cue).unwrap();
+        let frames = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
 
         // The red 2-bar chase's first lit column on the top row: four steps over the 8 frames.
         let first_lit: Vec<Option<usize>> = frames

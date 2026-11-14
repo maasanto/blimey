@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -16,12 +16,14 @@ use axum::{Json, Router};
 use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
 use blimey_engine::cue::{CueTiming, resolve_look};
+use blimey_engine::duration::TimeSignature;
 use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::pattern::Pattern;
 use blimey_engine::pixel::{self, PixelScene};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
+use blimey_engine::song::Song;
 use blimey_engine::{Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -339,12 +341,7 @@ async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Respons
         .and_then(|content| body::<PixelPreview>(content, "send { song, cue }, cue a pixel cue"))
         .and_then(|preview| {
             let show = Show::load(&api.show_dir)?;
-            let Some(song) = show.songs.iter().find(|song| song.name == preview.song) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no song {:?} in the show", preview.song),
-                ));
-            };
+            let song = song_named(&show, &preview.song)?;
             let scene = PixelScene::parse(&show, song.time_signature, preview.cue)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             Ok(Overlay::Pixel {
@@ -361,11 +358,37 @@ async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Respons
     }
 }
 
+fn song_named<'show>(show: &'show Show, name: &str) -> io::Result<&'show Song> {
+    show.songs
+        .iter()
+        .find(|song| song.name == name)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no song {name:?} in the show"),
+            )
+        })
+}
+
+#[derive(Deserialize)]
+struct ThumbnailQuery {
+    /// The song whose time signature places the cue's bars; 4/4 without one.
+    song: Option<String>,
+}
+
 /// Works in show mode too: it renders on a sample grid and changes nothing.
-async fn render_thumbnail(State(api): State<Api>, content: JsonBody) -> Response {
+async fn render_thumbnail(
+    State(api): State<Api>,
+    Query(query): Query<ThumbnailQuery>,
+    content: JsonBody,
+) -> Response {
     let frames = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
-        pixel::thumbnail(&show, cue)
+        let time_signature = match &query.song {
+            Some(name) => song_named(&show, name)?.time_signature,
+            None => TimeSignature::default(),
+        };
+        pixel::thumbnail(&show, time_signature, cue)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
     match frames {
@@ -621,6 +644,11 @@ mod tests {
 
     /// `POST /api/pixel-thumbnail` with `cue`: its status and JSON body.
     fn thumbnail(cue: Value) -> (StatusCode, Value) {
+        thumbnail_in(None, cue)
+    }
+
+    /// As `thumbnail`, with `?song=` when `song` is given.
+    fn thumbnail_in(song: Option<&str>, cue: Value) -> (StatusCode, Value) {
         let api = Api {
             show_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/shows/cues").into(),
             mode: Mode::Show,
@@ -631,7 +659,10 @@ mod tests {
             history: Arc::default(),
         };
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let response = render_thumbnail(State(api), Ok(Json(cue))).await;
+            let query = ThumbnailQuery {
+                song: song.map(str::to_owned),
+            };
+            let response = render_thumbnail(State(api), Query(query), Ok(Json(cue))).await;
             let status = response.status();
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
@@ -708,6 +739,21 @@ mod tests {
         );
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(refused["error"], "speed is too long to render a cycle of");
+    }
+
+    #[test]
+    fn a_thumbnail_reads_a_layer_pattern_in_its_songs_time_signature() {
+        // Beat 5 is in a bar of 5/4, the second song's, and past a bar of 4/4.
+        let cue = json!({ "name": "t", "type": "pixel", "layers": [
+            { "shape": "fill", "pattern": { "length": "1 bar", "hits": [{ "at": 5, "shape": "hold", "length": "1 beat", "level": "100%" }] } },
+        ] });
+
+        let (status, in_5_4) = thumbnail_in(Some("second"), cue.clone());
+        assert_eq!(status, StatusCode::OK, "{in_5_4}");
+        let (status, in_4_4) = thumbnail(cue.clone());
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{in_4_4}");
+        let (status, _) = thumbnail_in(Some("third"), cue);
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[test]
