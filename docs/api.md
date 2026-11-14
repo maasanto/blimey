@@ -383,7 +383,7 @@ Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file,
 
 ### Show summary: `GET /api/show`
 
-What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each.
+What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each, which the builder shows as the song's number.
 
 ```json
 { "palettes": { "deep-blue": "#0028ff" }, "songs": [{ "name": "tell-me", "program": 3 }] }
@@ -402,6 +402,12 @@ Reads and replaces a whole show file. `<file>` is a path in the show folder: `ri
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
 To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
+
+### Scenes and songs in the builder
+
+The builder calls each cue a scene and goes by numbers, never notes or programs. A scene is stored as a cue entry under the song's `cues:`, and its number is that entry's key: scene 36 is `cues: { 36: … }`, saved and deleted through `/api/songs/<song>/cues/36`. A song's number is its `program`. A swell or pattern cue is a swell or pattern scene; a `type: scene` cue the builder can't open on the stage stays a "fixed look". Valid numbers are what the endpoints take.
+
+Until a later chunk designs control from Reaper, the mapping is the engine's: scene N fires on channel-2 note N and song N is selected by channel-2 Program Change N. The builder's auditions send exactly that through `POST /api/midi`.
 
 ### Cues: `PUT` and `DELETE /api/songs/<song>/cues/<note>`
 
@@ -476,7 +482,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 
 ### Cue thumbnails: `GET /api/songs/<song>/thumbnails`
 
-What each saved cue of the song looks like, for the builder's pads, by note. The engine loads the show once for the request and renders every cue from the song file, aside from the output: nothing is saved or shown, and it works in show mode. An unknown song is a `404`; a cue that can't be rendered, such as a pixel cue whose `speed` is too long to show a cycle of, is a `422` naming it.
+What each saved cue of the song looks like, for the pads of the builder's scenes home, by note (the scene's number). The engine loads the show once for the request and renders every cue from the song file, aside from the output: nothing is saved or shown, and it works in show mode. An unknown song is a `404`; a cue that can't be rendered, such as a pixel cue whose `speed` is too long to show a cycle of, is a `422` naming it.
 
 ```json
 { "36": { "frames": ["…"] }, "39": { "levels": ["…"] } }
@@ -557,7 +563,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `protocol` is bumped only by a breaking change to this stream.
 - `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
-- `colour`: whether the fixture has colour emitters. A pixel cue lights only those, so the builder keeps a scene that targets a fixture without them a scene.
+- `colour`: whether the fixture has colour emitters. A pixel cue lights only those, so the builder keeps a `type: scene` cue that targets a fixture without them a fixed look.
 - `pixels` are canvas positions, in pixel order; for a grid, in wiring order.
 - `grids`: the rig's [pixel grids](#rigyaml), apart from `fixtures` since they have no profile, mode or single address.
 
