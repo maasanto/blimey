@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
 use crate::colour::{Rgb, RgbwMode, to_dmx};
-use crate::cue::CueEntry;
+use crate::cue::{CueEntry, SwellTiming};
 use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{Level, colour, draw_pixel};
@@ -148,15 +148,8 @@ struct LayerEntry {
     blend: Blend,
     #[serde(default)]
     mute: Vec<String>,
-    swell: Option<SwellEntry>,
+    swell: Option<SwellTiming>,
     pattern: Option<LoopEntry>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SwellEntry {
-    duration: Length,
-    curve: Option<Envelope>,
 }
 
 #[derive(Deserialize)]
@@ -228,8 +221,7 @@ pub struct Layer {
 /// A layer's own swell or pattern, timed as the cue types of the same name (plan §16).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rhythm {
-    /// From the note along `curve` over `duration`, then held.
-    Swell { duration: Length, curve: Envelope },
+    Swell(SwellTiming),
     /// Hits on a loop from the bar line after the note, dark between them.
     Pattern(Loop),
 }
@@ -337,10 +329,7 @@ impl LayerEntry {
         check_area(area)?;
         let rhythm = match (self.swell, self.pattern) {
             (Some(_), Some(_)) => return Err("a layer has a swell or a pattern, not both".into()),
-            (Some(swell), None) => Some(Rhythm::Swell {
-                duration: swell.duration,
-                curve: swell.curve.unwrap_or(Envelope::RampUp),
-            }),
+            (Some(swell), None) => Some(Rhythm::Swell(swell)),
             (None, Some(pattern)) => Some(Rhythm::Pattern(
                 pattern
                     .resolve(time_signature)
@@ -391,9 +380,7 @@ impl Rhythm {
     /// The level, 0–1, at `time.at` of a cue whose note came at `started`.
     fn level(&self, clock: &ClockFollower, started: Moment, time: RhythmTime) -> f64 {
         match self {
-            Rhythm::Swell { duration, curve } => {
-                curve.level(clock.progress(*duration, started, time.at))
-            }
+            Rhythm::Swell(swell) => swell.level(clock, started, time.at),
             // Until its loop starts, the layer shows as it is, as a pattern linked to the cue's
             // intensity leaves the cue.
             Rhythm::Pattern(hits) => hits

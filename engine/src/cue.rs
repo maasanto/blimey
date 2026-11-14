@@ -31,7 +31,8 @@ pub(crate) enum CueEntry {
         name: String,
         target: Mapping,
         duration: Length,
-        curve: Option<Envelope>,
+        #[serde(default = "SwellTiming::default_curve")]
+        curve: Envelope,
         release: Option<Length>,
     },
     Pattern(PatternEntry),
@@ -61,11 +62,31 @@ pub struct Scene {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Swell {
     pub name: String,
-    pub duration: Length,
-    /// How far the target shows over `duration`: 0 is the layers below, 1 the target.
-    pub curve: Envelope,
+    /// How far the target shows: 0 is the layers below, 1 the target.
+    pub timing: SwellTiming,
     pub release: Length,
     pub target: SwellTarget,
+}
+
+/// A swell cue's timing, or a pixel layer's `swell`: along `curve` over `duration` from the
+/// note, then held.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwellTiming {
+    pub duration: Length,
+    #[serde(default = "SwellTiming::default_curve")]
+    pub curve: Envelope,
+}
+
+impl SwellTiming {
+    fn default_curve() -> Envelope {
+        Envelope::RampUp
+    }
+
+    /// The level, 0–1, at `at` of a swell whose note came at `started`.
+    pub fn level(&self, clock: &ClockFollower, started: Moment, at: Duration) -> f64 {
+        self.curve.level(clock.progress(self.duration, started, at))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,8 +142,7 @@ impl CueEntry {
                     None => SwellTarget::Look(resolve_look(show, &target)?),
                 },
                 name,
-                duration,
-                curve: curve.unwrap_or(Envelope::RampUp),
+                timing: SwellTiming { duration, curve },
                 release: release.unwrap_or(INSTANT),
             })),
             CueEntry::Pattern(entry) => entry
@@ -205,9 +225,7 @@ impl Cue {
             Cue::Scene(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Pixel(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Swell(swell) => {
-                let level = swell
-                    .curve
-                    .level(clock.progress(swell.duration, started, at));
+                let level = swell.timing.level(clock, started, at);
                 match swell.target {
                     SwellTarget::Look(_) => level,
                     SwellTarget::Intensity(_) => 1.0 - level,

@@ -177,7 +177,7 @@ pub(crate) fn load_songs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cue::SwellTarget;
+    use crate::cue::{SwellTarget, SwellTiming};
     use crate::duration::Length;
     use crate::envelope::Envelope;
     use crate::pixel::Rhythm;
@@ -231,8 +231,8 @@ mod tests {
         let Cue::Swell(swell) = &song.cues[&38] else {
             panic!("cue 38 is a swell");
         };
-        assert_eq!(swell.duration, Length::Bars(4.0));
-        assert_eq!(swell.curve, Envelope::EaseIn);
+        assert_eq!(swell.timing.duration, Length::Bars(4.0));
+        assert_eq!(swell.timing.curve, Envelope::EaseIn);
         assert_eq!(swell.release, Length::Beats(0.5));
         let SwellTarget::Look(target) = &swell.target else {
             panic!("cue 38 targets a look");
@@ -375,10 +375,11 @@ mod tests {
         };
         assert_eq!(
             scene.layers[0].rhythm,
-            Some(Rhythm::Swell {
+            Some(Rhythm::Swell(SwellTiming {
                 duration: Length::Bars(4.0),
                 curve: Envelope::RampUp
-            })
+            })),
+            "a swell cue's default curve"
         );
         let Some(Rhythm::Pattern(hits)) = &scene.layers[1].rhythm else {
             panic!("layer 2 has a pattern: {:?}", scene.layers[1].rhythm);
