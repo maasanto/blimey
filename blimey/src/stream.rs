@@ -78,7 +78,7 @@ impl StreamSink {
         let _ = writeln!(stdout, "UI on http://{bound}/ in {} mode", mode.name());
         drop(stdout);
         let rig = Arc::new(watch::Sender::new(rig.clone()));
-        let (frames, receiver) = watch::channel(Arc::from(""));
+        let frames = watch::Sender::new(Arc::from(""));
         let (midi, _) = broadcast::channel(MIDI_BACKLOG);
         let test_flash = TimedLook::new(TEST_FLASH_LENGTH);
         let preview = TimedLook::new(PREVIEW_LIFETIME);
@@ -86,7 +86,7 @@ impl StreamSink {
         let stream = Stream {
             rig: rig.clone(),
             mode,
-            frames: receiver,
+            frames: frames.clone(),
             midi: midi.clone(),
         };
         let app = Router::new()
@@ -120,10 +120,10 @@ impl StreamSink {
         })
     }
 
-    /// The latest `frame` message published.
+    /// The `frame` messages published from now on, as a client sees them.
     #[cfg(test)]
-    pub fn latest_frame(&self) -> Value {
-        serde_json::from_str(&self.frames.borrow()).unwrap()
+    pub fn frames(&self) -> watch::Receiver<Arc<str>> {
+        self.frames.subscribe()
     }
 
     /// Draws what the UI puts above every layer over `out`: the builder's look or pixel scene,
@@ -137,6 +137,10 @@ impl StreamSink {
 
 impl DmxSink for StreamSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
+        // No client connected: the message would go nowhere.
+        if self.frames.receiver_count() == 0 {
+            return Ok(());
+        }
         let rig = self.rig.borrow();
         let message = frame_message(&rig, at, frame, &self.artnet, &self.status);
         self.frames.send_replace(message.into());
@@ -238,7 +242,8 @@ pub fn is_ticking(message: &[u8]) -> bool {
 struct Stream {
     rig: Arc<watch::Sender<Rig>>,
     mode: Mode,
-    frames: watch::Receiver<Arc<str>>,
+    /// Subscribed to by each client, so the render loop knows when nobody is watching.
+    frames: watch::Sender<Arc<str>>,
     midi: broadcast::Sender<Arc<str>>,
 }
 
@@ -246,10 +251,11 @@ async fn upgrade(socket: WebSocketUpgrade, State(stream): State<Stream>) -> Resp
     socket.on_upgrade(|socket| send_stream(socket, stream))
 }
 
-async fn send_stream(mut socket: WebSocket, mut stream: Stream) {
+async fn send_stream(mut socket: WebSocket, stream: Stream) {
     let mut rig = stream.rig.subscribe();
     rig.mark_changed();
     let mut midi = stream.midi.subscribe();
+    let mut frames = stream.frames.subscribe();
     loop {
         // Biased, so a client gets the rig before any frame drawn with it, and MIDI events
         // are never starved by frames. A client that lags on MIDI skips the events it missed.
@@ -257,7 +263,7 @@ async fn send_stream(mut socket: WebSocket, mut stream: Stream) {
             biased;
             Ok(()) = rig.changed() => rig_message(&rig.borrow_and_update(), stream.mode).to_string(),
             Ok(event) = midi.recv() => event.to_string(),
-            Ok(()) = stream.frames.changed() => stream.frames.borrow_and_update().to_string(),
+            Ok(()) = frames.changed() => frames.borrow_and_update().to_string(),
             else => return,
         };
         if socket.send(Message::Text(message.into())).await.is_err() {
