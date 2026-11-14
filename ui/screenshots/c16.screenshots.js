@@ -30,5 +30,9 @@ test('C16 pad bank', async ({ page, show, startEngine }) => {
 
   await pad(page, 40).click();
   await expect(page.getByText('Cue 40', { exact: true })).toBeVisible();
+  const gradient = page.getByRole('button', { name: 'Layer 1 shape: gradient' }).locator('canvas');
+  await expect
+    .poll(() => gradient.evaluate((canvas) => canvas.getContext('2d').getImageData(0, 0, 12, 12).data.some((value, index) => index % 4 !== 3 && value > 0)))
+    .toBe(true);
   await shoot(page, 'editor-opened-from-pad');
 });
