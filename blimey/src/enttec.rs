@@ -5,6 +5,8 @@
 pub mod emulator;
 
 use std::io::{self, Write};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::thread;
 use std::time::Duration;
 
 use blimey_engine::{DmxSink, Frame};
@@ -42,18 +44,44 @@ pub fn send_dmx_packet(frame: &Frame) -> Vec<u8> {
 // measures it. If it goes dark instead, the fallback is plan §9's keeper: a tiny process that owns
 // this port and repeats the last frame it got from the engine over a local socket.
 pub struct EnttecPro {
-    path: String,
-    port: Option<Box<dyn SerialPort>>,
-    is_missing_reported: bool,
+    /// To the thread that writes the port, so a box that stops draining never holds up the
+    /// render loop. One frame waits at most; frames arriving while it is full are dropped.
+    frames: SyncSender<Frame>,
 }
 
 impl EnttecPro {
     /// Opens nothing yet: the first frame opens the port, and every later frame retries while it is missing.
     pub fn new(path: String) -> Self {
-        Self {
+        let (frames, received) = mpsc::sync_channel(1);
+        let mut port = Port {
             path,
             port: None,
             is_missing_reported: false,
+        };
+        thread::spawn(move || {
+            for frame in received {
+                port.write(&frame);
+            }
+        });
+        Self { frames }
+    }
+}
+
+struct Port {
+    path: String,
+    port: Option<Box<dyn SerialPort>>,
+    is_missing_reported: bool,
+}
+
+impl Port {
+    /// Losing the box is reported on stderr, and the next frame reconnects.
+    fn write(&mut self, frame: &Frame) {
+        let Some(port) = self.connected_port() else {
+            return;
+        };
+        if let Err(error) = port.write_all(&send_dmx_packet(frame)) {
+            eprintln!("enttec: lost {}: {error}; reconnecting", self.path);
+            self.port = None;
         }
     }
 
@@ -83,16 +111,15 @@ impl EnttecPro {
 }
 
 impl DmxSink for EnttecPro {
-    /// Never fails: losing the box is reported on stderr and the render loop keeps going.
+    /// Never blocks. Fails only if the writer thread died, so the engine exits and launchd
+    /// restarts it rather than the light freezing unnoticed.
     fn send(&mut self, _at: Duration, frame: &Frame) -> io::Result<()> {
-        let Some(port) = self.connected_port() else {
-            return Ok(());
-        };
-        if let Err(error) = port.write_all(&send_dmx_packet(frame)) {
-            eprintln!("enttec: lost {}: {error}; reconnecting", self.path);
-            self.port = None;
+        match self.frames.try_send(*frame) {
+            Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => Err(io::Error::other(
+                "enttec: the thread writing the box stopped",
+            )),
         }
-        Ok(())
     }
 }
 
@@ -100,7 +127,7 @@ impl DmxSink for EnttecPro {
 mod tests {
     use std::path::Path;
 
-    use blimey_engine::{DMX_CHANNELS, FakeClock, MidiFile, Show, replay, run};
+    use blimey_engine::{DMX_CHANNELS, MidiFile, Show, replay};
 
     use super::emulator::{EmulatedEnttec, take_frames};
     use super::*;
@@ -148,26 +175,40 @@ mod tests {
     #[test]
     fn driver_delivers_the_same_frames_as_fake_dmx() {
         let show = Show::load(&Path::new(FIXTURES).join("shows/legacy")).unwrap();
-        let midi = || MidiFile::open(&Path::new(FIXTURES).join("midi/legacy-song.mid")).unwrap();
-        let expected: Vec<Frame> = replay(&show, midi())
+        let midi = MidiFile::open(&Path::new(FIXTURES).join("midi/legacy-song.mid")).unwrap();
+        let expected: Vec<Frame> = replay(&show, midi)
             .iter()
             .map(|frame| frame.values)
             .collect();
         let device = EmulatedEnttec::plug_in().unwrap();
         let mut driver = EnttecPro::new(device.path());
 
-        let frame_count = u32::try_from(expected.len()).unwrap();
-        run(
-            &mut FakeClock::default(),
-            &mut midi(),
-            &show,
-            &Default::default(),
-            &mut driver,
-            frame_count,
-        )
-        .unwrap();
+        // At the pace of a box, not of a fake clock: the driver drops frames a box can't take.
+        for (sent, frame) in (1..).zip(&expected) {
+            driver.send(Duration::ZERO, frame).unwrap();
+            device.wait_for_frames(sent, PATIENCE);
+        }
 
-        assert_eq!(device.wait_for_frames(expected.len(), PATIENCE), expected);
+        assert_eq!(device.frames(), expected);
+    }
+
+    /// A box still plugged in that stops reading, as a hung widget: the render loop, and the
+    /// Art-Net and MIDI it handles, must not wait on it.
+    #[test]
+    fn a_box_that_stops_draining_never_holds_up_the_render_loop() {
+        let (_never_read, port) = serialport::TTYPort::pair().unwrap();
+        let mut driver = EnttecPro::new(port.name().unwrap());
+
+        let started = std::time::Instant::now();
+        for _ in 0..40 {
+            driver.send(Duration::ZERO, &[0; DMX_CHANNELS]).unwrap();
+        }
+
+        assert!(
+            started.elapsed() < WRITE_TIMEOUT,
+            "a second of frames took {:?} to hand over",
+            started.elapsed()
+        );
     }
 
     #[test]
