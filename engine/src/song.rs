@@ -380,10 +380,14 @@ mod tests {
                 curve: Envelope::RampUp
             })
         );
-        let Some(Rhythm::Pattern { beats, hits }) = &scene.layers[1].rhythm else {
+        let Some(Rhythm::Pattern(hits)) = &scene.layers[1].rhythm else {
             panic!("layer 2 has a pattern: {:?}", scene.layers[1].rhythm);
         };
-        assert_eq!((*beats, hits[0].offset), (6.0, 5.75), "two bars of 6/8");
+        assert_eq!(
+            (hits.beats, hits.hits[0].offset),
+            (6.0, 5.75),
+            "two bars of 6/8"
+        );
 
         let refused = [
             (

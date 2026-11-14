@@ -214,7 +214,10 @@ impl Cue {
                 }
             }
             // A dimmer or intensity target darkens, so it shows the more, the lower the level.
-            Cue::Pattern(pattern) => match (&pattern.target, pattern.level(clock, started, at)) {
+            Cue::Pattern(pattern) => match (
+                &pattern.target,
+                pattern.rhythm.level(started, clock.moment(at)),
+            ) {
                 (_, None) => 0.0,
                 (PatternTarget::Dimmer(_) | PatternTarget::Intensity(_), Some(level)) => {
                     1.0 - level

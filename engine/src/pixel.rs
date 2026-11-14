@@ -18,7 +18,7 @@ use crate::cue::CueEntry;
 use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{Level, colour, draw_pixel};
-use crate::pattern::{Hit, LoopEntry, loop_level};
+use crate::pattern::{Loop, LoopEntry};
 use crate::rig::{Canvas, Fixture, Rig, line_key};
 use crate::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 
@@ -230,8 +230,8 @@ pub struct Layer {
 pub enum Rhythm {
     /// From the note along `curve` over `duration`, then held.
     Swell { duration: Length, curve: Envelope },
-    /// `hits` on a loop `beats` long from the bar line after the note, dark between them.
-    Pattern { beats: f64, hits: Vec<Hit> },
+    /// Hits on a loop from the bar line after the note, dark between them.
+    Pattern(Loop),
 }
 
 /// Where a pixel cue's layer rhythms are.
@@ -341,12 +341,11 @@ impl LayerEntry {
                 duration: swell.duration,
                 curve: swell.curve.unwrap_or(Envelope::RampUp),
             }),
-            (None, Some(pattern)) => {
-                let (beats, hits) = pattern
+            (None, Some(pattern)) => Some(Rhythm::Pattern(
+                pattern
                     .resolve(time_signature)
-                    .map_err(|error| format!("pattern: {error}"))?;
-                Some(Rhythm::Pattern { beats, hits })
-            }
+                    .map_err(|error| format!("pattern: {error}"))?,
+            )),
             (None, None) => None,
         };
         let mut mute = BTreeSet::new();
@@ -397,9 +396,9 @@ impl Rhythm {
             }
             // Until its loop starts, the layer shows as it is, as a pattern linked to the cue's
             // intensity leaves the cue.
-            Rhythm::Pattern { beats, hits } => {
-                loop_level(*beats, hits, clock, time.bar_line, time.at).unwrap_or(1.0)
-            }
+            Rhythm::Pattern(hits) => hits
+                .level(time.bar_line, clock.moment(time.at))
+                .unwrap_or(1.0),
         }
     }
 }
