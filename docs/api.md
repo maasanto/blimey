@@ -475,7 +475,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 
 - The grid is RGB and fills the canvas.
 - `?song=tell-me` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
-- `frames` are 8 moments evenly over one cycle of the slowest moving layer's `speed` (1 bar when every layer is `static`), from the note, with beats at 120 BPM. Layer rhythms play from the note too, so a swell longer than the cycle shows only its start.
+- `frames` are 8 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note, with beats at 120 BPM. Layer rhythms play from the note too, a pattern's loop starting at once.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
@@ -495,7 +495,7 @@ A scene or pixel cue's thumbnail is `frames`, each the colour every pixel of the
 ```
 
 - A scene is one frame: the cue drawn as playback draws it, over a dark stage with nothing below. A fixture given only a dimmer stays dark.
-- A pixel cue is 8 frames, timed as in the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail): evenly over one cycle of layer 1's `speed`, with beats at 120 BPM.
+- A pixel cue is 8 frames, timed as in the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail), with beats at 120 BPM.
 - Fade-in, release and velocity are left out.
 
 A swell or pattern cue's thumbnail is its envelope, `levels`: 129 levels, 0–1, evenly spaced from start to end.

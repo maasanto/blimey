@@ -628,7 +628,7 @@ const THUMBNAIL_BPM: f64 = 120.0;
 
 /// A pixel cue, as in a song file, rendered on a sample grid for the builder's pickers, as
 /// the preview sheet (`examples/pixel_sheet.rs`) renders it: `THUMBNAIL_FRAMES` frames evenly
-/// over one cycle of its slowest moving layer (1 bar if none moves), each the grid's colours
+/// over one `cycle`, each the grid's colours
 /// row by row from the top left as the audience sees it, at full intensity. `show` gives the
 /// palettes, `time_signature` the song's bars.
 pub fn thumbnail(
@@ -651,8 +651,9 @@ pub fn thumbnail(
     Ok(frames.collect())
 }
 
-/// `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames evenly over one cycle
-/// of its slowest moving layer, beats running at `THUMBNAIL_BPM` in `time_signature`.
+/// `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames evenly over the longest
+/// of its moving layers' cycles and its layers' swells and pattern loops, 1 bar without any,
+/// beats running at `THUMBNAIL_BPM` in `time_signature`.
 pub fn cycle(
     scene: &PixelScene,
     rig: &Rig,
@@ -662,11 +663,16 @@ pub fn cycle(
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
     let cycles_in_a_second = |speed| clock.cycles(speed, started, second);
-    let cycles_per_second = scene
-        .layers
-        .iter()
-        .filter(|layer| layer.effect != Effect::Static)
-        .map(|layer| cycles_in_a_second(layer.speed))
+    let lengths = scene.layers.iter().flat_map(|layer| {
+        let speed = (layer.effect != Effect::Static).then_some(layer.speed);
+        let rhythm = layer.rhythm.as_ref().map(|rhythm| match rhythm {
+            Rhythm::Swell(swell) => swell.duration,
+            Rhythm::Pattern(hits) => Length::Beats(hits.beats),
+        });
+        speed.into_iter().chain(rhythm)
+    });
+    let cycles_per_second = lengths
+        .map(cycles_in_a_second)
         .min_by(f64::total_cmp)
         .unwrap_or_else(|| cycles_in_a_second(Length::Bars(1.0)));
     let cycle = Duration::try_from_secs_f64(1.0 / cycles_per_second)
@@ -1005,6 +1011,42 @@ mod tests {
             first_lit,
             [0, 0, 3, 3, 6, 6, 9, 9].map(Some),
             "the 1-bar chase leads twice as fast, the static fill doesn't count"
+        );
+    }
+
+    #[test]
+    fn a_thumbnail_spans_the_layers_swells_and_pattern_loops_too() {
+        // A red layer with `rhythm`, under a 1-bar loop that never lights.
+        let red_over_frames = |rhythm: (&str, serde_json::Value)| {
+            let mut red = serde_json::json!({ "shape": "fill", "params": { "color": "#ff0000" } });
+            red[rhythm.0] = rhythm.1;
+            let silent = serde_json::json!({ "shape": "fill", "blend": "add", "pattern": { "length": "1 bar", "hits": [] } });
+            let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [red, silent] });
+            let frames = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+            frames
+                .iter()
+                .map(|frame| frame[0].red)
+                .collect::<Vec<f32>>()
+        };
+
+        let swell = red_over_frames((
+            "swell",
+            serde_json::json!({ "duration": "4 bars", "curve": "ramp-up" }),
+        ));
+        assert_eq!(swell[0], 0.0);
+        assert!(
+            swell.is_sorted() && swell[7] > 0.85,
+            "up its 4 bars, not 1: {swell:?}"
+        );
+
+        let pattern = red_over_frames((
+            "pattern",
+            serde_json::json!({ "length": "2 bars", "hits": [{ "at": 5, "shape": "hold", "length": "4 beats", "level": "100%" }] }),
+        ));
+        assert_eq!(
+            pattern,
+            [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            "the hit in bar 2 shows"
         );
     }
 
