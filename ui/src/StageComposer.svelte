@@ -274,8 +274,6 @@
           </button>
           <button aria-label="Delete: {description}" disabled={!editable} onclick={() => deleteLayer(index)}>×</button>
         </li>
-      {:else}
-        <li class="hint">No areas yet.</li>
       {/each}
     </ol>
 
