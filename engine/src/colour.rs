@@ -31,12 +31,19 @@ impl Rgb {
     }
 
     pub fn to_hex(self) -> String {
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            to_dmx(self.red),
-            to_dmx(self.green),
-            to_dmx(self.blue)
-        )
+        let mut hex = String::with_capacity(7);
+        self.push_hex(&mut hex);
+        hex
+    }
+
+    /// Appends `#rrggbb` to `out`. Without `format!`: the stream writes one per pixel per frame.
+    pub fn push_hex(self, out: &mut String) {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        out.push('#');
+        for value in [self.red, self.green, self.blue].map(to_dmx) {
+            out.push(char::from(DIGITS[usize::from(value >> 4)]));
+            out.push(char::from(DIGITS[usize::from(value & 0xf)]));
+        }
     }
 }
 
@@ -170,6 +177,10 @@ mod tests {
     #[test]
     fn hex_round_trips_and_rejects_garbage() {
         assert_eq!(Rgb::from_hex("#0a1bff").unwrap().to_hex(), "#0a1bff");
+        for value in 0..=255 {
+            let hex = format!("#{value:02x}{value:02x}{value:02x}");
+            assert_eq!(Rgb::from_hex(&hex).unwrap().to_hex(), hex);
+        }
         assert_eq!(
             Rgb::from_hex("blue").unwrap_err(),
             "\"blue\" is not a colour, expected #rrggbb"
