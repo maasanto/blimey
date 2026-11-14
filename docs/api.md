@@ -215,10 +215,17 @@ Plan §7's other effect names map onto these: `solid` is `static` with the defau
 | `level` | A percentage, how much the layer shows: it dims a `max` or `add` layer, as a scene's `dimmer`, and fades an `over` or `mask` layer into the ones below. At `0%` the layer changes nothing | `100%` |
 | `blend` | How the layer meets the ones below it, inside its area: `max` (the brighter per emitter), `add` (the sum, clipped at full), `mask` (the layers below show only where this layer's shape is lit, as much as it is), or `over` (this layer covers the ones below as much as it is lit, so a lit pixel replaces them and a dark one lets them show; with a `background`, it covers its whole area) | `max` |
 | `mute` | Fixtures, grids or groups the layer leaves to the layers below | none |
+| `swell` | The layer's own rhythm: `{ duration: 4 bars, curve: ease-in }`, the `duration` and `curve` of a swell cue | none |
+| `pattern` | The layer's own rhythm: `{ length: 1 bar, hits: [{ at: 1, shape: sine, length: 1 beat, level: 100% }] }`, the `length` and `hits` of a pattern cue | none |
 
 A pixel no layer draws, outside every area or muted on every layer whose area holds it, keeps the layers below the cue, as a fixture without colour emitters does; a fixture none of whose pixels is drawn keeps its dimmer channel too. A pixel some layer draws is driven, dark where the layers leave it dark. Each layer's sparkle differs from the others' under the same `seed`. Outside its area, and on what it mutes, a layer changes nothing, a `mask` included.
 
-The cue is refused at load, with its line, for an area with no width or height (`layer 1: area: width 0 and height 1 must both be above 0`) or past the canvas (`layer 2: area: canvas { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`. A layer's own `swell` or `pattern` (plan §16) is refused for now, as any unknown key.
+**Layer rhythms.** A layer takes a `swell` or a `pattern`, not both, timed as the cue types of the same name: a swell runs along its curve from note-on, then holds; a pattern's loop starts on the bar line after note-on and repeats, dark between hits. The rhythm's level scales the layer as `level` does, so at 0 an `over` or `mask` layer lets the layers below show, and multiplies with `level`, with the cue's velocity and fades, and with any [intensity link](#intensity-links) on the cue. Each layer keeps its own rhythm. Specifics:
+
+- Until its loop starts, a pattern leaves the layer as it is, as a pattern linked to the cue's intensity does. A one-layer cue with a rhythm so renders the same frames as that cue without it plus the same swell or pattern linked to its intensity, fired with it at velocity 127: the rhythm goes on the cue's intensity, so on the dimmer channel of fixtures that have one. With more layers, each rhythm scales its layer's colour.
+- On note-off the rhythms stop where they are and the cue fades out from there over its own `release`: a release mid-hit fades over the cue's release time rather than finishing the hit.
+
+The cue is refused at load, with its line, for an area with no width or height (`layer 1: area: width 0 and height 1 must both be above 0`) or past the canvas (`layer 2: area: canvas { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), a layer with both rhythms (`layer 1: a layer has a swell or a pattern, not both`), a pattern a pattern cue couldn't play (`layer 2: pattern: length must be 1, 2, 3 or 4 bars`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`.
 
 **The older form.** Instead of `layers`, a cue can give one layer's `shape`, `effect` and `params` at its top and an optional `layer_2` with its own, plus `blend`: the same two layers over the whole canvas, rendering the same frames.
 
@@ -456,7 +463,7 @@ Shows a pixel cue on every output while the builder edits it, in place of the lo
 { "song": "tell-me", "cue": { "name": "bridge-chase", "type": "pixel", "effect": "chase", "params": { "color": "amber", "width": 0.25 } } }
 ```
 
-The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, as the look preview does, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it. It lasts, refreshes and clears like the look preview, with which it shares `DELETE /api/preview`; one replaces the other. Nothing is saved.
+The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, as the look preview does, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. Layer rhythms play too: a swell from that first frame, a pattern's loop from the next bar line counted from engine start, in the song's `time_signature`. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it, unless a layer's `swell` or `pattern` changed: then it starts again, so the edited rhythm plays from its start. It lasts, refreshes and clears like the look preview, with which it shares `DELETE /api/preview`; one replaces the other. Nothing is saved.
 
 ### Pixel thumbnail: `POST /api/pixel-thumbnail`
 
@@ -467,7 +474,8 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 ```
 
 - The grid is RGB and fills the canvas.
-- `frames` are 8 moments evenly over one cycle of the slowest moving layer's `speed` (1 bar when every layer is `static`), from the note, with beats at 120 BPM.
+- `?song=tell-me` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
+- `frames` are 8 moments evenly over one cycle of the slowest moving layer's `speed` (1 bar when every layer is `static`), from the note, with beats at 120 BPM. Layer rhythms play from the note too, so a swell longer than the cycle shows only its start.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.

@@ -8,17 +8,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
-use blimey_engine::cue::{Cue, resolve_look};
+use blimey_engine::cue::{Cue, CueTiming, resolve_look};
+use blimey_engine::duration::TimeSignature;
 use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
-use blimey_engine::pixel::{self, PixelScene};
+use blimey_engine::pattern::Pattern;
+use blimey_engine::pixel::{self, PixelScene, Rhythm};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
 use blimey_engine::song::Song;
@@ -342,13 +344,8 @@ async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Respons
         .and_then(|content| body::<PixelPreview>(content, "send { song, cue }, cue a pixel cue"))
         .and_then(|preview| {
             let show = Show::load(&api.show_dir)?;
-            let Some(song) = show.songs.iter().find(|song| song.name == preview.song) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no song {:?} in the show", preview.song),
-                ));
-            };
-            let scene = PixelScene::parse(&show, preview.cue)
+            let song = song_named(&show, &preview.song)?;
+            let scene = PixelScene::parse(&show, song.time_signature, preview.cue)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             Ok(Overlay::Pixel {
                 scene: Box::new(scene),
@@ -364,11 +361,37 @@ async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Respons
     }
 }
 
+fn song_named<'show>(show: &'show Show, name: &str) -> io::Result<&'show Song> {
+    show.songs
+        .iter()
+        .find(|song| song.name == name)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no song {name:?} in the show"),
+            )
+        })
+}
+
+#[derive(Deserialize)]
+struct ThumbnailQuery {
+    /// The song whose time signature places the cue's bars; 4/4 without one.
+    song: Option<String>,
+}
+
 /// Works in show mode too: it renders on a sample grid and changes nothing.
-async fn render_thumbnail(State(api): State<Api>, content: JsonBody) -> Response {
+async fn render_thumbnail(
+    State(api): State<Api>,
+    Query(query): Query<ThumbnailQuery>,
+    content: JsonBody,
+) -> Response {
     let frames = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
-        pixel::thumbnail(&show, cue)
+        let time_signature = match &query.song {
+            Some(name) => song_named(&show, name)?.time_signature,
+            None => TimeSignature::default(),
+        };
+        pixel::thumbnail(&show, time_signature, cue)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
     match frames {
@@ -447,10 +470,15 @@ fn cue_thumbnail(rig: &Rig, song: &Song, cue: &Cue) -> Result<Value, String> {
             };
             let mut dimmers = VirtualDimmers::of(&out.enttec);
             let started = clock.moment(Duration::ZERO);
+            let timing = CueTiming {
+                started,
+                bar_line: None,
+                released: None,
+            };
             cue.draw(
                 rig,
                 &clock,
-                started,
+                timing,
                 Duration::ZERO,
                 1.0,
                 &mut out,
@@ -459,13 +487,14 @@ fn cue_thumbnail(rig: &Rig, song: &Song, cue: &Cue) -> Result<Value, String> {
             json!({ "frames": [colours(&out)] })
         }
         Cue::Pixel(scene) => {
-            let frames = pixel::cycle(scene, rig)?;
+            let frames = pixel::cycle(scene, rig, song.time_signature)?;
             json!({ "frames": frames.iter().map(colours).collect::<Vec<_>>() })
         }
-        Cue::Swell(swell) => json!({ "levels": levels(&|time| swell.curve.level(time)) }),
+        Cue::Swell(swell) => json!({ "levels": levels(&|time| swell.timing.curve.level(time)) }),
         // The second pass, so a hit running over the loop's end shows at its start.
         Cue::Pattern(pattern) => {
-            json!({ "levels": levels(&|time| pattern.level_after((1.0 + time) * pattern.beats)) })
+            let rhythm = &pattern.rhythm;
+            json!({ "levels": levels(&|time| rhythm.level_after((1.0 + time) * rhythm.beats)) })
         }
     })
 }
@@ -619,15 +648,17 @@ impl TimedLook {
     /// Shows `overlay`, or shows it for another `lifetime`.
     fn show(&self, overlay: Overlay) {
         let mut shown = lock(&self.shown);
+        // A swell that has run would show no edit to its curve or length: a new rhythm starts
+        // the preview again, any other edit carries on where it is.
         let started = match (&*shown, &overlay) {
             (
                 Some(Shown {
-                    overlay: Overlay::Pixel { .. },
+                    overlay: Overlay::Pixel { scene: shown, .. },
                     started,
                     ..
                 }),
-                Overlay::Pixel { .. },
-            ) => *started,
+                Overlay::Pixel { scene, .. },
+            ) if rhythms(shown).eq(rhythms(scene)) => *started,
             _ => None,
         };
         *shown = Some(Shown {
@@ -657,11 +688,23 @@ impl TimedLook {
                 look::render(rig, look, &mut out.enttec, &mut below);
             }
             Overlay::Pixel { scene, clock } => {
-                let started = clock.moment(*active.started.get_or_insert(at));
-                scene.draw(rig, clock, started, at, 1.0, out);
+                let note = *active.started.get_or_insert(at);
+                let timing = CueTiming {
+                    started: clock.moment(note),
+                    bar_line: Some(Pattern::start(clock, note)),
+                    released: None,
+                };
+                scene.draw(rig, clock, timing, at, 1.0, out);
             }
         }
     }
+}
+
+fn rhythms(scene: &PixelScene) -> impl Iterator<Item = &Rhythm> {
+    scene
+        .layers
+        .iter()
+        .filter_map(|layer| layer.rhythm.as_ref())
 }
 
 #[cfg(test)]
@@ -704,6 +747,11 @@ mod tests {
 
     /// `POST /api/pixel-thumbnail` with `cue`: its status and JSON body.
     fn thumbnail(cue: Value) -> (StatusCode, Value) {
+        thumbnail_in(None, cue)
+    }
+
+    /// As `thumbnail`, with `?song=` when `song` is given.
+    fn thumbnail_in(song: Option<&str>, cue: Value) -> (StatusCode, Value) {
         let api = Api {
             show_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/shows/cues").into(),
             mode: Mode::Show,
@@ -714,7 +762,10 @@ mod tests {
             history: Arc::default(),
         };
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let response = render_thumbnail(State(api), Ok(Json(cue))).await;
+            let query = ThumbnailQuery {
+                song: song.map(str::to_owned),
+            };
+            let response = render_thumbnail(State(api), Query(query), Ok(Json(cue))).await;
             let status = response.status();
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
@@ -850,6 +901,21 @@ mod tests {
     }
 
     #[test]
+    fn a_thumbnail_reads_a_layer_pattern_in_its_songs_time_signature() {
+        // Beat 5 is in a bar of 5/4, the second song's, and past a bar of 4/4.
+        let cue = json!({ "name": "t", "type": "pixel", "layers": [
+            { "shape": "fill", "pattern": { "length": "1 bar", "hits": [{ "at": 5, "shape": "hold", "length": "1 beat", "level": "100%" }] } },
+        ] });
+
+        let (status, in_5_4) = thumbnail_in(Some("second"), cue.clone());
+        assert_eq!(status, StatusCode::OK, "{in_5_4}");
+        let (status, in_4_4) = thumbnail(cue.clone());
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{in_4_4}");
+        let (status, _) = thumbnail_in(Some("third"), cue);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
     fn a_pixel_preview_draws_on_art_net_grids_and_keeps_moving_when_shown_again() {
         let rig = Rig::parse(
             "fixtures:\n  - { name: wall, type: pixel-grid, columns: 4, rows: 1, colour_order: RGB, output: artnet, universe: 3, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n",
@@ -862,6 +928,7 @@ mod tests {
             scene: Box::new(
                 PixelScene::parse(
                     &Show::default(),
+                    Default::default(),
                     json!({ "name": "glide", "type": "pixel", "effect": "move", "params": { "color": "#ff0000", "width": 0.25, "speed": "1s" } }),
                 )
                 .unwrap(),
@@ -891,6 +958,52 @@ mod tests {
             [2],
             "a new PUT doesn't restart it"
         );
+    }
+
+    #[test]
+    fn a_pixel_preview_starts_again_when_a_layer_rhythm_changes() {
+        let rig = Rig::parse(
+            "fixtures:\n  - { name: dot, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0.5, y: 0.5 } }\n",
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        let overlay = |color: &str, duration: &str| {
+            Overlay::Pixel {
+            scene: Box::new(
+                PixelScene::parse(
+                    &Show::default(),
+                    Default::default(),
+                    json!({ "name": "rise", "type": "pixel", "layers": [
+                        { "shape": "fill", "params": { "color": color }, "swell": { "duration": duration } },
+                    ] }),
+                )
+                .unwrap(),
+            ),
+            clock: ClockFollower::new(120.0, Default::default()),
+        }
+        };
+        let preview = TimedLook::new(PREVIEW_LIFETIME);
+        let lit = |seconds: u64| {
+            let mut out = Universes {
+                enttec: [0; 512],
+                artnet: rig.artnet_frames(),
+            };
+            preview.apply(&rig, Duration::from_secs(seconds), &mut out);
+            out.enttec[0..3].to_vec()
+        };
+
+        preview.show(overlay("#ff0000", "2s"));
+        assert_eq!(lit(10), [0, 0, 0], "the swell starts on the first frame");
+        assert_eq!(lit(12), [255, 0, 0], "and ends 2 s later");
+        preview.show(overlay("#00ff00", "2s"));
+        assert_eq!(
+            lit(13),
+            [0, 255, 0],
+            "a new colour keeps the swell where it is"
+        );
+        preview.show(overlay("#00ff00", "4s"));
+        assert_eq!(lit(14), [0, 0, 0], "a new swell starts again");
+        assert_eq!(lit(16), [0, 128, 0]);
     }
 
     #[test]

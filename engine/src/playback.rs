@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
-use crate::cue::Cue;
+use crate::cue::{Cue, CueTiming};
 use crate::fixture::Attribute;
 use crate::look::{self, Look, VirtualDimmers};
 use crate::rig::Rig;
@@ -65,6 +65,8 @@ pub enum CueAction {
 struct ActiveCue {
     note: u8,
     started: Moment,
+    /// See `Cue::bar_line`.
+    bar_line: Option<Moment>,
     /// Note-on velocity as 0–1.
     intensity: f32,
     released: Option<Release>,
@@ -177,11 +179,13 @@ impl Playback {
             return;
         };
         let started = cue.start(clock, at);
+        let bar_line = cue.bar_line(clock, at);
         // A retriggered cue fades out under its new instance.
         self.release(show, note, at);
         self.cues.push(ActiveCue {
             note,
             started,
+            bar_line,
             intensity: f32::from(velocity) / MIDI_DATA_MAX,
             released: None,
         });
@@ -305,10 +309,15 @@ impl Playback {
                 },
             };
             let mut lit_dimmers = dimmers.clone();
+            let timing = CueTiming {
+                started: active.started,
+                bar_line: active.bar_line,
+                released: active.released.as_ref().map(|release| release.at),
+            };
             cue.draw(
                 &show.rig,
                 clock,
-                active.started,
+                timing,
                 at,
                 intensity,
                 &mut lit,

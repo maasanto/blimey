@@ -1,7 +1,7 @@
 //! Pattern cues (plan §8): envelope hits on the beats of a 1–4 bar loop that starts on a bar
 //! line and repeats until released.
 //!
-//! `Pattern::level` is the pattern's output as a 0–1 intensity, for anything that follows one.
+//! `Loop::level` is the pattern's output as a 0–1 intensity, for anything that follows one.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -35,6 +35,14 @@ pub(crate) struct PatternEntry {
     release: Option<Length>,
 }
 
+/// A pattern's loop without a target, as a pixel layer's `pattern` (plan §16).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LoopEntry {
+    length: Length,
+    hits: Vec<HitEntry>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HitEntry {
@@ -47,11 +55,17 @@ struct HitEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
     pub name: String,
+    pub rhythm: Loop,
+    pub target: PatternTarget,
+    pub release: Length,
+}
+
+/// Envelope hits on a loop of whole bars: a pattern cue's, or a pixel layer's `pattern`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loop {
     /// Loop length in beats.
     pub beats: f64,
-    pub target: PatternTarget,
     pub hits: Vec<Hit>,
-    pub release: Length,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +96,22 @@ impl PatternEntry {
         time_signature: TimeSignature,
         pixel_cues: &PixelCues,
     ) -> Result<Pattern, String> {
+        let rhythm = LoopEntry {
+            length: self.length,
+            hits: self.hits,
+        }
+        .resolve(time_signature)?;
+        Ok(Pattern {
+            target: resolve_target(show, &self.target, pixel_cues)?,
+            name: self.name,
+            rhythm,
+            release: self.release.unwrap_or(INSTANT),
+        })
+    }
+}
+
+impl LoopEntry {
+    pub(crate) fn resolve(self, time_signature: TimeSignature) -> Result<Loop, String> {
         let beats_per_bar = time_signature.beats_per_bar();
         let bars = match self.length {
             Length::Bars(bars) if bars.fract() == 0.0 && (1.0..=MAX_BARS).contains(&bars) => bars,
@@ -97,13 +127,7 @@ impl PatternEntry {
                     .map_err(|error| format!("hit {}: {error}", index + 1))
             })
             .collect::<Result<_, _>>()?;
-        Ok(Pattern {
-            target: resolve_target(show, &self.target, pixel_cues)?,
-            name: self.name,
-            beats,
-            hits,
-            release: self.release.unwrap_or(INSTANT),
-        })
+        Ok(Loop { beats, hits })
     }
 }
 
@@ -186,11 +210,13 @@ impl Pattern {
             },
         }
     }
+}
 
-    /// The level, 0–1, at `at` of the loop started at `start` (see `start`): the highest of the
-    /// hits sounding then. `None` before the loop starts.
-    pub fn level(&self, clock: &ClockFollower, start: Moment, at: Duration) -> Option<f64> {
-        let elapsed = clock.beats(at) - start.beats;
+impl Loop {
+    /// The level, 0–1, `now` in the loop started at `start` (see `Pattern::start`): the highest
+    /// of the hits sounding then. `None` before the loop starts.
+    pub fn level(&self, start: Moment, now: Moment) -> Option<f64> {
+        let elapsed = now.beats - start.beats;
         (elapsed >= 0.0).then(|| self.level_after(elapsed))
     }
 
@@ -234,14 +260,11 @@ mod tests {
     }
 
     /// The level `beats` into the loop of `pattern` started at 0.
-    fn level_at(pattern: &Pattern, beats: f64) -> f64 {
+    fn level_at(pattern: &Loop, beats: f64) -> f64 {
         let clock = clock();
-        let start = Moment {
-            at: Duration::ZERO,
-            beats: 0.0,
-        };
+        let start = clock.moment(Duration::ZERO);
         pattern
-            .level(&clock, start, seconds(beats / 2.0))
+            .level(start, clock.moment(seconds(beats / 2.0)))
             .expect("the loop started at 0")
     }
 
@@ -254,14 +277,8 @@ mod tests {
         }
     }
 
-    fn one_bar(hits: Vec<Hit>) -> Pattern {
-        Pattern {
-            name: "pattern".into(),
-            beats: 4.0,
-            target: PatternTarget::Dimmer(BTreeSet::new()),
-            hits,
-            release: INSTANT,
-        }
+    fn one_bar(hits: Vec<Hit>) -> Loop {
+        Loop { beats: 4.0, hits }
     }
 
     fn assert_close(actual: f64, expected: f64) {
@@ -276,12 +293,13 @@ mod tests {
 
         let early = Pattern::start(&clock, seconds(bar_2 - 0.010));
         assert_close(early.beats, 4.0);
-        assert_eq!(pattern.level(&clock, early, seconds(bar_2 - 0.001)), None);
-        assert_close(pattern.level(&clock, early, seconds(bar_2)).unwrap(), 0.0);
+        let now = |seconds: f64| clock.moment(Duration::from_secs_f64(seconds));
+        assert_eq!(pattern.level(early, now(bar_2 - 0.001)), None);
+        assert_close(pattern.level(early, now(bar_2)).unwrap(), 0.0);
 
         let late = Pattern::start(&clock, seconds(bar_2 + 0.010));
         assert_close(late.beats, 4.0);
-        let at_note = pattern.level(&clock, late, seconds(bar_2 + 0.010)).unwrap();
+        let at_note = pattern.level(late, now(bar_2 + 0.010)).unwrap();
         assert_close(at_note, 0.02 / 0.5);
 
         let mid_bar = Pattern::start(&clock, seconds(bar_2 + 0.5));
@@ -351,13 +369,13 @@ mod tests {
         let Cue::Pattern(pattern) = cue else {
             panic!("cue 42 is a pattern");
         };
-        assert_eq!(pattern.beats, 6.0, "two bars of 6/8");
+        assert_eq!(pattern.rhythm.beats, 6.0, "two bars of 6/8");
         assert_eq!(
             pattern.target,
             PatternTarget::Dimmer(BTreeSet::from(["dimmer-par".into(), "rgb-par".into()]))
         );
         assert_eq!(
-            pattern.hits,
+            pattern.rhythm.hits,
             [Hit {
                 offset: 5.75,
                 beats: 3.0,
