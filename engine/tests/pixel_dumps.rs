@@ -857,6 +857,19 @@ fn two_layers_rhythms_do_not_affect_each_other() {
     assert_ne!(right(&both), right(&still), "the swell shows");
 }
 
+/// A layer's rhythm scales it as `level` does: between hits an `over` layer vanishes and the
+/// layer below shows. At 150 BPM a beat is 16 frames.
+#[test]
+fn an_over_layer_dark_between_hits_lets_the_layer_below_show() {
+    let cues = "  60:\n    name: hits\n    type: pixel\n    layers:\n      - { shape: fill, params: { color: \"#ff0000\" } }\n      - { shape: fill, blend: over, params: { color: \"#0000ff\" }, pattern: { length: 1 bar, hits: [{ at: 1, shape: hold, length: 1 beat, level: 100% }] } }\n";
+
+    let frames = render_song("cues", cues, &[(Duration::ZERO, 60)], 32);
+
+    // The RGB par, DMX 5-7.
+    let rgb = |frame: usize| frames[frame].values[4..7].to_vec();
+    assert_eq!([rgb(8), rgb(24)], [[0, 0, 255], [255, 0, 0]]);
+}
+
 /// Plan §16, as C5: released half-way up a hit, a layer's pattern fades out from where it was
 /// over the cue's release, rather than along the rest of the hit. At 150 BPM a beat is 16
 /// frames: an 80% ramp up over 2 beats, released after one, over 1 s (40 frames).
