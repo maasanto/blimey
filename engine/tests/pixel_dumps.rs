@@ -609,6 +609,37 @@ fn a_pixel_on_a_shared_edge_belongs_to_one_area() {
     );
 }
 
+/// A fixture without colour emitters, such as a hazer's dimmer, is no step of a one-by-one,
+/// muted or not.
+#[test]
+fn one_by_one_steps_through_the_fixtures_it_draws_whatever_is_muted() {
+    let rig = "fixtures:\n  - { name: left, profile: rgb-strobe, mode: 4ch, address: 1, canvas: { x: 0.25, y: 0.5 } }\n  - { name: hazer, profile: dimmer-only, mode: 1ch, address: 5, canvas: { x: 0.5, y: 0.5 } }\n  - { name: right, profile: rgb-strobe, mode: 4ch, address: 6, canvas: { x: 0.75, y: 0.5 } }\n";
+    let show = || Show {
+        rig: Rig::parse(
+            rig,
+            Path::new(&format!("{FIXTURES}/shows/pixel-layers/fixtures")),
+        )
+        .unwrap(),
+        ..Show::default()
+    };
+    let cues = |mute: &str| {
+        format!(
+            "  60:\n    name: chase\n    type: pixel\n    layers:\n      - {{ shape: one-by-one, effect: chase, params: {{ color: \"#ff0000\", speed: 100ms }}, mute: {mute} }}\n"
+        )
+    };
+    let note_on = [(Duration::ZERO, vec![0x91, 60, 127])];
+    let reds = |frame: &RecordedFrame| [frame.values[0], frame.values[5]];
+
+    let frames = render_show(show(), &cues("[]"), &note_on, 4);
+
+    assert_eq!(
+        frames.iter().map(reds).collect::<Vec<_>>(),
+        [[255, 0], [255, 0], [0, 255], [0, 255]],
+        "two steps, left then right"
+    );
+    assert_eq!(frames, render_show(show(), &cues("[hazer]"), &note_on, 4));
+}
+
 /// A muted fixture, or the fixtures of a muted group, show the layers below.
 #[test]
 fn a_layer_leaves_the_fixtures_and_groups_it_mutes_to_the_layers_below() {

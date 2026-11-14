@@ -6,7 +6,6 @@
 //! count cycles of their `speed` from the note, and sparkle draws from a hash of the layer's
 //! seed, the pixel's position and the cycle, never from running state.
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
@@ -513,7 +512,7 @@ struct LayerFrame<'frame> {
     seed: u64,
     /// For one-by-one: the lines across the direction of the cells the layer catches,
     /// ascending in its area.
-    lines: Cow<'frame, [i32]>,
+    lines: Vec<i32>,
 }
 
 impl Layer {
@@ -525,12 +524,9 @@ impl Layer {
         at: Duration,
         seed: u64,
     ) -> LayerFrame<'frame> {
-        let lines = match (self.shape, self.direction) {
-            (Shape::OneByOne, _) if self.area != WHOLE_CANVAS || !self.mute.is_empty() => {
-                Cow::Owned(self.lines(rig))
-            }
-            (_, Direction::LeftToRight | Direction::RightToLeft) => Cow::Borrowed(&*rig.lines_x),
-            (_, Direction::BottomToTop | Direction::TopToBottom) => Cow::Borrowed(&*rig.lines_y),
+        let lines = match self.shape {
+            Shape::OneByOne => self.lines(rig),
+            _ => Vec::new(),
         };
         let cycles = clock.cycles(self.speed, started, at) + self.phase;
         let within = cycles.rem_euclid(1.0);
@@ -598,12 +594,14 @@ impl Layer {
         }
     }
 
-    /// As `Rig::lines_x` or `lines_y`, among the cells with a pixel the layer catches.
+    /// One-by-one's lines across the direction, as `line_key`s, distinct and ascending: those
+    /// of the cells with a pixel the layer catches and draws, muted fixtures and fixtures
+    /// without colour emitters left out.
     fn lines(&self, rig: &Rig) -> Vec<i32> {
         let fixtures = rig
             .fixtures
             .iter()
-            .filter(|fixture| !self.mute.contains(&fixture.name))
+            .filter(|fixture| has_emitters(fixture) && !self.mute.contains(&fixture.name))
             .flat_map(|fixture| {
                 let centre = fixture.centre();
                 fixture
