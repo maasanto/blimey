@@ -56,7 +56,7 @@
         "rgbw": { "description": "How RGBW pixels show the colour. Defaults to saturated.", "enum": ["saturated", "white-rich"] },
         "seed": { "description": "Fixes sparkle's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 },
         "layers": {
-          "description": "1 to 8 layers, bottom first, each blended over the ones below it. Pixels no layer lights are dark.",
+          "description": "1 to 8 layers, bottom first, each blended over the ones below it. A pixel no layer draws, outside every area or muted, keeps the layers below the cue.",
           "type": "array",
           "minItems": 1,
           "maxItems": 8,
@@ -84,7 +84,7 @@
         "shape": { "$ref": "#/$defs/pixelShape" },
         "effect": { "$ref": "#/$defs/pixelEffect" },
         "params": { "$ref": "#/$defs/pixelParams" },
-        "level": { "description": "Scales the layer, as a scene's dimmer. Defaults to 100%.", "type": "string", "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%$" },
+        "level": { "description": "How much the layer shows: dims a max or add layer, as a scene's dimmer, and fades an over or mask layer into the ones below; at 0% the layer changes nothing. Defaults to 100%.", "type": "string", "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%$" },
         "swell": {
           "description": "The layer's own rhythm, timed as a swell cue: from note-on along curve over duration, then held. Scales the layer as level does. Not with pattern.",
           "type": "object",

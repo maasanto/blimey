@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(refused["error"], "expected a pixel cue, with type pixel");
         let (status, refused) = thumbnail(
-            json!({ "name": "t", "type": "pixel", "params": { "speed": "100000000000000000000 bars" } }),
+            json!({ "name": "t", "type": "pixel", "effect": "move", "params": { "speed": "100000000000000000000 bars" } }),
         );
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(refused["error"], "speed is too long to render a cycle of");

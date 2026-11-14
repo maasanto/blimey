@@ -216,11 +216,6 @@ fn write_block(yaml: &mut String, value: &Value, indent: usize) {
     for (lead, child) in entries {
         if is_flat(child) {
             yaml.push_str(&format!("{lead} {}\n", flow(child)));
-        } else if value.is_array() && child.is_object() {
-            // A mapping in a list starts on the dash's line: `- area: …`.
-            let mut block = String::new();
-            write_block(&mut block, child, indent + 2);
-            yaml.push_str(&format!("{lead} {}", &block[indent + 2..]));
         } else {
             yaml.push_str(&format!("{lead}\n"));
             write_block(yaml, child, indent + 2);
@@ -756,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pixel_cues_layers_are_written_in_schema_order_one_mapping_per_dash() {
+    fn a_pixel_cues_layers_are_written_in_schema_order() {
         let show = fossile_copy("pixel-layers-order");
         let cue = json!({
             "layers": [
@@ -785,7 +780,7 @@ mod tests {
         let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
         assert!(
             written.ends_with(
-                "  50:\n    name: layered\n    type: pixel\n    layers:\n      - area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n        swell: { duration: 4 bars, curve: ease-in }\n      - level: 60%\n        pattern:\n          length: 1 bar\n          hits:\n            - { at: 1, shape: sine, length: 1 beat, level: 100% }\n        blend: over\n        mute: [inner-wash]\n"
+                "  50:\n    name: layered\n    type: pixel\n    layers:\n      -\n        area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n        swell: { duration: 4 bars, curve: ease-in }\n      -\n        level: 60%\n        pattern:\n          length: 1 bar\n          hits:\n            - { at: 1, shape: sine, length: 1 beat, level: 100% }\n        blend: over\n        mute: [inner-wash]\n"
             ),
             "{written}"
         );
@@ -1017,6 +1012,41 @@ mod tests {
         assert_eq!(
             text(&show, "songs/encore.yaml").unwrap(),
             "program: 9\nbpm: 100\ntime_signature: 6/8\n"
+        );
+    }
+
+    #[test]
+    fn a_pattern_hit_with_a_custom_curve_round_trips_byte_for_byte() {
+        let show = fossile_copy("custom-hit-round-trip");
+        let song = "program: 9\n\
+                    cues:\n  \
+                      42:\n    \
+                        name: pulse\n    \
+                        type: pattern\n    \
+                        length: 1 bar\n    \
+                        target: { all-wash: dimmer }\n    \
+                        hits:\n      \
+                          -\n        \
+                            at: 1\n        \
+                            shape:\n          \
+                              points:\n            \
+                                - [0, 0]\n            \
+                                - [0.5, 1]\n        \
+                            length: 1 beat\n        \
+                            level: 100%\n      \
+                          - { at: 3, shape: sine, length: 1 beat, level: 50% }\n";
+        fs::write(show.join("songs/pattern.yaml"), song).unwrap();
+
+        write(
+            &show,
+            "songs/pattern.yaml",
+            read(&show, "songs/pattern.yaml").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(show.join("songs/pattern.yaml")).unwrap(),
+            song
         );
     }
 

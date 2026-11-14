@@ -238,15 +238,10 @@ pub struct Rig {
     pub groups: BTreeMap<String, Vec<String>>,
     /// The Art-Net universes the grids use, ascending.
     pub artnet_universes: Vec<u16>,
-    /// Where fixtures (at their centre) and grid pixels sit across the canvas, as `line_key`s,
-    /// distinct and ascending: the lines a pixel cue's one-by-one steps through.
-    pub lines_x: Vec<i32>,
-    /// The same up the canvas.
-    pub lines_y: Vec<i32>,
 }
 
-/// Positions closer than this share a line, so grids hung at the same height or position
-/// step together despite rounding.
+/// Positions closer than this share a line of a pixel cue's one-by-one, so grids hung at the
+/// same height or position step together despite rounding.
 const LINE_KEYS_PER_CANVAS: f32 = 10_000.0;
 
 /// `usage` is how many universes are asked for, e.g. "the pixel grids use 40".
@@ -341,23 +336,6 @@ impl Rig {
             )));
         }
         rig.artnet_universes = universes.into_iter().collect();
-        let positions: Vec<(f32, f32)> = rig
-            .fixtures
-            .iter()
-            .map(Fixture::centre)
-            .chain(
-                rig.grids
-                    .iter()
-                    .flat_map(|grid| &grid.pixels)
-                    .map(|p| (p.x, p.y)),
-            )
-            .collect();
-        let lines = |axis: fn(&(f32, f32)) -> f32| {
-            let keys: BTreeSet<i32> = positions.iter().map(|p| line_key(axis(p))).collect();
-            keys.into_iter().collect()
-        };
-        rig.lines_x = lines(|position| position.0);
-        rig.lines_y = lines(|position| position.1);
         rig.validate()?;
         Ok(rig)
     }
@@ -690,7 +668,7 @@ impl GridEntry {
 }
 
 impl Canvas {
-    fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         let Canvas {
             x,
             y,

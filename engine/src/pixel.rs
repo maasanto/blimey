@@ -6,7 +6,6 @@
 //! count cycles of their `speed` from the note, and sparkle draws from a hash of the layer's
 //! seed, the pixel's position and the cycle, never from running state.
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
@@ -194,6 +193,8 @@ pub struct PixelScene {
     pub rgbw: RgbwMode,
     /// Bottom first, 1 to `MAX_LAYERS`.
     pub layers: Vec<Layer>,
+    /// On the rig the scene was resolved against.
+    drawn: Drawn,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,7 +216,8 @@ pub struct Layer {
     /// A pulse's level over one cycle.
     pub curve: Envelope,
     pub blend: Blend,
-    /// 0–1: scales the layer, as a scene's dimmer does.
+    /// 0–1, how much the layer shows: it dims a `max` or `add` layer, as a scene's dimmer does,
+    /// and fades an `over` or `mask` layer into the ones below. At 0 the layer changes nothing.
     pub level: f32,
     /// The fixtures and grids the layer leaves to the layers below, groups expanded.
     pub mute: BTreeSet<String>,
@@ -283,6 +285,7 @@ impl PixelEntry {
             }
         };
         Ok(PixelScene {
+            drawn: Drawn::new(&layers, &show.rig),
             layers,
             name: self.name,
             fade_in: self.fade_in.unwrap_or(Length::Time(Duration::ZERO)),
@@ -402,25 +405,13 @@ impl Rhythm {
 }
 
 fn check_area(area: Canvas) -> Result<(), String> {
-    let Canvas {
-        x,
-        y,
-        width,
-        height,
-    } = area;
-    let described = format!("area {{ x: {x}, y: {y}, width: {width}, height: {height} }}");
+    let Canvas { width, height, .. } = area;
     if !(width > 0.0 && height > 0.0) {
         return Err(format!(
-            "{described} is empty: width and height must be above 0"
+            "area: width {width} and height {height} must both be above 0"
         ));
     }
-    if ![x, y, x + width, y + height]
-        .iter()
-        .all(|value| (0.0..=1.0).contains(value))
-    {
-        return Err(format!("{described} leaves the 0-1 stage canvas"));
-    }
-    Ok(())
+    area.check().map_err(|error| format!("area: {error}"))
 }
 
 /// The fixtures and grids `name` stands for in a `mute` list: itself, or a group's fixtures.
@@ -466,41 +457,48 @@ impl PixelScene {
         intensity: f32,
         out: &mut Universes,
     ) {
-        let mut rhythms: Vec<f32> = self
-            .layers
-            .iter()
-            .map(|layer| {
-                layer.rhythm.as_ref().map_or(1.0, |rhythm| {
-                    rhythm.level(clock, started, rhythm_time) as f32
-                })
+        let mut rhythms: [f32; MAX_LAYERS] = std::array::from_fn(|index| {
+            let rhythm = self
+                .layers
+                .get(index)
+                .and_then(|layer| layer.rhythm.as_ref());
+            rhythm.map_or(1.0, |rhythm| {
+                rhythm.level(clock, started, rhythm_time) as f32
             })
-            .collect();
+        });
         // A lone layer's rhythm goes on the cue's intensity, so a fixture with a dimmer channel
         // follows it there, as it would a swell or pattern linked to the cue's intensity.
-        let intensity = match rhythms.as_mut_slice() {
-            [lone] => intensity * std::mem::replace(lone, 1.0),
+        let intensity = match self.layers.len() {
+            1 => intensity * std::mem::replace(&mut rhythms[0], 1.0),
             _ => intensity,
         };
-        let frames: Vec<LayerFrame> = self
-            .layers
-            .iter()
-            .zip(rhythms)
-            .zip(0..)
-            .map(|((layer, rhythm), index)| {
-                let seed = self.seed ^ LAYER_SEED.wrapping_mul(index);
-                layer.at(rig, clock, started, at, seed, rhythm)
-            })
-            .collect();
-        let unmuted = |name: &str| -> Vec<&LayerFrame> {
-            frames
-                .iter()
-                .filter(|frame| !frame.layer.mute.contains(name))
-                .collect()
+        // The builder previews and thumbnails a scene on rigs other than the show's.
+        let other_rig;
+        let drawn = if self.drawn.rig == *rig {
+            &self.drawn
+        } else {
+            other_rig = Drawn::new(&self.layers, rig);
+            &other_rig
         };
+        let frames: [Option<LayerFrame>; MAX_LAYERS] = std::array::from_fn(|index| {
+            let seed = self.seed ^ LAYER_SEED.wrapping_mul(index as u64);
+            let layer = self.layers.get(index)?;
+            Some(layer.at(
+                &drawn.lines[index],
+                clock,
+                started,
+                at,
+                seed,
+                rhythms[index],
+            ))
+        });
         // Plan §5: a pixel cue overrides only the channels it touches, its fixtures' emitters
-        // and dimmer. Fixtures without emitters, and other channels, keep the layers below.
-        for fixture in rig.fixtures.iter().filter(|fixture| has_emitters(fixture)) {
-            let layers = unmuted(&fixture.name);
+        // and dimmer. Fixtures without emitters, pixels no layer draws, and other channels keep
+        // the layers below.
+        let fixtures = rig.fixtures.iter().zip(&drawn.fixtures);
+        for (fixture, layers) in fixtures.filter(|(fixture, layers)| {
+            has_emitters(fixture) && layers.iter().any(|&layers| layers != 0)
+        }) {
             let start = fixture.address - 1;
             let colour_scale = match fixture.dimmer {
                 Some(offset) => {
@@ -510,8 +508,10 @@ impl PixelScene {
                 None => intensity,
             };
             let centre = fixture.centre();
-            for pixel in &fixture.pixels {
-                let lit = stack(&layers, pixel.x, pixel.y, centre);
+            for (pixel, &layers) in fixture.pixels.iter().zip(layers) {
+                let Some(lit) = stack(&frames, layers, pixel.x, pixel.y, centre) else {
+                    continue;
+                };
                 draw_pixel(
                     pixel.channels,
                     start,
@@ -522,22 +522,82 @@ impl PixelScene {
                 );
             }
         }
-        for grid in &rig.grids {
-            let layers = unmuted(&grid.name);
-            for pixel in &grid.pixels {
-                let lit = stack(&layers, pixel.x, pixel.y, (pixel.x, pixel.y));
-                let frame = out.frame_mut(pixel.universe);
-                draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
-            }
+        let grid_pixels = rig
+            .grids
+            .iter()
+            .zip(&drawn.grids)
+            .flat_map(|(grid, layers)| grid.pixels.iter().zip(layers));
+        for (pixel, &layers) in grid_pixels {
+            let Some(lit) = stack(&frames, layers, pixel.x, pixel.y, (pixel.x, pixel.y)) else {
+                continue;
+            };
+            let frame = out.frame_mut(pixel.universe);
+            draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
         }
     }
 }
 
-/// The colour at (`x`, `y`) in one-by-one `cell`: each layer over the ones below it, from black.
-fn stack(layers: &[&LayerFrame], x: f32, y: f32, cell: Cell) -> Rgb {
-    layers
+/// The colour at (`x`, `y`) in one-by-one `cell`: each of `layers` (a bit per layer, from the
+/// bottom) over the ones below it, from black. `None` when no layer draws there.
+fn stack(frames: &[Option<LayerFrame>], layers: u8, x: f32, y: f32, cell: Cell) -> Option<Rgb> {
+    if layers == 0 {
+        return None;
+    }
+    let drawing = frames
         .iter()
-        .fold(Rgb::default(), |below, layer| layer.over(below, x, y, cell))
+        .enumerate()
+        .filter(|(index, _)| layers & 1 << index != 0)
+        .map(|(_, frame)| frame.as_ref().expect("a layer for each bit"));
+    Some(drawing.fold(Rgb::default(), |below, layer| layer.over(below, x, y, cell)))
+}
+
+/// What each layer draws on one rig, worked out once rather than every frame.
+#[derive(Debug, Clone, PartialEq)]
+struct Drawn {
+    rig: Rig,
+    /// Per fixture, then per grid, in rig order, and per pixel: the layers that draw it, a bit
+    /// each from the bottom one.
+    fixtures: Vec<Vec<u8>>,
+    grids: Vec<Vec<u8>>,
+    /// Per layer: its one-by-one lines, empty for other shapes.
+    lines: Vec<Vec<i32>>,
+}
+
+impl Drawn {
+    fn new(layers: &[Layer], rig: &Rig) -> Drawn {
+        let drawing = |name: &str, x: f32, y: f32| {
+            layers
+                .iter()
+                .zip(0..)
+                .filter(|(layer, _)| !layer.mute.contains(name) && layer.catches(x, y))
+                .fold(0u8, |bits, (_, index)| bits | 1 << index)
+        };
+        Drawn {
+            fixtures: (rig.fixtures.iter())
+                .map(|fixture| {
+                    let pixels = fixture.pixels.iter();
+                    pixels
+                        .map(|pixel| drawing(&fixture.name, pixel.x, pixel.y))
+                        .collect()
+                })
+                .collect(),
+            grids: (rig.grids.iter())
+                .map(|grid| {
+                    let pixels = grid.pixels.iter();
+                    pixels
+                        .map(|pixel| drawing(&grid.name, pixel.x, pixel.y))
+                        .collect()
+                })
+                .collect(),
+            lines: (layers.iter())
+                .map(|layer| match layer.shape {
+                    Shape::OneByOne => layer.lines(rig),
+                    _ => Vec::new(),
+                })
+                .collect(),
+            rig: rig.clone(),
+        }
+    }
 }
 
 /// Columns and rows of the square sample grid a thumbnail shows, filling the canvas: the most
@@ -550,8 +610,9 @@ const THUMBNAIL_BPM: f64 = 120.0;
 
 /// A pixel cue, as in a song file, rendered on a sample grid for the builder's pickers, as
 /// the preview sheet (`examples/pixel_sheet.rs`) renders it: `THUMBNAIL_FRAMES` frames evenly
-/// over one cycle of layer 1, each the grid's colours row by row from the top left as the
-/// audience sees it, at full intensity. `show` gives the palettes.
+/// over one cycle of its slowest moving layer (1 bar if none moves), each the grid's colours
+/// row by row from the top left as the audience sees it, at full intensity. `show` gives the
+/// palettes.
 pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, String> {
     let scene = PixelScene::parse(show, TimeSignature::default(), cue)?;
     let rig = Rig::parse(
@@ -564,7 +625,14 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
     let clock = ClockFollower::new(THUMBNAIL_BPM, TimeSignature::default());
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
-    let cycles_per_second = clock.cycles(scene.layers[0].speed, started, second);
+    let cycles_in_a_second = |speed| clock.cycles(speed, started, second);
+    let cycles_per_second = scene
+        .layers
+        .iter()
+        .filter(|layer| layer.effect != Effect::Static)
+        .map(|layer| cycles_in_a_second(layer.speed))
+        .min_by(f64::total_cmp)
+        .unwrap_or_else(|| cycles_in_a_second(Length::Bars(1.0)));
     let cycle = Duration::try_from_secs_f64(1.0 / cycles_per_second)
         .map_err(|_| "speed is too long to render a cycle of".to_string())?;
     let frames = (0..THUMBNAIL_FRAMES).map(|index| {
@@ -615,26 +683,19 @@ struct LayerFrame<'frame> {
     seed: u64,
     /// For one-by-one: the lines across the direction of the cells the layer catches,
     /// ascending in its area.
-    lines: Cow<'frame, [i32]>,
+    lines: &'frame [i32],
 }
 
 impl Layer {
     fn at<'frame>(
         &'frame self,
-        rig: &'frame Rig,
+        lines: &'frame [i32],
         clock: &ClockFollower,
         started: Moment,
         at: Duration,
         seed: u64,
         rhythm: f32,
     ) -> LayerFrame<'frame> {
-        let lines = match (self.shape, self.direction) {
-            (Shape::OneByOne, _) if self.area != WHOLE_CANVAS || !self.mute.is_empty() => {
-                Cow::Owned(self.lines(rig))
-            }
-            (_, Direction::LeftToRight | Direction::RightToLeft) => Cow::Borrowed(&*rig.lines_x),
-            (_, Direction::BottomToTop | Direction::TopToBottom) => Cow::Borrowed(&*rig.lines_y),
-        };
         let cycles = clock.cycles(self.speed, started, at) + self.phase;
         let within = cycles.rem_euclid(1.0);
         let position = match self.effect {
@@ -674,14 +735,15 @@ impl Layer {
         }
     }
 
+    /// Whether the area holds the canvas position (`x`, `y`). Its far edges are open, so a
+    /// position on an edge two areas share is in one of them only, unless the edge is the
+    /// canvas's own.
     fn catches(&self, x: f32, y: f32) -> bool {
-        let Canvas {
-            x: left,
-            y: bottom,
-            width,
-            height,
-        } = self.area;
-        (left..=left + width).contains(&x) && (bottom..=bottom + height).contains(&y)
+        let within = |position: f32, start: f32, length: f32| {
+            let end = start + length;
+            position >= start && (position < end || (end >= 1.0 && position <= end))
+        };
+        within(x, self.area.x, self.area.width) && within(y, self.area.y, self.area.height)
     }
 
     /// A canvas position in the area's own 0–1 space.
@@ -701,12 +763,14 @@ impl Layer {
         }
     }
 
-    /// As `Rig::lines_x` or `lines_y`, among the cells with a pixel the layer catches.
+    /// One-by-one's lines across the direction, as `line_key`s, distinct and ascending: those
+    /// of the cells with a pixel the layer catches and draws, muted fixtures and fixtures
+    /// without colour emitters left out.
     fn lines(&self, rig: &Rig) -> Vec<i32> {
         let fixtures = rig
             .fixtures
             .iter()
-            .filter(|fixture| !self.mute.contains(&fixture.name))
+            .filter(|fixture| has_emitters(fixture) && !self.mute.contains(&fixture.name))
             .flat_map(|fixture| {
                 let centre = fixture.centre();
                 fixture
@@ -796,12 +860,9 @@ impl LayerFrame<'_> {
         }
     }
 
-    /// The layer at the canvas position (`x`, `y`) in one-by-one `cell`, blended over `below`;
-    /// `below` itself outside the layer's area.
+    /// The layer at the canvas position (`x`, `y`), which its area catches, in one-by-one
+    /// `cell`, blended over `below`.
     fn over(&self, below: Rgb, x: f32, y: f32, cell: Cell) -> Rgb {
-        if !self.layer.catches(x, y) {
-            return below;
-        }
         let (x, y) = self.layer.in_area((x, y));
         self.layer.blend.apply(
             below,
@@ -813,25 +874,25 @@ impl LayerFrame<'_> {
 }
 
 impl Blend {
-    /// `layer` at `level` (0–1) over `below` where its shape is `lit` (0–1).
+    /// `layer` at `level` (0–1) over `below` where its shape is `lit` (0–1). At a `level` of 0
+    /// it leaves `below` as it is, whatever the blend.
     fn apply(self, below: Rgb, layer: &Layer, level: f32, lit: f32) -> Rgb {
         let combine = |combine: fn(f32, f32) -> f32, above: Rgb| Rgb {
             red: combine(below.red, above.red),
             green: combine(below.green, above.green),
             blue: combine(below.blue, above.blue),
         };
-        let dimmed = |colour: Rgb| mix(Rgb::default(), colour, level);
-        let colour = || {
-            let background = layer.background.unwrap_or_default();
-            dimmed(mix(background, layer.color, lit))
-        };
+        let colour = mix(layer.background.unwrap_or_default(), layer.color, lit);
         match self {
-            Blend::Max => combine(f32::max, colour()),
-            Blend::Add => combine(|a, b| (a + b).min(1.0), colour()),
-            Blend::Mask => mix(Rgb::default(), below, lit * level),
+            Blend::Max => combine(f32::max, mix(Rgb::default(), colour, level)),
+            Blend::Add => combine(|a, b| (a + b).min(1.0), mix(Rgb::default(), colour, level)),
+            Blend::Mask => {
+                let let_through = lit * level + (1.0 - level);
+                mix(Rgb::default(), below, let_through)
+            }
             Blend::Over => match layer.background {
-                Some(_) => colour(),
-                None => mix(below, dimmed(layer.color), lit),
+                Some(_) => mix(below, colour, level),
+                None => mix(below, layer.color, lit * level),
             },
         }
     }
@@ -886,6 +947,32 @@ mod tests {
     }
 
     #[test]
+    fn a_thumbnail_spans_one_cycle_of_the_slowest_moving_layer() {
+        let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [
+            { "shape": "fill", "params": { "color": "#000000", "speed": "1 beat" } },
+            { "effect": "chase", "params": { "color": "#00ff00", "width": 0.25, "speed": "1 bar" } },
+            { "effect": "chase", "params": { "color": "#ff0000", "width": 0.25, "speed": "2 bars" } },
+        ] });
+
+        let frames = thumbnail(&Show::default(), cue).unwrap();
+
+        // The red 2-bar chase's first lit column on the top row: four steps over the 8 frames.
+        let first_lit: Vec<Option<usize>> = frames
+            .iter()
+            .map(|frame| {
+                frame[..THUMBNAIL_SIDE]
+                    .iter()
+                    .position(|colour| colour.red == 1.0)
+            })
+            .collect();
+        assert_eq!(
+            first_lit,
+            [0, 0, 3, 3, 6, 6, 9, 9].map(Some),
+            "the 1-bar chase leads twice as fast, the static fill doesn't count"
+        );
+    }
+
+    #[test]
     fn each_blend_meets_the_layer_below_as_documented() {
         let rgb = |red, green, blue| Rgb { red, green, blue };
         let below = rgb(0.25, 0.5, 1.0);
@@ -896,13 +983,21 @@ mod tests {
             ("add", None, "100%", 0.5, rgb(0.75, 0.5, 1.0)),
             ("add", None, "100%", 1.0, rgb(1.0, 0.5, 1.0)),
             ("mask", None, "100%", 0.5, rgb(0.125, 0.25, 0.5)),
-            ("mask", None, "50%", 1.0, rgb(0.125, 0.25, 0.5)),
+            ("mask", None, "50%", 0.0, rgb(0.125, 0.25, 0.5)),
+            ("mask", None, "50%", 1.0, below),
             ("over", None, "100%", 1.0, rgb(1.0, 0.0, 0.0)),
             ("over", None, "100%", 0.5, rgb(0.625, 0.25, 0.5)),
             ("over", None, "100%", 0.0, below),
-            ("over", None, "50%", 1.0, rgb(0.5, 0.0, 0.0)),
+            ("over", None, "50%", 1.0, rgb(0.625, 0.25, 0.5)),
             ("over", Some("#0000ff"), "100%", 0.5, rgb(0.5, 0.0, 0.5)),
             ("over", Some("#000000"), "100%", 0.0, rgb(0.0, 0.0, 0.0)),
+            ("over", Some("#000000"), "50%", 0.0, rgb(0.125, 0.25, 0.5)),
+            // At 0% a layer vanishes, so a swell from 0 fades it in.
+            ("max", None, "0%", 1.0, below),
+            ("add", None, "0%", 1.0, below),
+            ("mask", None, "0%", 0.0, below),
+            ("over", None, "0%", 1.0, below),
+            ("over", Some("#000000"), "0%", 0.0, below),
         ];
         for (blend, background, level, lit, expected) in cases {
             let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [{

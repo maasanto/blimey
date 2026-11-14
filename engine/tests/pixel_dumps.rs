@@ -588,6 +588,88 @@ fn a_shape_in_an_area_matches_it_on_the_whole_canvas_of_a_rig_squeezed_into_the_
     }
 }
 
+/// A pixel on the edge two areas share belongs to the one it starts, and one on the canvas's
+/// right edge to the area that ends there.
+#[test]
+fn a_pixel_on_a_shared_edge_belongs_to_one_area() {
+    // RGB pixels at x 1/6, 0.5 and 5/6, then one at x 1.
+    let rig = "fixtures:\n  - { name: row, type: pixel-grid, columns: 3, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0, y: 0.5, width: 1 } }\n  - { name: edge, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, address: 10, canvas: { x: 1, y: 0.5 } }\n";
+    let show = Show {
+        rig: Rig::parse(rig, Path::new(".")).unwrap(),
+        ..Show::default()
+    };
+    let cues = "  60:\n    name: halves\n    type: pixel\n    layers:\n      - { area: { x: 0, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#ff0000\" } }\n      - { area: { x: 0.5, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#0000ff\" } }\n";
+
+    let frame = &render_show(show, cues, &[(Duration::ZERO, vec![0x91, 60, 127])], 1)[0];
+
+    assert_eq!(
+        frame.values[0..12],
+        [255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 255],
+        "red, then blue from the middle to the canvas's edge"
+    );
+}
+
+/// A fixture without colour emitters, such as a hazer's dimmer, is no step of a one-by-one,
+/// muted or not.
+#[test]
+fn one_by_one_steps_through_the_fixtures_it_draws_whatever_is_muted() {
+    let rig = "fixtures:\n  - { name: left, profile: rgb-strobe, mode: 4ch, address: 1, canvas: { x: 0.25, y: 0.5 } }\n  - { name: hazer, profile: dimmer-only, mode: 1ch, address: 5, canvas: { x: 0.5, y: 0.5 } }\n  - { name: right, profile: rgb-strobe, mode: 4ch, address: 6, canvas: { x: 0.75, y: 0.5 } }\n";
+    let show = || Show {
+        rig: Rig::parse(
+            rig,
+            Path::new(&format!("{FIXTURES}/shows/pixel-layers/fixtures")),
+        )
+        .unwrap(),
+        ..Show::default()
+    };
+    let cues = |mute: &str| {
+        format!(
+            "  60:\n    name: chase\n    type: pixel\n    layers:\n      - {{ shape: one-by-one, effect: chase, params: {{ color: \"#ff0000\", speed: 100ms }}, mute: {mute} }}\n"
+        )
+    };
+    let note_on = [(Duration::ZERO, vec![0x91, 60, 127])];
+    let reds = |frame: &RecordedFrame| [frame.values[0], frame.values[5]];
+
+    let frames = render_show(show(), &cues("[]"), &note_on, 4);
+
+    assert_eq!(
+        frames.iter().map(reds).collect::<Vec<_>>(),
+        [[255, 0], [255, 0], [0, 255], [0, 255]],
+        "two steps, left then right"
+    );
+    assert_eq!(frames, render_show(show(), &cues("[hazer]"), &note_on, 4));
+}
+
+/// A pixel no layer of a pixel cue draws keeps what the cues below the pixel cue give it: here
+/// a scene's amber on the inner washes, muted on the cue's only layer.
+#[test]
+fn pixels_no_layer_draws_show_the_scene_below_the_pixel_cue() {
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/three-rows"))).unwrap();
+    let cues = "  50: { name: amber-inside, type: scene, values: { inner-wash: { color: amber } } }\n  60:\n    name: outside\n    type: pixel\n    layers:\n      - { shape: fill, params: { color: steel-blue }, mute: [inner-wash] }\n";
+    let note_on = |note: u8| (Duration::ZERO, vec![0x91, note, 127]);
+
+    let frames = render_show(show, cues, &[note_on(50), note_on(60)], 2);
+
+    assert_reference(&frames, "layers/mute-shows-below.dump");
+    // Each row's four washes' first pixel, RGBW, by address.
+    let row = |first: usize| {
+        [first, first + 16, first + 32, first + 48]
+            .map(|address| frames[1].values[address - 1..address + 3].to_vec())
+    };
+    let (amber, steel_blue) = (vec![255, 160, 30, 0], vec![180, 210, 255, 0]);
+    for first in [1, 65, 129] {
+        assert_eq!(
+            row(first),
+            [
+                steel_blue.clone(),
+                amber.clone(),
+                amber.clone(),
+                steel_blue.clone()
+            ]
+        );
+    }
+}
+
 /// A muted fixture, or the fixtures of a muted group, show the layers below.
 #[test]
 fn a_layer_leaves_the_fixtures_and_groups_it_mutes_to_the_layers_below() {
