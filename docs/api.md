@@ -368,7 +368,7 @@ In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen
 
 | Check | Measured | Passes when |
 | --- | --- | --- |
-| frames | Frames sent a frame period (25 ms) or more after their deadline, plus frames the emulated box never received; fails too if the box stopped reading, naming the error | None |
+| frames | Frames sent a frame period (25 ms) or more after their deadline, frames skipped after a stall (the render loop skips any more than 4 periods late), plus frames the emulated box never received; fails too if the box stopped reading, naming the error | None |
 | jitter | How late each frame went out after its deadline: p50, p99 and max, in 0.1 ms steps | p99 under 5 ms |
 | drift | Each song's frames, from the third pass on, against the same song in the second pass (the first starts from a fresh engine); the last song counts if it played to its end | None differ |
 | memory | Process RSS, read from the kernel about 20 times over the run | Peak after the first pass is at most 1 MiB above RSS at its end |
@@ -378,6 +378,8 @@ It needs at least three passes. Memory is flat when it stays within 1 MiB: the e
 ## HTTP API
 
 Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file, song, cue or fixture), `403` (show mode), `409` (conflict: a note already taken, a song name the show already has, a cue changed since it was loaded, or a file changed since the save to undo or redo), `422` (content refused, or a request body not in the shape documented) or `500`.
+
+Requests that load the show to answer, `GET /api/show`, the thumbnails and the pixel preview, run two at a time; the rest wait their turn, so a flood of them can't take the CPU from the render loop.
 
 **One write path.** Every endpoint that changes a show file, `PUT /api/show/<file>` and the song endpoints below alike, goes through the engine's one writer: it validates, writes atomically and keeps canonical formatting, as described for `PUT /api/show/<file>`. Each save can be undone and redone.
 
