@@ -39,8 +39,8 @@ test.describe('on three rows of washes', () => {
     await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
     await page.getByRole('button', { name: 'Rhythm: custom' }).click();
     for (const at of [1, 2, 3.5]) await page.getByRole('button', { name: `at ${at}`, exact: true }).click();
-    await page.getByRole('button', { name: 'Save cue' }).click();
-    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     await page.getByRole('button', { name: 'Audition loop' }).click();
     await expect(page.locator('.lane .playhead')).toHaveCount(1);
     await groovesDrawn(page);
@@ -48,7 +48,7 @@ test.describe('on three rows of washes', () => {
     await shoot(page, 'custom-pattern-grid-with-playhead');
     await page.getByRole('button', { name: 'Stop audition' }).click();
 
-    await pad(page, 44).click();
+    await page.goto(`${url}#builder/chorus-build/44`);
     await expect(page.getByText('Nothing on stage yet.')).toBeVisible();
     await painted(page.getByRole('button', { name: 'Hits', exact: true }));
     await painted(page.getByRole('button', { name: 'Swell', exact: true }));

@@ -43,7 +43,8 @@ test('C17 stage composer', async ({ page, startEngine }) => {
   await painted(page.getByRole('button', { name: 'Motion: sparkle' }));
   await shoot(page, 'mute-toggles-crossed-out');
 
-  await pad(page, 44).click();
+  await page.goto(`${url}#builder/chorus-build/44`);
+  await painted(page.getByRole('button', { name: 'Sweep', exact: true }));
   const sweep = await page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name: 'Sweep' }).boundingBox();
   await page.mouse.move(sweep.x + sweep.width / 2, sweep.y + sweep.height / 2);
   await page.mouse.down();
