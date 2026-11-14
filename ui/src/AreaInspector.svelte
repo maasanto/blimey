@@ -1,13 +1,14 @@
 <script>
-  import { mutedBy, tidy } from './layers.js';
+  import { FULL_STAGE, mutedBy, withAreaField } from './layers.js';
   import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, paint } from './thumbnails.svelte.js';
 
   /**
    * `layer`: the selected layer of the pixel cue, as in the song file. `palettes`: name → #rrggbb.
    * `groups`: the rig's groups. `caught`: what its area catches, fixture or grid name → pixel
-   * indices. `seed`: the cue's. `tick`: the thumbnails' frame.
+   * indices, or null before the rig is known. `seed`: the cue's. `tick`: the thumbnails' frame.
+   * `editable`: false shows the recipe without changing it.
    */
-  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick } = $props();
+  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick, editable } = $props();
 
   // docs/api.md, Pixel cues.
   const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one'];
@@ -20,12 +21,13 @@
 
   const thumbnails = new Thumbnails();
   const speed = $derived(speedOf(layer));
-  const area = $derived(layer.area ?? { x: 0, y: 0, width: 1, height: 1 });
-  /** Groups with a fixture in the area, then what it catches: each can be muted. */
-  const mutable = $derived([
-    ...Object.entries(groups).filter(([, members]) => members.some((member) => caught.has(member))).map(([group]) => group),
-    ...caught.keys(),
-  ]);
+  const area = $derived(layer.area ?? FULL_STAGE);
+  /** Groups with a fixture in the area, what it catches, and what it already mutes: each can be toggled. */
+  const mutable = $derived.by(() => {
+    const held = caught ?? new Map();
+    const groupsHeld = Object.entries(groups).filter(([, members]) => members.some((member) => held.has(member)));
+    return [...new Set([...groupsHeld.map(([group]) => group), ...held.keys(), ...(layer.mute ?? [])])];
+  });
 
   $effect(() => {
     const own = $state.snapshot({ shape: layer.shape, effect: layer.effect, params: layer.params });
@@ -64,9 +66,10 @@
     setParam('speed', unit === 's' ? `${value}s` : `${value} ${value === 1 ? unit.slice(0, -1) : unit}`);
   }
 
-  function setArea(key, value) {
-    if (!Number.isFinite(value)) return;
-    layer.area = { ...area, [key]: tidy(value) };
+  function setArea(key, input) {
+    if (Number.isFinite(input.valueAsNumber)) layer.area = withAreaField(area, key, input.valueAsNumber);
+    // A value limited back to what the field held changes nothing for Svelte to redraw.
+    input.value = area[key];
   }
 
   function toggleMute(name) {
@@ -108,7 +111,7 @@
   </div>
 {/snippet}
 
-<section class="inspector" aria-label="Selected area">
+<fieldset class="inspector" aria-label="Selected area" disabled={!editable}>
   {#if thumbnails.error}<p class="error" role="alert">Thumbnails: {thumbnails.error}</p>{/if}
   {@render colour('Colour', 'color', false)}
   {@render colour('Background', 'background', true)}
@@ -137,6 +140,11 @@
       <output>{layer.params?.speed ?? '1 bar'}</output>
     </label>
     <label>
+      Phase
+      <input type="range" aria-label="Phase" min="0" max="1" step="0.05" value={layer.params?.phase ?? 0} oninput={(event) => setParam('phase', Number(event.currentTarget.value) || undefined)} />
+      <output>{layer.params?.phase ?? 0}</output>
+    </label>
+    <label>
       Level
       <input type="range" aria-label="Level" min="0" max="100" step="5" value={parseFloat(layer.level ?? '100')} oninput={(event) => setOptional('level', `${event.currentTarget.value}%`, '100%')} />
       <output>{layer.level ?? '100%'}</output>
@@ -150,7 +158,7 @@
   </div>
   <div class="fields area">
     {#each AREA_FIELDS as [key, label] (key)}
-      <label>{label} <input type="number" min="0" max="1" step="0.025" value={area[key]} onchange={(event) => setArea(key, event.currentTarget.valueAsNumber)} /></label>
+      <label>{label} <input type="number" min="0" max="1" step="0.025" value={area[key]} onchange={(event) => setArea(key, event.currentTarget)} /></label>
     {/each}
   </div>
   <div class="mute" role="group" aria-label="Mute">
@@ -168,10 +176,14 @@
       <span class="hint">nothing caught to mute</span>
     {/each}
   </div>
-</section>
+</fieldset>
 
 <style>
   .inspector {
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
