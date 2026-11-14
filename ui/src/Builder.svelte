@@ -508,7 +508,7 @@
 
   <div>
     {#if isPixel}
-      <fieldset class="composer" disabled={!editable || !song}>
+      <fieldset class="composer" disabled={!song}>
         <!-- A cue opened from a pad, or a new one, starts with nothing selected. -->
         {#key form}
           <StageComposer

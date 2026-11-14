@@ -7,9 +7,11 @@
     FULL_STAGE,
     INGREDIENTS,
     MAX_LAYERS,
+    catches,
     caughtPixels,
     describeLayer,
     describeLook,
+    isSameArea,
     kindOf,
     moveArea,
     mutedBy,
@@ -29,10 +31,8 @@
 
   /** An ingredient dropped on the stage makes an area this size, in canvas units, around the drop. */
   const DROP_SIZE = 0.4;
-  /** A press on an ingredient that moves this far carries it to the stage. */
-  const CARRY_PX = 6;
-  /** A pointer move under this, in canvas units, still counts as a click on the stage. */
-  const CLICK_SLOP = 0.005;
+  /** A press that moves this far, in screen pixels, carries an ingredient or drags an area; less is a click. */
+  const DRAG_PX = 6;
   /** Side of a resize handle, in front view units. */
   const HANDLE = 26;
   const HANDLES = ['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left'];
@@ -89,46 +89,74 @@
 
   const isOnStage = ({ x, y }) => x >= 0 && x <= 1 && y >= 0 && y <= 1;
   const areaOf = (layer) => layer.area ?? FULL_STAGE;
-  const holds = (area, { x, y }) => x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height;
+
+  /** Starts a press of the pointer in `event`: a click until it moves `DRAG_PX`. */
+  function press(event, fields) {
+    gesture = { pointer: event.pointerId, x: event.clientX, y: event.clientY, isMoving: false, ...fields };
+  }
+
+  /** Starts moving or resizing the area of layer `index`, keeping its area as it was to restore. */
+  function pressArea(event, index, fields) {
+    const original = $state.snapshot(cue.layers[index].area);
+    press(event, { index, from: frontView.canvasPoint(event), original, ...fields });
+  }
 
   function carry(event, ingredient) {
     if (!editable || isFull || event.button !== 0) return;
-    gesture = { kind: 'carry', ingredient, pointer: event.pointerId, x: event.clientX, y: event.clientY, isMoving: false, area: null };
+    press(event, { kind: 'carry', ingredient, area: null });
   }
 
-  /** A click on the stage selects the topmost area under it, and a second one the area beneath. */
+  /**
+   * A click on the stage selects the topmost area under it, and a second one the area beneath,
+   * in show mode too, to read its recipe.
+   */
   function pressStage(event) {
-    if (!editable || event.button !== 0) return;
+    if (event.button !== 0) return;
     const point = frontView.canvasPoint(event);
-    const under = cue.layers.map((_, index) => index).filter((index) => holds(areaOf(cue.layers[index]), point)).reverse();
+    const under = cue.layers.map((_, index) => index).filter((index) => catches(areaOf(cue.layers[index]), point)).reverse();
     const isSelectedUnder = under.includes(selected);
     const index = isSelectedUnder ? selected : under[0];
     selected = index ?? null;
     if (index === undefined) return;
     const deeper = isSelectedUnder ? under[(under.indexOf(selected) + 1) % under.length] : null;
-    gesture = { kind: 'move', pointer: event.pointerId, index, from: point, start: areaOf(cue.layers[index]), deeper, isMoving: false };
+    pressArea(event, index, { kind: 'move', deeper });
   }
 
   function grabHandle(event, handle) {
     if (!editable || event.button !== 0) return;
-    const point = frontView.canvasPoint(event);
-    gesture = { kind: 'resize', pointer: event.pointerId, index: selected, sides: handle.split('-'), from: point, start: areaOf(selectedLayer), isMoving: true };
+    pressArea(event, selected, { kind: 'resize', sides: handle.split('-') });
+  }
+
+  /** Puts the area of the layer under the gesture back as it was before the press. */
+  function restoreArea({ index, original }) {
+    if (original) cue.layers[index].area = original;
+    else delete cue.layers[index].area;
   }
 
   function follow(event) {
     if (gesture?.pointer !== event.pointerId) return;
+    gesture.isMoving ||= Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) >= DRAG_PX;
+    if (!gesture.isMoving) return;
     const point = frontView.canvasPoint(event);
     if (gesture.kind === 'carry') {
-      gesture.isMoving ||= Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) >= CARRY_PX;
       const corner = { x: 0, y: 0, width: DROP_SIZE, height: DROP_SIZE };
-      gesture.area = gesture.isMoving && isOnStage(point) ? moveArea(corner, point.x - DROP_SIZE / 2, point.y - DROP_SIZE / 2, edges) : null;
+      gesture.area = isOnStage(point) ? moveArea(corner, point.x - DROP_SIZE / 2, point.y - DROP_SIZE / 2, edges) : null;
       return;
     }
+    if (!editable) return;
     const [dx, dy] = [point.x - gesture.from.x, point.y - gesture.from.y];
-    gesture.isMoving ||= Math.abs(dx) + Math.abs(dy) > CLICK_SLOP;
-    if (!gesture.isMoving) return;
-    cue.layers[gesture.index].area =
-      gesture.kind === 'move' ? moveArea(gesture.start, dx, dy, edges) : resizeArea(gesture.start, gesture.sides, dx, dy, edges);
+    const start = gesture.original ?? FULL_STAGE;
+    const next = gesture.kind === 'move' ? moveArea(start, dx, dy, edges) : resizeArea(start, gesture.sides, dx, dy, edges);
+    const layer = cue.layers[gesture.index];
+    if (isSameArea(next, start)) restoreArea(gesture);
+    else if (!isSameArea(next, areaOf(layer))) layer.area = next;
+  }
+
+  /** A cancelled press drops a carried ingredient and puts a moved or resized area back. */
+  function cancel(event) {
+    if (gesture?.pointer !== event.pointerId) return;
+    if (gesture.kind !== 'carry') restoreArea(gesture);
+    gesture = null;
   }
 
   function letGo(event) {
@@ -152,7 +180,7 @@
   }
 </script>
 
-<svelte:window onpointermove={follow} onpointerup={letGo} onpointercancel={letGo} />
+<svelte:window onpointermove={follow} onpointerup={letGo} onpointercancel={cancel} />
 
 {#snippet box(area, className, attributes = {})}
   <rect
@@ -202,7 +230,7 @@
     {#each INGREDIENTS as ingredient (ingredient)}
       <button
         class="ingredient"
-        disabled={isFull}
+        disabled={!editable || isFull}
         onpointerdown={(event) => carry(event, ingredient)}
         onclick={() => !isClickSuppressed && addLayer(ingredient)}
       >
@@ -239,12 +267,12 @@
             <i style:background={palettes[layer.params?.color] ?? layer.params?.color ?? '#ffffff'}></i>
             {description}
           </button>
-          <button aria-label="Bring forward: {description}" disabled={index === cue.layers.length - 1} onclick={() => swapLayers(index, index + 1)}>↑</button>
-          <button aria-label="Send back: {description}" disabled={index === 0} onclick={() => swapLayers(index, index - 1)}>↓</button>
-          <button aria-label="Hide while editing: {description}" aria-pressed={!!hidden[index]} onclick={() => (hidden[index] = !hidden[index])}>
+          <button aria-label="Bring forward: {description}" disabled={!editable || index === cue.layers.length - 1} onclick={() => swapLayers(index, index + 1)}>↑</button>
+          <button aria-label="Send back: {description}" disabled={!editable || index === 0} onclick={() => swapLayers(index, index - 1)}>↓</button>
+          <button aria-label="Hide while editing: {description}" disabled={!editable} aria-pressed={!!hidden[index]} onclick={() => (hidden[index] = !hidden[index])}>
             {hidden[index] ? 'Show' : 'Hide'}
           </button>
-          <button aria-label="Delete: {description}" onclick={() => deleteLayer(index)}>×</button>
+          <button aria-label="Delete: {description}" disabled={!editable} onclick={() => deleteLayer(index)}>×</button>
         </li>
       {:else}
         <li class="hint">No areas yet.</li>
@@ -252,23 +280,28 @@
     </ol>
 
     {#if selectedLayer}
-      <AreaInspector bind:layer={cue.layers[selected]} {palettes} groups={rig?.groups ?? {}} {caught} seed={cue.seed} {tick} />
+      <!-- A fresh inspector per area, so no picker shows the previous area's thumbnails. -->
+      {#key selected}
+        <AreaInspector bind:layer={cue.layers[selected]} {palettes} groups={rig?.groups ?? {}} {caught} seed={cue.seed} {tick} {editable} />
+      {/key}
     {:else}
       <p class="hint">Click an area on the stage or in the list to open its recipe.</p>
     {/if}
   </div>
 
-  <div class="row">
-    <label>
-      RGBW
-      <select value={cue.rgbw ?? 'saturated'} onchange={(event) => (cue.rgbw = event.currentTarget.value)}>
-        <option>saturated</option>
-        <option>white-rich</option>
-      </select>
-    </label>
-    <label>Seed <input type="number" min="0" step="1" value={cue.seed ?? 0} oninput={(event) => (cue.seed = Number(event.currentTarget.value))} /></label>
-  </div>
-  <IntensityLink {cues} {savedName} name={cue.name} {onlink} />
+  <fieldset class="whole-cue" disabled={!editable}>
+    <div class="row">
+      <label>
+        RGBW
+        <select value={cue.rgbw ?? 'saturated'} onchange={(event) => (cue.rgbw = event.currentTarget.value)}>
+          <option>saturated</option>
+          <option>white-rich</option>
+        </select>
+      </label>
+      <label>Seed <input type="number" min="0" step="1" value={cue.seed ?? 0} oninput={(event) => (cue.seed = Number(event.currentTarget.value))} /></label>
+    </div>
+    <IntensityLink {cues} {savedName} name={cue.name} {onlink} />
+  </fieldset>
 </fieldset>
 
 <style>
@@ -281,6 +314,16 @@
     margin: 0 0 16px;
     border: 1px solid var(--line);
     border-radius: 8px;
+  }
+
+  .whole-cue {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
   }
 
   legend {
