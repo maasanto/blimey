@@ -1,3 +1,8 @@
+<script module>
+  // Once opened, the whole-look settings stay open across areas and scenes for the session.
+  let isWholeLookOpen = $state(false);
+</script>
+
 <script>
   import { untrack } from 'svelte';
   import { engine } from './engine.svelte.js';
@@ -50,6 +55,8 @@
   const DRAG_PX = 6;
   /** Side of a resize handle, in front view units. */
   const HANDLE = 26;
+  /** How far an arrow key moves an area, in canvas units: the grid areas snap to. */
+  const NUDGE = 0.025;
   const HANDLES = ['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left'];
 
   let selected = $state(null);
@@ -201,9 +208,28 @@
     const y = sides.includes('bottom') ? area.y : sides.includes('top') ? area.y + area.height : area.y + area.height / 2;
     return { x: screenX(x) - HANDLE / 2, y: screenY(y) - HANDLE / 2 };
   }
+
+  /** Arrows nudge the selected area a grid step (a tenth with Shift), Delete removes it, Escape drops the selection. */
+  function keyboard(event) {
+    if (!editable || selected === null || event.target.matches('input, select, textarea')) return;
+    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[event.key];
+    if (direction) {
+      const step = event.shiftKey ? 0.1 : NUDGE;
+      const area = areaOf(selectedLayer);
+      const moved = moveArea(area, direction[0] * step, direction[1] * step, edges);
+      if (!isSameArea(moved, area)) selectedLayer.area = moved;
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
+      deleteLayer(selected);
+    } else if (event.key === 'Escape') {
+      selected = null;
+    } else {
+      return;
+    }
+    event.preventDefault();
+  }
 </script>
 
-<svelte:window onpointermove={follow} onpointerup={letGo} onpointercancel={cancel} />
+<svelte:window onpointermove={follow} onpointerup={letGo} onpointercancel={cancel} onkeydown={keyboard} />
 
 {#snippet box(area, className, attributes = {})}
   <rect
@@ -218,11 +244,14 @@
 
 {#snippet areas()}
   <rect class="hit" width={WIDTH} height={HEIGHT} role="presentation" onpointerdown={pressStage} />
+  {#if !cue.layers.length && editable}
+    <text class="empty" x={WIDTH / 2} y={HEIGHT * 0.08}>Drag an ingredient here, or click one to fill the stage</text>
+  {/if}
   {#each cue.layers as layer, index (layer)}
     {@const area = areaOf(layer)}
     {@const isSameCorner = (other) => areaOf(other).x === area.x && areaOf(other).y + areaOf(other).height === area.y + area.height}
     {@const labelsAbove = cue.layers.slice(0, index).filter(isSameCorner).length}
-    <g class="area" class:selected={index === selected} class:hidden={hidden[index]} data-area={index}>
+    <g class="area" class:selected={index === selected} class:hidden={hidden[index]} data-area={index} role="presentation" onpointerdown={pressStage}>
       {@render box(area, 'outline')}
       <text x={screenX(area.x) + 14} y={screenY(area.y + area.height) + 38 + 36 * labelsAbove}>
         {index + 1}. {kindOf(layer)}{hidden[index] ? ' (hidden)' : ''}
@@ -247,8 +276,7 @@
   {#if gesture?.area}{@render box(gesture.area, 'landing')}{/if}
 {/snippet}
 
-<fieldset class="composer">
-  <legend>Look on the stage</legend>
+<div class="composer" role="group" aria-label="Look on the stage">
   <div class="column">
     <div class="tray" role="group" aria-label="Ingredients">
       {#each INGREDIENTS as ingredient (ingredient)}
@@ -262,21 +290,26 @@
           <span>{ingredient}</span>
         </button>
       {/each}
+      <span class="hint">
+        {#if isFull}
+          A look holds {MAX_LAYERS} areas at most: delete one to add another.
+        {:else}
+          Drag onto the stage, or click for the whole stage.
+        {/if}
+      </span>
     </div>
     {#if tray.error}<p class="error" role="alert">Thumbnails: {tray.error}</p>{/if}
-    <p class="hint">
-      {#if isFull}
-        A look holds {MAX_LAYERS} areas at most: delete one to add another.
-      {:else}
-        Drag an ingredient onto the stage, or click it to cover the whole stage. Drag an area to move it and its handles to resize it; click again to reach the area beneath.
-      {/if}
-    </p>
 
     <FrontView bind:this={frontView} overlay={areas} {caught} {crossedOut} />
 
-    <p class="sentence" aria-live="polite">{describeLook(cue.layers)}</p>
+    <p class="sentence" class:hint={!cue.layers.length} aria-live="polite">{describeLook(cue.layers)}</p>
     {#if caught && !caught.size}
       <p class="hint" role="status">This area catches no pixels: move it over some fixtures.</p>
+    {:else if selectedLayer && editable}
+      <p class="hint">
+        Drag the area to move it, its handles to resize it; click again for the area beneath.
+        <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> nudge · <kbd>⌫</kbd> delete · <kbd>esc</kbd> deselect
+      </p>
     {/if}
     {#if paused}
       <p class="hint">Off the output while a scene is auditioned. Change the look to show it again.</p>
@@ -284,23 +317,32 @@
   </div>
 
   <div class="column">
-    <ol class="layers" aria-label="Layers, top first">
-      {#each cue.layers.map((layer, index) => ({ layer, index })).reverse() as { layer, index } (layer)}
-        {@const description = describeLayer(layer)}
-        <li class:hidden={hidden[index]}>
-          <button class="select" aria-pressed={index === selected} onclick={() => (selected = index)}>
-            <i style:background={palettes[layer.params?.color] ?? layer.params?.color ?? '#ffffff'}></i>
-            {description}
-          </button>
-          <button aria-label="Bring forward: {description}" disabled={!editable || index === cue.layers.length - 1} onclick={() => swapLayers(index, index + 1)}>↑</button>
-          <button aria-label="Send back: {description}" disabled={!editable || index === 0} onclick={() => swapLayers(index, index - 1)}>↓</button>
-          <button aria-label="Hide while editing: {description}" disabled={!editable} aria-pressed={!!hidden[index]} onclick={() => (hidden[index] = !hidden[index])}>
-            {hidden[index] ? 'Show' : 'Hide'}
-          </button>
-          <button aria-label="Delete: {description}" disabled={!editable} onclick={() => deleteLayer(index)}>×</button>
-        </li>
-      {/each}
-    </ol>
+    {#if cue.layers.length}
+      <ol class="layers" aria-label="Layers, top first">
+        {#each cue.layers.map((layer, index) => ({ layer, index })).reverse() as { layer, index } (layer)}
+          {@const description = describeLayer(layer)}
+          <li class:hidden={hidden[index]}>
+            <button class="select" aria-pressed={index === selected} onclick={() => (selected = index)}>
+              <i style:background={palettes[layer.params?.color] ?? layer.params?.color ?? '#ffffff'}></i>
+              {description}
+            </button>
+            <button class="quiet" aria-label="Bring forward: {description}" title="Bring forward" disabled={!editable || index === cue.layers.length - 1} onclick={() => swapLayers(index, index + 1)}>↑</button>
+            <button class="quiet" aria-label="Send back: {description}" title="Send back" disabled={!editable || index === 0} onclick={() => swapLayers(index, index - 1)}>↓</button>
+            <button
+              class="quiet"
+              aria-label="Hide while editing: {description}"
+              title="Hidden areas leave the preview but are still saved"
+              disabled={!editable}
+              aria-pressed={!!hidden[index]}
+              onclick={() => (hidden[index] = !hidden[index])}
+            >
+              {hidden[index] ? 'Show' : 'Hide'}
+            </button>
+            <button class="quiet danger" aria-label="Delete: {description}" title="Delete" disabled={!editable} onclick={() => deleteLayer(index)}>×</button>
+          </li>
+        {/each}
+      </ol>
+    {/if}
 
     {#if selectedLayer}
       <!-- A fresh inspector per area, so no picker shows the previous area's thumbnails. -->
@@ -318,38 +360,39 @@
           {audition}
         />
       {/key}
-    {:else}
-      <p class="hint">Click an area on the stage or in the list to open its recipe.</p>
+    {:else if cue.layers.length}
+      <p class="hint">Select an area on the stage or in the list to edit its recipe.</p>
+    {:else if editable}
+      <p class="hint">The look is empty. Add an ingredient to start.</p>
     {/if}
 
-    <fieldset class="whole-cue" disabled={!editable}>
-      <div class="row">
-        <label>
-          RGBW
-          <select value={cue.rgbw ?? 'saturated'} onchange={(event) => (cue.rgbw = event.currentTarget.value)}>
-            <option>saturated</option>
-            <option>white-rich</option>
-          </select>
-        </label>
-        <label>Seed <input type="number" min="0" step="1" value={cue.seed ?? 0} oninput={(event) => (cue.seed = Number(event.currentTarget.value))} /></label>
-      </div>
-      <IntensityLink {cues} {savedName} name={cue.name} {onlink} />
-    </fieldset>
+    <details class="more" bind:open={isWholeLookOpen}>
+      <summary>Whole look: colour mixing, seed, intensity link</summary>
+      <fieldset class="whole-cue" disabled={!editable}>
+        <div class="row">
+          <label>
+            RGBW
+            <select value={cue.rgbw ?? 'saturated'} onchange={(event) => (cue.rgbw = event.currentTarget.value)}>
+              <option>saturated</option>
+              <option>white-rich</option>
+            </select>
+          </label>
+          <label>Seed <input type="number" min="0" step="1" value={cue.seed ?? 0} oninput={(event) => (cue.seed = Number(event.currentTarget.value))} /></label>
+        </div>
+        <IntensityLink {cues} {savedName} name={cue.name} {onlink} />
+      </fieldset>
+    </details>
   </div>
-</fieldset>
+</div>
 
 <style>
   /* The stage on the left, the layers and the recipe of the selected area beside it. */
   .composer {
     display: grid;
     grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
-    gap: 20px;
+    gap: 24px;
     align-items: start;
     min-width: 0;
-    padding: 12px;
-    margin: 0 0 16px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
   }
 
   .column {
@@ -369,11 +412,6 @@
     border: 0;
   }
 
-  legend {
-    padding: 0 6px;
-    color: var(--muted);
-  }
-
   p {
     margin: 0;
   }
@@ -381,7 +419,8 @@
   .tray {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 6px 8px;
+    align-items: center;
   }
 
   .ingredient {
@@ -391,6 +430,10 @@
     padding: 4px 10px 4px 4px;
     cursor: grab;
     touch-action: none;
+  }
+
+  .ingredient:active {
+    cursor: grabbing;
   }
 
   canvas {
@@ -405,8 +448,19 @@
     font-size: 16px;
   }
 
+  .sentence.hint {
+    font-size: 13px;
+  }
+
   .hit {
     fill: transparent;
+  }
+
+  .empty {
+    fill: #5d6170;
+    font-size: 34px;
+    text-anchor: middle;
+    pointer-events: none;
   }
 
   .area {
@@ -421,8 +475,11 @@
   }
 
   .area.selected .outline {
+    fill: rgb(255 190 80 / 0.05);
     stroke: var(--accent);
     stroke-dasharray: none;
+    pointer-events: visiblePainted;
+    cursor: move;
   }
 
   .area.hidden .outline {
@@ -440,7 +497,28 @@
 
   .handle {
     fill: var(--accent);
-    cursor: move;
+    stroke: var(--bg);
+    stroke-width: 3;
+  }
+
+  .handle[data-handle='top'],
+  .handle[data-handle='bottom'] {
+    cursor: ns-resize;
+  }
+
+  .handle[data-handle='left'],
+  .handle[data-handle='right'] {
+    cursor: ew-resize;
+  }
+
+  .handle[data-handle='top-left'],
+  .handle[data-handle='bottom-right'] {
+    cursor: nwse-resize;
+  }
+
+  .handle[data-handle='top-right'],
+  .handle[data-handle='bottom-left'] {
+    cursor: nesw-resize;
   }
 
   .landing {
@@ -480,10 +558,12 @@
     text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
+    background: var(--panel);
   }
 
   .select[aria-pressed='true'] {
-    outline: 2px solid var(--accent);
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .select i {

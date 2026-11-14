@@ -210,6 +210,7 @@ test.describe('on three rows of washes', () => {
     await openChorusBuild(page, url);
 
     await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.getByText('Position and phase').click();
     await page.getByLabel('Area width').fill('1.5');
     await page.getByLabel('Area width').press('Enter');
     await expect(page.getByLabel('Area width'), 'the rest of the stage from x 0.5').toHaveValue('0.5');
@@ -230,6 +231,33 @@ test.describe('on three rows of washes', () => {
     expect(written).toContain('        params: { color: amber, width: 0.25, speed: 1 bar, phase: 0.5 }\n');
     expect(written).toContain('        area: { x: 0, y: 0.65, width: 0.2, height: 0.35 }\n');
     expect(written).not.toContain('mute:');
+  });
+
+  test('from the keyboard, arrows nudge the selected area, Ctrl+S saves and Backspace deletes it', async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const { url } = await startEngine({ look: DARK });
+    await openChorusBuild(page, url);
+
+    await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('Shift+ArrowUp');
+    await page.getByText('Position and phase').click();
+    await expect(page.getByLabel('Area left')).toHaveValue('0.475');
+    await expect(page.getByLabel('Area bottom'), 'a full-height area has nowhere to go').toHaveValue('0');
+    await expect(page.getByText('Unsaved changes')).toBeVisible();
+
+    await page.keyboard.press('Control+s');
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+    expect(readFileSync(songFile, 'utf8')).toContain('        area: { x: 0.475, y: 0, width: 0.5, height: 1 }\n');
+
+    await page.keyboard.press('Backspace');
+    await expect(page.locator('[data-area]')).toHaveCount(2);
+    // Typing in a field is left alone.
+    await page.getByLabel('Name').press('End');
+    await page.getByLabel('Name').press('Backspace');
+    await expect(page.locator('[data-area]')).toHaveCount(2);
+    await expect(page.getByLabel('Name')).toHaveValue('chorus-buil');
   });
 
   test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {

@@ -34,7 +34,7 @@
   >
 </div>
 <p class="hint">
-  Linking saves that scene with this look's saved name as its target, in place of the target it had.
+  Linking retargets that scene at this look, by its saved name.
   {#if savedName === null}Save this look first.{:else if savedName !== name}Links follow the saved name, {savedName}, until you save.{/if}
 </p>
 
@@ -47,7 +47,11 @@
   }
 
   .name {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
   }
 
   .linked {

@@ -102,6 +102,7 @@ test("linking a pattern to a pixel scene's intensity saves it as the pattern's t
   await page.goto(`${url}#builder`);
 
   await pad(page, 40).click();
+  await page.getByText('Whole look:').click();
   await expect(page.getByText('not linked')).toBeVisible();
   // A rename not saved yet: links go by the name in the file.
   await page.getByLabel('Name').fill('red-wash-2');
