@@ -244,8 +244,9 @@ pub fn run(
         let due =
             u32::try_from(clock.now().as_nanos() / FRAME_PERIOD.as_nanos()).unwrap_or(u32::MAX);
         if due > index.saturating_add(MAX_LATE_FRAMES) {
-            sink.skipped(due - index);
-            index = due;
+            let resumed = due.min(frame_count);
+            sink.skipped(resumed - index);
+            index = resumed;
             if index >= frame_count {
                 break;
             }
@@ -399,6 +400,45 @@ mod tests {
             "the frame due when it woke, then on time: the 40 frames it slept through are skipped"
         );
         assert_eq!(sent.len(), 60);
+    }
+
+    /// Counts the frames sent and skipped.
+    #[derive(Default)]
+    struct Counted {
+        sent: u32,
+        skipped: u32,
+    }
+
+    impl DmxSink for Counted {
+        fn send(&mut self, _at: Duration, _frame: &Frame) -> io::Result<()> {
+            self.sent += 1;
+            Ok(())
+        }
+
+        fn skipped(&mut self, frames: u32) {
+            self.skipped += frames;
+        }
+    }
+
+    #[test]
+    fn a_stall_past_the_last_frame_skips_only_the_frames_left() {
+        let mut clock = StallingClock {
+            now: Duration::ZERO,
+            deadline: FRAME_PERIOD * 10,
+        };
+        let mut sink = Counted::default();
+
+        run(
+            &mut clock,
+            &mut Burst(Vec::new()),
+            &Show::default(),
+            &look::Look::default(),
+            &mut sink,
+            20,
+        )
+        .unwrap();
+
+        assert_eq!((sink.sent, sink.skipped), (10, 10), "frames 10 to 19");
     }
 
     #[test]
