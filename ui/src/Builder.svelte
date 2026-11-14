@@ -8,12 +8,13 @@
    * The cue being edited, as in the song file, and its note: a look on the stage unless made
    * a swell or pattern cue. `replaces` is the cue as loaded, `{ note, cue }`, so the engine can
    * refuse the save if the file changed since. `hidden` marks the pixel cue's layers left off
-   * the preview while editing.
+   * the preview while editing. `sceneKept` says why a scene opened on the stage stays a scene,
+   * read-only, or is null.
    */
   let form = $state(newForm());
 
   function newForm() {
-    return { note: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [] };
+    return { note: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null };
   }
 </script>
 
@@ -49,12 +50,14 @@
   let newSong = $state(null);
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
+  /** The cue's look can be edited and saved: not a scene that stays one. */
+  const isLookEditable = $derived(editable && !form.sceneKept);
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
   const isPixel = $derived(form.cue.type === 'pixel');
   const shownLayers = $derived(isPixel ? form.cue.layers.filter((_, index) => !form.hidden[index]) : []);
   /** What the output previews while editing: the pixel cue's shown layers; null for nothing. */
   const shown = $derived(
-    shownLayers.length && songName
+    shownLayers.length && songName && !form.sceneKept
       ? { path: '/api/preview/pixel', body: { song: songName, cue: { ...withoutEmptyTimes(form.cue), layers: $state.snapshot(shownLayers) } } }
       : null,
   );
@@ -161,14 +164,10 @@
   /** Takes the look off the output when the browser page goes; nobody is left to hear back. */
   const clearPreview = () => editable && fetch('/api/preview', { method: 'DELETE', keepalive: true });
 
-  /** The cue as the builder edits it: a pixel cue in the `layers` form, a scene made one. */
-  function asEdited(cue) {
-    if (cue.type === 'pixel') return asLayers(cue);
-    if (cue.type === 'scene') return sceneAsPixelCue(cue, engine.rig ?? { fixtures: [], groups: {} });
-    return cue;
-  }
-
-  /** Opens the pad's cue, or on an empty pad a new cue: the one being started, if any. */
+  /**
+   * Opens the pad's cue, or on an empty pad a new cue: the one being started, if any. A pixel
+   * cue opens in the `layers` form; a scene opens as it is, until the rig is known to convert it.
+   */
   function openPad(note) {
     const cue = song.cues?.[note];
     if (!cue) {
@@ -176,8 +175,17 @@
       else form = { ...newForm(), note };
       return;
     }
-    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: asEdited($state.snapshot(cue)), hidden: [] };
+    const edited = cue.type === 'pixel' ? asLayers($state.snapshot(cue)) : $state.snapshot(cue);
+    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: edited, hidden: [], sceneKept: null };
   }
+
+  // A scene opens on the stage once the rig is known: converting it needs its groups and fixtures.
+  $effect(() => {
+    if (form.cue.type !== 'scene' || !engine.rig) return;
+    const { cue, reason } = sceneAsPixelCue($state.snapshot(form.cue), engine.rig);
+    form.cue = cue;
+    form.sceneKept = reason;
+  });
 
   function withoutEmptyTimes(edited) {
     const cue = $state.snapshot(edited);
@@ -388,7 +396,7 @@
       <div class="row">
         <label>Note <input type="number" min="0" max={LAST_NOTE} bind:value={form.note} /></label>
         <label>Name <input bind:value={form.cue.name} /></label>
-        {#if form.replaces !== null}<span>Type: {form.cue.type}</span>{/if}
+        {#if form.replaces !== null}<span>Type: {form.replaces.cue.type}</span>{/if}
       </div>
       <div class="row">
         {#if isPixel}
@@ -396,8 +404,12 @@
         {/if}
         <label>Release <input bind:value={form.cue.release} placeholder="0s" /></label>
       </div>
-      <p class="hint">
-        {#if isPixel}
+      <p class="hint" role={form.sceneKept ? 'status' : undefined}>
+        {#if form.sceneKept}
+          This scene stays a scene, read-only on the stage: {form.sceneKept}. It plays as before; you can still audition, duplicate, move or delete it.
+        {:else if form.cue.type === 'scene'}
+          The scene opens on the stage once the engine sends the rig.
+        {:else if isPixel}
           Saves the look on the stage as this cue, hidden areas included{form.replaces?.cue.type === 'scene' ? ': this scene becomes a pixel cue' : ''}.
         {:else}
           Shape the {form.cue.type} below, then save it.
@@ -417,7 +429,10 @@
         </p>
       {/if}
       <div class="row">
-        <button disabled={form.note == null || !form.cue.name || (isPixel && !form.cue.layers.length)} onclick={() => attempt(saveCue)}>
+        <button
+          disabled={form.note == null || !form.cue.name || form.cue.type === 'scene' || !!form.sceneKept || (isPixel && !form.cue.layers.length)}
+          onclick={() => attempt(saveCue)}
+        >
           Save cue
         </button>
         {#if form.replaces !== null}
@@ -441,7 +456,7 @@
             bind:cue={form.cue}
             bind:hidden={form.hidden}
             palettes={summary?.palettes}
-            {editable}
+            editable={isLookEditable}
             paused={isPaused}
             {cues}
             savedName={form.replaces?.cue.name ?? null}

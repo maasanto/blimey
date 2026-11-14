@@ -423,7 +423,7 @@ test.describe('on the Fossile show', () => {
     // Program 3 selects tell-me; held past verse-blue's 2 s fade-in, then through its 1 s release.
     const fire = (note) =>
       framesOf(replay(show, [[0, [0xc1, 3]], [0, [0x91, Number(note), 127]], [3000, [0x81, Number(note), 0]], runTo(4500)]));
-    const scenes = { 36: 'Deep-blue wash everywhere.', 37: 'Magenta wash everywhere except inner-wash, amber wash everywhere except outer-wash.', 38: '#000000 wash everywhere.' };
+    const scenes = { 36: 'Deep-blue wash everywhere.', 37: 'Magenta wash everywhere except inner-wash, amber wash everywhere except outer-wash.' };
     const before = Object.fromEntries(Object.keys(scenes).map((note) => [note, fire(note)]));
     const { url } = await startEngine();
     await page.goto(`${url}#builder`);
@@ -446,5 +446,46 @@ test.describe('on the Fossile show', () => {
       const furthest = Math.max(...after.flatMap(([, values], frame) => values.map((value, channel) => Math.abs(value - before[note][frame][1][channel]))));
       expect(furthest, `cue ${note}: largest difference on any channel`).toBeLessThanOrEqual(1);
     }
+  });
+
+  test('the blackout, a dimmer over the cues below, stays a scene that can still be auditioned and moved', async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/tell-me.yaml');
+    const before = readFileSync(songFile, 'utf8');
+    const { url } = await startEngine();
+    await page.goto(`${url}#builder`);
+
+    await pad(page, 38).click();
+    await expect(page.getByRole('status')).toContainText(
+      'This scene stays a scene, read-only on the stage: it gives wash-1 only a dimmer, which keeps the colour of the cues below',
+    );
+    await expect(page.getByRole('button', { name: 'Save cue' })).toBeDisabled();
+    await expect(ingredient(page, 'Wash')).toBeDisabled();
+    await page.getByRole('button', { name: 'Audition', exact: true }).click();
+    await expect(pad(page, 38)).toHaveClass(/playing/);
+    await page.getByRole('button', { name: 'Release', exact: true }).click();
+    await page.getByRole('button', { name: 'Duplicate' }).click();
+    await expect(pad(page, 41)).toHaveAccessibleName('Pad 41: blackout-copy');
+    const blackout = before.slice(before.indexOf('  38:\n'), before.indexOf('  39:\n'));
+    const after = readFileSync(songFile, 'utf8');
+    expect(after, 'still a scene').toContain(blackout);
+    expect(after).toContain(blackout.replace('  38:', '  41:').replace('name: blackout', 'name: blackout-copy'));
+  });
+});
+
+test.describe('on three rows of washes, a scene of nine colours', () => {
+  test.use({ showSource: 'tests/fixtures/shows/three-rows' });
+
+  test('needs more areas than a pixel cue holds, so it stays a scene', async ({ page, show, startEngine }) => {
+    const colours = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff', '#ff00ff', '#ffffff', '#808080', '#ff8000'];
+    const fixtures = ['low-1', 'low-2', 'low-3', 'low-4', 'mid-1', 'mid-2', 'mid-3', 'mid-4', 'high-1'];
+    const values = fixtures.map((fixture, index) => `      ${fixture}: { color: "${colours[index]}" }\n`).join('');
+    writeFileSync(path.join(show, 'songs/rainbow.yaml'), `program: 9\ncues:\n  36:\n    name: rainbow\n    type: scene\n    values:\n${values}`);
+    const { url } = await startEngine({ look: ['--set', 'all-wash', 'dimmer=0%'] });
+    await page.goto(`${url}#builder`);
+    await page.getByLabel('Song').selectOption('rainbow');
+
+    await pad(page, 36).click();
+    await expect(page.getByRole('status')).toContainText('it needs 9 areas, more than the 8 a pixel cue holds');
+    await expect(page.getByRole('button', { name: 'Save cue' })).toBeDisabled();
   });
 });

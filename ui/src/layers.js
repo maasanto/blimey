@@ -70,18 +70,20 @@ export function asLayers(cue) {
 }
 
 /**
- * A scene cue as a pixel cue (plan §16): a whole-stage `fill` per colour and dimmer the scene
- * gives, muting the fixtures and grids that colour doesn't reach. A fixture given only a dimmer
- * goes dark, as it does fired alone: a pixel cue has no colour from below to keep.
+ * A scene cue as a pixel cue (plan §16): `cue` is a whole-stage `fill` per colour and dimmer the
+ * scene gives, muting the fixtures and grids that colour doesn't reach. `reason` says why that
+ * cue wouldn't play as the scene, when it wouldn't; the cue then leaves out what it can't draw.
  */
 export function sceneAsPixelCue({ type, values = {}, ...rest }, rig) {
   const looks = new Map();
   for (const [target, settings] of Object.entries(values)) {
     for (const name of rig.groups[target] ?? [target]) looks.set(name, { ...looks.get(name), ...settings });
   }
+  const colourless = rig.fixtures.filter((fixture) => !fixture.colour).map(({ name }) => name);
   const recipes = new Map();
   for (const [name, { color, dimmer = '100%' }] of looks) {
-    const isDark = !color || parseFloat(dimmer) === 0;
+    if (!color || colourless.includes(name)) continue;
+    const isDark = parseFloat(dimmer) === 0;
     const level = isDark || parseFloat(dimmer) === 100 ? {} : { level: dimmer };
     const layer = { shape: 'fill', params: { color: isDark ? '#000000' : color }, ...level, blend: 'over' };
     const key = JSON.stringify(layer);
@@ -92,9 +94,22 @@ export function sceneAsPixelCue({ type, values = {}, ...rest }, rig) {
     const mute = muteList(everything.filter((name) => !fixtures.includes(name)), rig.groups);
     return mute.length ? { ...layer, mute } : layer;
   });
-  // ponytail: one rgbw for the whole cue, the first given; a scene mixing modes keeps only that one.
   const rgbw = [...looks.values()].find((look) => look.rgbw)?.rgbw;
-  return { ...rest, type: 'pixel', ...(rgbw && { rgbw }), layers };
+  const cue = { ...rest, type: 'pixel', ...(rgbw && { rgbw }), layers };
+  return { cue, reason: whyNotPixel(looks, colourless, layers.length) };
+}
+
+/** Why a scene giving each fixture its look in `looks` can't play as a pixel cue of `layerCount` layers; null when it can. */
+function whyNotPixel(looks, colourless, layerCount) {
+  const names = [...looks.keys()];
+  const dimmerOnly = names.find((name) => !looks.get(name).color);
+  if (dimmerOnly) return `it gives ${dimmerOnly} only a dimmer, which keeps the colour of the cues below, and a pixel cue draws its own`;
+  const unlit = names.find((name) => colourless.includes(name));
+  if (unlit) return `${unlit} has no colour emitters, which a pixel cue needs`;
+  if (layerCount > MAX_LAYERS) return `it needs ${layerCount} areas, more than the ${MAX_LAYERS} a pixel cue holds`;
+  const modes = new Set([...looks.values()].map((look) => look.rgbw ?? 'saturated'));
+  if (modes.size > 1) return 'it mixes rgbw modes, and a pixel cue has one';
+  return null;
 }
 
 /** `names` as a `mute` list, whole groups by their name, the largest first. */
