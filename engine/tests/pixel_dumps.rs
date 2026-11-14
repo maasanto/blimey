@@ -640,6 +640,36 @@ fn one_by_one_steps_through_the_fixtures_it_draws_whatever_is_muted() {
     assert_eq!(frames, render_show(show(), &cues("[hazer]"), &note_on, 4));
 }
 
+/// A pixel no layer of a pixel cue draws keeps what the cues below the pixel cue give it: here
+/// a scene's amber on the inner washes, muted on the cue's only layer.
+#[test]
+fn pixels_no_layer_draws_show_the_scene_below_the_pixel_cue() {
+    let show = Show::load(Path::new(&format!("{FIXTURES}/shows/three-rows"))).unwrap();
+    let cues = "  50: { name: amber-inside, type: scene, values: { inner-wash: { color: amber } } }\n  60:\n    name: outside\n    type: pixel\n    layers:\n      - { shape: fill, params: { color: steel-blue }, mute: [inner-wash] }\n";
+    let note_on = |note: u8| (Duration::ZERO, vec![0x91, note, 127]);
+
+    let frames = render_show(show, cues, &[note_on(50), note_on(60)], 2);
+
+    assert_reference(&frames, "layers/mute-shows-below.dump");
+    // Each row's four washes' first pixel, RGBW, by address.
+    let row = |first: usize| {
+        [first, first + 16, first + 32, first + 48]
+            .map(|address| frames[1].values[address - 1..address + 3].to_vec())
+    };
+    let (amber, steel_blue) = (vec![255, 160, 30, 0], vec![180, 210, 255, 0]);
+    for first in [1, 65, 129] {
+        assert_eq!(
+            row(first),
+            [
+                steel_blue.clone(),
+                amber.clone(),
+                amber.clone(),
+                steel_blue.clone()
+            ]
+        );
+    }
+}
+
 /// A muted fixture, or the fixtures of a muted group, show the layers below.
 #[test]
 fn a_layer_leaves_the_fixtures_and_groups_it_mutes_to_the_layers_below() {

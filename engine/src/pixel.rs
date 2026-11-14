@@ -183,6 +183,8 @@ pub struct PixelScene {
     pub rgbw: RgbwMode,
     /// Bottom first, 1 to `MAX_LAYERS`.
     pub layers: Vec<Layer>,
+    /// On the rig the scene was resolved against.
+    drawn: Drawn,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +250,7 @@ impl PixelEntry {
             }
         };
         Ok(PixelScene {
+            drawn: Drawn::new(&layers, &show.rig),
             layers,
             name: self.name,
             fade_in: self.fade_in.unwrap_or(Length::Time(Duration::ZERO)),
@@ -377,25 +380,26 @@ impl PixelScene {
         intensity: f32,
         out: &mut Universes,
     ) {
-        let frames: Vec<LayerFrame> = self
-            .layers
-            .iter()
-            .zip(0..)
-            .map(|(layer, index)| {
-                let seed = self.seed ^ LAYER_SEED.wrapping_mul(index);
-                layer.at(rig, clock, started, at, seed)
-            })
-            .collect();
-        let unmuted = |name: &str| -> Vec<&LayerFrame> {
-            frames
-                .iter()
-                .filter(|frame| !frame.layer.mute.contains(name))
-                .collect()
+        // The builder previews and thumbnails a scene on rigs other than the show's.
+        let other_rig;
+        let drawn = if self.drawn.rig == *rig {
+            &self.drawn
+        } else {
+            other_rig = Drawn::new(&self.layers, rig);
+            &other_rig
         };
+        let frames: [Option<LayerFrame>; MAX_LAYERS] = std::array::from_fn(|index| {
+            let seed = self.seed ^ LAYER_SEED.wrapping_mul(index as u64);
+            let layer = self.layers.get(index)?;
+            Some(layer.at(&drawn.lines[index], clock, started, at, seed))
+        });
         // Plan §5: a pixel cue overrides only the channels it touches, its fixtures' emitters
-        // and dimmer. Fixtures without emitters, and other channels, keep the layers below.
-        for fixture in rig.fixtures.iter().filter(|fixture| has_emitters(fixture)) {
-            let layers = unmuted(&fixture.name);
+        // and dimmer. Fixtures without emitters, pixels no layer draws, and other channels keep
+        // the layers below.
+        let fixtures = rig.fixtures.iter().zip(&drawn.fixtures);
+        for (fixture, layers) in fixtures.filter(|(fixture, layers)| {
+            has_emitters(fixture) && layers.iter().any(|&layers| layers != 0)
+        }) {
             let start = fixture.address - 1;
             let colour_scale = match fixture.dimmer {
                 Some(offset) => {
@@ -405,8 +409,10 @@ impl PixelScene {
                 None => intensity,
             };
             let centre = fixture.centre();
-            for pixel in &fixture.pixels {
-                let lit = stack(&layers, pixel.x, pixel.y, centre);
+            for (pixel, &layers) in fixture.pixels.iter().zip(layers) {
+                let Some(lit) = stack(&frames, layers, pixel.x, pixel.y, centre) else {
+                    continue;
+                };
                 draw_pixel(
                     pixel.channels,
                     start,
@@ -417,22 +423,82 @@ impl PixelScene {
                 );
             }
         }
-        for grid in &rig.grids {
-            let layers = unmuted(&grid.name);
-            for pixel in &grid.pixels {
-                let lit = stack(&layers, pixel.x, pixel.y, (pixel.x, pixel.y));
-                let frame = out.frame_mut(pixel.universe);
-                draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
-            }
+        let grid_pixels = rig
+            .grids
+            .iter()
+            .zip(&drawn.grids)
+            .flat_map(|(grid, layers)| grid.pixels.iter().zip(layers));
+        for (pixel, &layers) in grid_pixels {
+            let Some(lit) = stack(&frames, layers, pixel.x, pixel.y, (pixel.x, pixel.y)) else {
+                continue;
+            };
+            let frame = out.frame_mut(pixel.universe);
+            draw_pixel(pixel.channels, 0, lit, self.rgbw, intensity, frame);
         }
     }
 }
 
-/// The colour at (`x`, `y`) in one-by-one `cell`: each layer over the ones below it, from black.
-fn stack(layers: &[&LayerFrame], x: f32, y: f32, cell: Cell) -> Rgb {
-    layers
+/// The colour at (`x`, `y`) in one-by-one `cell`: each of `layers` (a bit per layer, from the
+/// bottom) over the ones below it, from black. `None` when no layer draws there.
+fn stack(frames: &[Option<LayerFrame>], layers: u8, x: f32, y: f32, cell: Cell) -> Option<Rgb> {
+    if layers == 0 {
+        return None;
+    }
+    let drawing = frames
         .iter()
-        .fold(Rgb::default(), |below, layer| layer.over(below, x, y, cell))
+        .enumerate()
+        .filter(|(index, _)| layers & 1 << index != 0)
+        .map(|(_, frame)| frame.as_ref().expect("a layer for each bit"));
+    Some(drawing.fold(Rgb::default(), |below, layer| layer.over(below, x, y, cell)))
+}
+
+/// What each layer draws on one rig, worked out once rather than every frame.
+#[derive(Debug, Clone, PartialEq)]
+struct Drawn {
+    rig: Rig,
+    /// Per fixture, then per grid, in rig order, and per pixel: the layers that draw it, a bit
+    /// each from the bottom one.
+    fixtures: Vec<Vec<u8>>,
+    grids: Vec<Vec<u8>>,
+    /// Per layer: its one-by-one lines, empty for other shapes.
+    lines: Vec<Vec<i32>>,
+}
+
+impl Drawn {
+    fn new(layers: &[Layer], rig: &Rig) -> Drawn {
+        let drawing = |name: &str, x: f32, y: f32| {
+            layers
+                .iter()
+                .zip(0..)
+                .filter(|(layer, _)| !layer.mute.contains(name) && layer.catches(x, y))
+                .fold(0u8, |bits, (_, index)| bits | 1 << index)
+        };
+        Drawn {
+            fixtures: (rig.fixtures.iter())
+                .map(|fixture| {
+                    let pixels = fixture.pixels.iter();
+                    pixels
+                        .map(|pixel| drawing(&fixture.name, pixel.x, pixel.y))
+                        .collect()
+                })
+                .collect(),
+            grids: (rig.grids.iter())
+                .map(|grid| {
+                    let pixels = grid.pixels.iter();
+                    pixels
+                        .map(|pixel| drawing(&grid.name, pixel.x, pixel.y))
+                        .collect()
+                })
+                .collect(),
+            lines: (layers.iter())
+                .map(|layer| match layer.shape {
+                    Shape::OneByOne => layer.lines(rig),
+                    _ => Vec::new(),
+                })
+                .collect(),
+            rig: rig.clone(),
+        }
+    }
 }
 
 /// Columns and rows of the square sample grid a thumbnail shows, filling the canvas: the most
@@ -512,22 +578,18 @@ struct LayerFrame<'frame> {
     seed: u64,
     /// For one-by-one: the lines across the direction of the cells the layer catches,
     /// ascending in its area.
-    lines: Vec<i32>,
+    lines: &'frame [i32],
 }
 
 impl Layer {
     fn at<'frame>(
         &'frame self,
-        rig: &'frame Rig,
+        lines: &'frame [i32],
         clock: &ClockFollower,
         started: Moment,
         at: Duration,
         seed: u64,
     ) -> LayerFrame<'frame> {
-        let lines = match self.shape {
-            Shape::OneByOne => self.lines(rig),
-            _ => Vec::new(),
-        };
         let cycles = clock.cycles(self.speed, started, at) + self.phase;
         let within = cycles.rem_euclid(1.0);
         let position = match self.effect {
@@ -691,12 +753,9 @@ impl LayerFrame<'_> {
         }
     }
 
-    /// The layer at the canvas position (`x`, `y`) in one-by-one `cell`, blended over `below`;
-    /// `below` itself outside the layer's area.
+    /// The layer at the canvas position (`x`, `y`), which its area catches, in one-by-one
+    /// `cell`, blended over `below`.
     fn over(&self, below: Rgb, x: f32, y: f32, cell: Cell) -> Rgb {
-        if !self.layer.catches(x, y) {
-            return below;
-        }
         let (x, y) = self.layer.in_area((x, y));
         self.layer
             .blend
