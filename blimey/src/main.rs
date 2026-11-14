@@ -1,10 +1,16 @@
 /// Shadows std's `eprintln!` for every module below: std's panics when stderr can't be written,
-/// as under launchd once the disk is full, and a log line must never stop the light.
+/// as under launchd once the disk is full, and a log line must never stop the light. Unit tests
+/// keep std's, which the test harness captures.
 // Warning: keep it above the `mod` lines, or modules after it get std's again.
 macro_rules! eprintln {
     ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), $($arg)*);
+        #[cfg(test)]
+        std::eprintln!($($arg)*);
+        #[cfg(not(test))]
+        {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), $($arg)*);
+        }
     }};
 }
 
@@ -679,6 +685,10 @@ impl DmxSink for LiveOutput {
             stream.status(status);
         }
     }
+
+    fn log(&mut self, line: &str) {
+        eprintln!("blimey: {line}");
+    }
 }
 
 /// `run`'s output: the live outputs, plus the event log and the state to resume after a
@@ -708,6 +718,10 @@ impl DmxSink for Recorded {
 
     fn cue(&mut self, event: &CueEvent) {
         self.recorder.cue(event);
+    }
+
+    fn log(&mut self, line: &str) {
+        self.output.log(line);
     }
 }
 

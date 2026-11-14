@@ -197,13 +197,19 @@ mod tests {
     #[test]
     fn a_box_that_stops_draining_never_holds_up_the_render_loop() {
         let (_never_read, port) = serialport::TTYPort::pair().unwrap();
-        let mut driver = EnttecPro::new(port.name().unwrap());
+        let link = std::env::temp_dir().join(format!("blimey-enttec-hung-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(port.name().unwrap(), &link).unwrap();
+        let mut driver = EnttecPro::new(link.to_string_lossy().into_owned());
 
         let started = std::time::Instant::now();
         for _ in 0..40 {
             driver.send(Duration::ZERO, &[0; DMX_CHANNELS]).unwrap();
         }
 
+        // The writer thread outlives the test: it must not open the pty's name once another
+        // test reuses it.
+        std::fs::remove_file(&link).unwrap();
         assert!(
             started.elapsed() < WRITE_TIMEOUT,
             "a second of frames took {:?} to hand over",

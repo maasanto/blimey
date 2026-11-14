@@ -30,7 +30,7 @@ pub use playback::{CueAction, CueEvent, CueStatus, Status, resume_messages};
 pub use show::Show;
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -107,6 +107,10 @@ pub trait DmxSink {
     /// How many frames the render loop skipped, after falling too far behind, before the next
     /// one sent.
     fn skipped(&mut self, _frames: u32) {}
+
+    /// A line for the engine's log, such as where the tempo comes from. Sinks without a log
+    /// ignore it.
+    fn log(&mut self, _line: &str) {}
 }
 
 /// Where the render loop gets the show for each frame.
@@ -258,8 +262,7 @@ pub fn run(
         }
         let output = playback.render(show, look, deadline);
         if let Some(line) = playback.log_line(deadline) {
-            // Not eprintln!, which panics when stderr can't be written, as on a full disk.
-            let _ = writeln!(io::stderr(), "blimey: {line}");
+            sink.log(&line);
         }
         sink.status(&playback.status(show, deadline));
         // Reported by the driver; see `DmxSink::send_artnet`.

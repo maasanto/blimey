@@ -337,6 +337,10 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
         self.output.status(status);
     }
 
+    fn log(&mut self, line: &str) {
+        self.output.log(line);
+    }
+
     /// Skipped frames count as dropped.
     fn skipped(&mut self, frames: u32) {
         self.sent += frames;
