@@ -32,8 +32,10 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 use std::time::Duration;
 
 use blimey_engine::look::{Look, LookSettings};
@@ -304,6 +306,7 @@ enum FixtureCommand {
 }
 
 fn main() -> ExitCode {
+    exit_on_background_panic();
     let result = match Command::parse() {
         Command::Replay {
             show_dir,
@@ -367,6 +370,25 @@ fn main() -> ExitCode {
         eprintln!("error: {error}");
         ExitCode::FAILURE
     })
+}
+
+/// A panic on a background thread, such as the MIDI watcher, the Enttec writer or the recorder,
+/// would leave the engine half alive with MIDI or DMX silently gone: it exits instead, after
+/// the usual panic message, so launchd restarts it. Panics on the render loop's thread, which
+/// drops a failing cue itself, and in a request, which tokio confines to it, take their usual
+/// course.
+fn exit_on_background_panic() {
+    let report = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        report(info);
+        if !matches!(
+            thread::current().name(),
+            Some("main" | "tokio-runtime-worker")
+        ) {
+            eprintln!("blimey: a background thread panicked; exiting so the engine restarts");
+            std::process::exit(101);
+        }
+    }));
 }
 
 fn replay(
@@ -747,6 +769,32 @@ fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<d
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// Set in the copy of the test binary that `a_panic_on_a_background_thread_exits` runs.
+    const PANICKING_COPY: &str = "BLIMEY_TEST_PANICKING_COPY";
+
+    #[test]
+    fn a_panic_on_a_background_thread_exits() {
+        if std::env::var_os(PANICKING_COPY).is_some() {
+            exit_on_background_panic();
+            std::thread::spawn(|| panic!("the MIDI watcher broke"));
+            std::thread::sleep(Duration::from_secs(10));
+            return;
+        }
+        let started = std::time::Instant::now();
+
+        let copy = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::a_panic_on_a_background_thread_exits"])
+            .arg("--nocapture")
+            .env(PANICKING_COPY, "1")
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&copy.stderr);
+        assert_eq!(copy.status.code(), Some(101), "{stderr}");
+        assert!(stderr.contains("the MIDI watcher broke"), "{stderr}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn record_takes_art_net_universes_up_to_15_bits_like_run() {
