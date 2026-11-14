@@ -71,15 +71,22 @@ async function resize(page, handle, to) {
   await dragTo(page, centre(await page.locator(`[data-handle="${handle}"]`).boundingBox()), await stagePoint(page, to));
 }
 
+/** A click whose pointer wobbles a few screen pixels while down, as a hand's does. */
+async function unsteadyClick(page, { x, y }) {
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 3, y - 2, { steps: 3 });
+  await page.mouse.up();
+}
+
 test.describe('on three rows of washes', () => {
   test.use({ showSource: 'tests/fixtures/shows/three-rows' });
   const DARK = ['--set', 'all-wash', 'dimmer=0%'];
 
   test("plan §16's example look built on the stage saves C14's reference and plays its dump", async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const reference = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
-    const songFile = `${url}api/show/songs/chorus-build.yaml`;
-    // As the engine reads it: the reference isn't laid out in the canonical form saves write.
-    const reference = await (await page.request.get(songFile)).json();
     expect((await page.request.delete(`${url}api/songs/chorus-build/cues/43`)).status()).toBe(204);
     await page.goto(`${url}#builder`);
 
@@ -117,11 +124,13 @@ test.describe('on three rows of washes', () => {
     ).toBeVisible();
     await page.getByRole('button', { name: 'Save cue' }).click();
     await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
-    expect(await (await page.request.get(songFile)).json()).toEqual(reference);
+    expect(readFileSync(songFile, 'utf8')).toBe(reference);
     expect(replayHeld(show, 43)).toBe(readFileSync(path.join(ROOT, 'tests/fixtures/dumps/pixel/layers/three-rows.dump'), 'utf8'));
   });
 
-  test('a click selects the topmost area, and another the one beneath', async ({ page, startEngine }) => {
+  test('a click selects the topmost area, and another, even unsteady, the one beneath', async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const saved = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
     await page.goto(`${url}#builder`);
     await pad(page, 43).click();
@@ -130,8 +139,11 @@ test.describe('on three rows of washes', () => {
     const point = await stagePoint(page, [0.25, 0.8]);
     await page.mouse.click(point.x, point.y);
     await expect(selected).toHaveAttribute('data-area', '2');
-    await page.mouse.click(point.x, point.y);
+    await unsteadyClick(page, point);
     await expect(selected).toHaveAttribute('data-area', '0');
+    await page.getByRole('button', { name: 'Save cue' }).click();
+    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    expect(readFileSync(songFile, 'utf8'), 'no area moved').toBe(saved);
 
     // An area moved off every fixture says it catches nothing.
     await resize(page, 'top-right', [0.05, 0.05]);
@@ -139,10 +151,85 @@ test.describe('on three rows of washes', () => {
     await expect(page.locator('circle.caught')).toHaveCount(0);
   });
 
-  test('a hidden area leaves the preview but stays in the saved cue', async ({ page, startEngine }) => {
+  test('a cancelled press adds no area and puts a resized one back', async ({ page, startEngine }) => {
     const { url } = await startEngine({ look: DARK });
-    const songFile = `${url}api/show/songs/chorus-build.yaml`;
-    const saved = await (await page.request.get(songFile)).json();
+    await page.goto(`${url}#builder`);
+    await pad(page, 43).click();
+    await page.evaluate(() => addEventListener('pointerdown', (event) => (window.lastPointer = event.pointerId), true));
+    const cancelPress = async () => {
+      await page.evaluate(() => dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.lastPointer })));
+      await page.mouse.up();
+    };
+
+    const wash = await page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name: 'Wash' }).boundingBox();
+    const drop = await stagePoint(page, [0.5, 0.5]);
+    await page.mouse.move(wash.x + wash.width / 2, wash.y + wash.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(drop.x, drop.y, { steps: 5 });
+    await cancelPress();
+    await expect(page.locator('[data-area]')).toHaveCount(3);
+
+    const chase = await stagePoint(page, [0.75, 0.3]);
+    await page.mouse.click(chase.x, chase.y);
+    const handle = centre(await page.locator('[data-handle="top-right"]').boundingBox());
+    const inward = await stagePoint(page, [0.8, 0.6]);
+    await page.mouse.move(handle.x, handle.y);
+    await page.mouse.down();
+    await page.mouse.move(inward.x, inward.y, { steps: 5 });
+    await expect(page.getByLabel('Area width')).toHaveValue('0.3');
+    await cancelPress();
+    await expect(page.getByLabel('Area width')).toHaveValue('0.5');
+    await expect(page.getByLabel('Area height')).toHaveValue('1');
+  });
+
+  test('the inspector keeps an area on the stage, sets its phase and lists every mute', async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const { url } = await startEngine({ look: DARK });
+    await page.goto(`${url}#builder`);
+    await pad(page, 43).click();
+
+    await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.getByLabel('Area width').fill('1.5');
+    await page.getByLabel('Area width').press('Enter');
+    await expect(page.getByLabel('Area width'), 'the rest of the stage from x 0.5').toHaveValue('0.5');
+    await page.getByLabel('Phase').fill('0.5');
+
+    // The sparkle squeezed onto high-1 no longer catches the inner washes it mutes: still listed.
+    await page.getByRole('button', { name: /^steel-blue sparkle/ }).click();
+    await page.getByLabel('Area width').fill('0.2');
+    await page.getByLabel('Area width').press('Enter');
+    const muteInner = page.getByRole('button', { name: 'Mute inner-wash' });
+    await expect(muteInner).toHaveAttribute('aria-pressed', 'true');
+    await muteInner.click();
+    await expect(page.getByRole('button', { name: 'Mute inner-wash' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Save cue' }).click();
+    await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
+    const written = readFileSync(songFile, 'utf8');
+    expect(written).toContain('        params: { color: amber, width: 0.25, speed: 1 bar, phase: 0.5 }\n');
+    expect(written).toContain('        area: { x: 0, y: 0.65, width: 0.2, height: 0.35 }\n');
+    expect(written).not.toContain('mute:');
+  });
+
+  test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {
+    const engine = await startEngine({ look: DARK });
+    await page.goto(`${engine.url}#builder`);
+    await pad(page, 43).click();
+    await engine.stop();
+    await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
+
+    const chase = await stagePoint(page, [0.75, 0.3]);
+    await page.mouse.click(chase.x, chase.y);
+    await expect(page.locator('.area.selected')).toHaveAttribute('data-area', '1');
+    await expect(page.getByLabel('Blend')).toHaveValue('over');
+    await expect(page.getByLabel('Blend')).toBeDisabled();
+    await expect(page.locator('[data-handle]')).toHaveCount(0);
+  });
+
+  test('a hidden area leaves the preview but stays in the saved cue', async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const saved = readFileSync(songFile, 'utf8');
+    const { url } = await startEngine({ look: DARK });
     await page.goto(`${url}#builder`);
     await pad(page, 43).click();
     const lowLeft = page.locator('[data-fixture="low-1"] circle').first();
@@ -153,7 +240,7 @@ test.describe('on three rows of washes', () => {
     await page.getByRole('button', { name: 'Save cue' }).click();
 
     await expect(page.getByText('Saved cue 43 in chorus-build.')).toBeVisible();
-    expect(await (await page.request.get(songFile)).json()).toEqual(saved);
+    expect(readFileSync(songFile, 'utf8')).toBe(saved);
   });
 });
 
@@ -172,6 +259,9 @@ test('an old-form pixel cue opened and saved untouched saves as layers and plays
 
   await pad(page, 40).click();
   await expect(page.getByText('Deep-blue chase everywhere, #ff0000 breathe everywhere.')).toBeVisible();
+  // Selecting a whole-stage area with an unsteady click doesn't give it an area of its own.
+  await unsteadyClick(page, await stagePoint(page, [0.5, 0.5]));
+  await expect(page.locator('.area.selected')).toHaveAttribute('data-area', '1');
   await page.getByRole('button', { name: 'Save cue' }).click();
 
   await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
