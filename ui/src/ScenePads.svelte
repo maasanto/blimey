@@ -19,9 +19,11 @@
   const WIDTH = 160;
   const HEIGHT = 90;
   const FIXTURE_RADIUS = 6;
-  /** Room above and below the canvas, so pixels and curves on its edges show whole. */
-  const MARGIN = FIXTURE_RADIUS;
-  const PICTURE_RATIO = `${WIDTH} / ${HEIGHT + 2 * MARGIN}`;
+  /** Room around what is drawn, so pixels and curves on the edges show whole. */
+  const MARGIN = 2 * FIXTURE_RADIUS;
+  /** How wide a pad's picture may be for its height: a single row of washes, or a square grid. */
+  const WIDEST = 3;
+  const NARROWEST = 1;
   /** How much of the space between a grid's pixels each one fills. */
   const GRID_PIXEL_FILL = 0.9;
 
@@ -56,6 +58,32 @@
     const sorted = [...new Set(positions)].sort((a, b) => a - b);
     return Math.min(...sorted.slice(1).map((position, index) => position - sorted[index]));
   }
+
+  /**
+   * The part of the canvas a pad shows, as an SVG viewBox: the rig's lit extent with a margin,
+   * widened or heightened to a sensible ratio, so a single row of washes fills its pad.
+   */
+  const frame = $derived.by(() => {
+    if (!lights.length) return { x: 0, y: -MARGIN, width: WIDTH, height: HEIGHT + 2 * MARGIN };
+    const xs = lights.map((light) => light.x * WIDTH);
+    const ys = lights.map((light) => (1 - light.y) * HEIGHT);
+    let x = Math.min(...xs) - MARGIN;
+    let y = Math.min(...ys) - MARGIN;
+    let width = Math.max(...xs) + MARGIN - x;
+    let height = Math.max(...ys) + MARGIN - y;
+    if (width / height > WIDEST) {
+      const wanted = width / WIDEST;
+      y -= (wanted - height) / 2;
+      height = wanted;
+    } else if (width / height < NARROWEST) {
+      const wanted = height * NARROWEST;
+      x -= (wanted - width) / 2;
+      width = wanted;
+    }
+    return { x, y, width, height };
+  });
+  const viewBox = $derived(`${frame.x} ${frame.y} ${frame.width} ${frame.height}`);
+  const pictureRatio = $derived(`${frame.width} / ${frame.height}`);
 
   /** The numbers of the pads on screen: only those animate, the others hold their first frame. */
   let inView = $state.raw(new Set());
@@ -135,9 +163,13 @@
 <svelte:window onpointerup={letGo} onpointercancel={letGo} />
 
 {#snippet picture(thumbnail, isMoving)}
-  <svg viewBox="0 {-MARGIN} {WIDTH} {HEIGHT + 2 * MARGIN}" class="thumbnail" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">
+  <svg {viewBox} class="thumbnail" style:aspect-ratio={pictureRatio} aria-hidden="true">
     {#if thumbnail?.levels}
-      <polyline class="level" points={curvePoints(thumbnail.levels, { width: WIDTH, height: HEIGHT })} />
+      <polyline
+        class="level"
+        points={curvePoints(thumbnail.levels, { x: frame.x + MARGIN, width: frame.width - 2 * MARGIN, height: frame.height - 2 * MARGIN })}
+        transform="translate(0 {frame.y + MARGIN})"
+      />
     {:else if thumbnail?.frames}
       {@const frame = thumbnail.frames[isMoving ? tick % thumbnail.frames.length : 0]}
       {#each lights as light (`${light.name}:${light.index}`)}
@@ -181,7 +213,7 @@
     {/each}
     <li class="slot">
       <button class="pad new" disabled={!editable} onclick={onnew}>
-        <span class="thumbnail add" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">+</span>
+        <span class="thumbnail add" style:aspect-ratio={pictureRatio} aria-hidden="true">+</span>
         <span class="label"><span class="name">New scene</span></span>
       </button>
     </li>
