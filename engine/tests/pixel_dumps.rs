@@ -16,8 +16,8 @@ use blimey_engine::look::Look;
 use blimey_engine::rig::Rig;
 use blimey_engine::song::Song;
 use blimey_engine::{
-    FakeClock, FakeDmx, MidiEvent, MidiSource, RecordedFrame, Show, first_difference, format_dump,
-    parse_dump, run,
+    FRAME_PERIOD, FakeClock, FakeDmx, MidiEvent, MidiSource, RecordedFrame, Show, first_difference,
+    format_dump, parse_dump, run,
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
@@ -617,4 +617,182 @@ fn a_layer_leaves_the_fixtures_and_groups_it_mutes_to_the_layers_below() {
     let cues = "  60:\n    name: muted\n    type: pixel\n    layers:\n      - { shape: fill, params: { color: \"#ff0000\" } }\n      - { shape: fill, blend: over, params: { color: \"#0000ff\" }, mute: [grid] }\n";
     let frame = &render_song("pixel-grid-8x8", cues, &[(Duration::ZERO, 60)], 1)[0];
     assert_eq!(frame.values[0..3], [0, 255, 0], "a muted grid, GRB");
+}
+
+/// Plan §16's example cue with its swell (program 2), held for its 4 bars and a little after:
+/// the left half's warm white rises along ease-in, the chase on the right plays as without it.
+#[test]
+fn the_layered_example_cue_with_its_swell_matches_its_reference_on_three_rows_of_washes() {
+    let three_rows = Show::load(Path::new(&format!("{FIXTURES}/shows/three-rows"))).unwrap();
+    let note_on = (Duration::ZERO, vec![0x91, 43, 127]);
+
+    let frames = play(
+        &three_rows,
+        &[(Duration::ZERO, vec![0xC1, 2]), note_on.clone()],
+        4 * BAR_FRAMES + 8,
+    );
+
+    assert_reference(&frames, "layers/three-rows-swell.dump");
+    let pixel =
+        |frame: &RecordedFrame, address: usize| frame.values[address - 1..address + 3].to_vec();
+    let (low_1, low_4) = (1, 49);
+    let swell_end = 4 * BAR_FRAMES as usize;
+    assert_eq!(
+        [pixel(&frames[0], low_1), pixel(&frames[swell_end], low_1)],
+        [[0, 0, 0, 0], [255, 210, 160, 0]],
+        "warm white from dark to full over 4 bars"
+    );
+    let without_swell = play(&three_rows, &[note_on], BAR_FRAMES);
+    assert!(
+        frames
+            .iter()
+            .zip(&without_swell)
+            .all(|(with, without)| pixel(with, low_4) == pixel(without, low_4)),
+        "the chase as without the swell"
+    );
+}
+
+fn cues_show() -> Show {
+    Show::load(Path::new(&format!("{FIXTURES}/shows/cues"))).unwrap()
+}
+
+/// Plan §16: a lone layer's `pattern` or `swell` plays as the same pattern or swell linked to
+/// the cue's intensity and fired on the same tick, on the dimmer channel of the par that has
+/// one. Fired mid-bar, so the pattern waits for its bar line, the pixel cue at velocity 100.
+#[test]
+fn a_lone_layers_rhythm_plays_as_the_same_rhythm_linked_to_the_cues_intensity() {
+    let pattern = "length: 1 bar, hits: [{ at: 1, shape: ramp-down, length: 1 beat, level: 100% }, { at: 2, shape: sine, length: 1 beat, level: 60% }, { at: 3.5, shape: ramp-up, length: 0.5 beats, level: 80% }]";
+    let swell = "duration: 2 beats, curve: ease-in";
+    let pixel_cue = |rhythm: &str| {
+        format!(
+            "  60:\n    name: lit\n    type: pixel\n    layers:\n      - {{ shape: bar, effect: move, params: {{ color: \"#ff8000\", width: 0.5, speed: 1 beat }}{rhythm} }}\n"
+        )
+    };
+    let mid_bar = Duration::from_millis(300);
+    let fire = |cues: &str| {
+        let messages = [
+            (mid_bar, vec![0x91, 60, 100]),
+            (mid_bar, vec![0x91, 61, 127]),
+        ];
+        render_show(cues_show(), cues, &messages, 3 * BAR_FRAMES)
+    };
+    let still = fire(&pixel_cue(""));
+
+    for (kind, rhythm) in [("pattern", pattern), ("swell", swell)] {
+        let in_layer = fire(&pixel_cue(&format!(", {kind}: {{ {rhythm} }}")));
+        let linked = fire(&format!(
+            "{}  61: {{ name: link, type: {kind}, target: {{ lit: intensity }}, {rhythm} }}\n",
+            pixel_cue("")
+        ));
+
+        assert_eq!(in_layer, linked, "{kind}");
+        assert_ne!(in_layer, still, "{kind}: the rhythm shows");
+    }
+}
+
+/// Plan §16, as C4: under a steady MIDI clock at 92 and 140 BPM, not the song's 150, a layer's
+/// 4-bar swell fired on a bar line is full within one frame of the bar line 4 bars later. A
+/// second layer puts the swell on the layer's colour rather than the cue's intensity.
+#[test]
+fn a_layers_four_bar_swell_ends_within_a_frame_of_the_bar_line_at_92_and_140_bpm() {
+    let cues = "  60:\n    name: rise\n    type: pixel\n    layers:\n      - { area: { x: 0, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#ff0000\" }, swell: { duration: 4 bars, curve: ease-in } }\n      - { area: { x: 0.5, y: 0, width: 0.5, height: 1 }, shape: fill, params: { color: \"#0000ff\" } }\n";
+    let seconds = Duration::from_secs_f64;
+    let origin = 0.5;
+    for bpm in [92.0, 140.0] {
+        let tick = 60.0 / bpm / 24.0;
+        let note = origin + 96.0 * tick;
+        let bar_line = note + 16.0 * 60.0 / bpm;
+        let mut messages = vec![(seconds(origin - 0.001), vec![0xFA])];
+        messages.extend(
+            (0..=21 * 24).map(|index| (seconds(origin + f64::from(index) * tick), vec![0xF8])),
+        );
+        messages.push((seconds(note), vec![0x91, 60, 127]));
+        messages.sort_by_key(|(at, _)| *at);
+        let frame_count = ((bar_line + 0.5) / FRAME_PERIOD.as_secs_f64()) as u32;
+
+        let frames = render_show(cues_show(), cues, &messages, frame_count);
+
+        // The dimmer par's red, at DMX 2.
+        let full = frames
+            .iter()
+            .find(|frame| frame.values[1] == 255)
+            .expect("the swell ends");
+        let error = full.at.as_secs_f64() - bar_line;
+        assert!(
+            error.abs() <= FRAME_PERIOD.as_secs_f64(),
+            "{bpm} BPM: the swell ended {:.1} ms from the bar line",
+            error * 1000.0
+        );
+        assert!(
+            frames
+                .iter()
+                .filter(|frame| frame.at >= seconds(note))
+                .all(|frame| frame.values[6] == 255),
+            "{bpm} BPM: the blue layer stays full"
+        );
+    }
+}
+
+/// Plan §16: two layers with their own rhythms, a pattern on the left and a swell on the right,
+/// light their fixtures as when the other layer has none.
+#[test]
+fn two_layers_rhythms_do_not_affect_each_other() {
+    let cue = |left: &str, right: &str| {
+        format!(
+            "  60:\n    name: halves\n    type: pixel\n    layers:\n      - {{ area: {{ x: 0, y: 0, width: 0.5, height: 1 }}, shape: fill, params: {{ color: \"#ff0000\" }}{left} }}\n      - {{ area: {{ x: 0.5, y: 0, width: 0.5, height: 1 }}, shape: fill, params: {{ color: \"#00ff00\" }}{right} }}\n"
+        )
+    };
+    let pattern = ", pattern: { length: 1 bar, hits: [{ at: 1, shape: sine, length: 1 beat, level: 100% }, { at: 3, shape: ramp-down, length: 2 beats, level: 70% }] }";
+    let swell = ", swell: { duration: 3 beats }";
+    let render = |left: &str, right: &str| {
+        render_song(
+            "cues",
+            &cue(left, right),
+            &[(Duration::ZERO, 60)],
+            BAR_FRAMES,
+        )
+    };
+    // The dimmer par, DMX 1-4, is on the left; the RGB par, DMX 5-7, on the right.
+    let left = |frames: &[RecordedFrame]| -> Vec<Vec<u8>> {
+        frames
+            .iter()
+            .map(|frame| frame.values[0..4].to_vec())
+            .collect()
+    };
+    let right = |frames: &[RecordedFrame]| -> Vec<Vec<u8>> {
+        frames
+            .iter()
+            .map(|frame| frame.values[4..7].to_vec())
+            .collect()
+    };
+
+    let both = render(pattern, swell);
+
+    assert_eq!(left(&both), left(&render(pattern, "")));
+    assert_eq!(right(&both), right(&render("", swell)));
+    let still = render("", "");
+    assert_ne!(left(&both), left(&still), "the pattern shows");
+    assert_ne!(right(&both), right(&still), "the swell shows");
+}
+
+/// Plan §16, as C5: released half-way up a hit, a layer's pattern fades out from where it was
+/// over the cue's release, rather than along the rest of the hit. At 150 BPM a beat is 16
+/// frames: an 80% ramp up over 2 beats, released after one, over 1 s (40 frames).
+#[test]
+fn a_release_mid_hit_fades_the_layer_over_the_cues_release_time() {
+    let cues = "  60:\n    name: hit\n    type: pixel\n    release: 1s\n    layers:\n      - { shape: fill, params: { color: \"#ff0000\" }, pattern: { length: 1 bar, hits: [{ at: 1, shape: ramp-up, length: 2 beats, level: 80% }] } }\n";
+    let messages = [
+        (Duration::ZERO, vec![0x91, 60, 127]),
+        (Duration::from_millis(400), vec![0x81, 60, 0]),
+    ];
+
+    let frames = render_show(cues_show(), cues, &messages, 64);
+
+    // The RGB par's red, at DMX 5.
+    let red = |frame: usize| frames[frame].values[4];
+    assert_eq!(
+        [red(8), red(16), red(36), red(56)],
+        [51, 102, 51, 0],
+        "a quarter up the ramp, half-way at the note-off, half faded out, gone"
+    );
 }
