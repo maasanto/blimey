@@ -56,11 +56,13 @@ impl EnttecPro {
         let mut port = Port {
             path,
             port: None,
-            is_missing_reported: false,
+            is_working: None,
         };
         thread::spawn(move || {
             for frame in received {
-                port.write(&frame);
+                if let Some(change) = port.write(&frame) {
+                    eprintln!("{change}");
+                }
             }
         });
         Self { frames }
@@ -70,43 +72,41 @@ impl EnttecPro {
 struct Port {
     path: String,
     port: Option<Box<dyn SerialPort>>,
-    is_missing_reported: bool,
+    /// Whether the last frame reached the box; `None` before the first.
+    is_working: Option<bool>,
 }
 
 impl Port {
-    /// Losing the box is reported on stderr, and the next frame reconnects.
-    fn write(&mut self, frame: &Frame) {
-        let Some(port) = self.connected_port() else {
-            return;
-        };
-        if let Err(error) = port.write_all(&send_dmx_packet(frame)) {
-            eprintln!("enttec: lost {}: {error}; reconnecting", self.path);
+    /// Writes `frame`, reconnecting first if the box was lost. Returns a line for the log when
+    /// the box starts or stops taking frames, so a box that hangs every frame logs once.
+    fn write(&mut self, frame: &Frame) -> Option<String> {
+        let written = self
+            .connected_port()
+            .and_then(|port| port.write_all(&send_dmx_packet(frame)));
+        let is_working = written.is_ok();
+        if written.is_err() {
             self.port = None;
         }
+        if self.is_working.replace(is_working) == Some(is_working) {
+            return None;
+        }
+        Some(match written {
+            Ok(()) => format!("enttec: sending to {}", self.path),
+            Err(error) => format!(
+                "enttec: {}: {error}; retrying every frame (check the USB cable, or run `blimey devices`)",
+                self.path
+            ),
+        })
     }
 
-    fn connected_port(&mut self) -> Option<&mut Box<dyn SerialPort>> {
-        if self.port.is_none() {
-            match serialport::new(&self.path, BAUD_RATE)
+    fn connected_port(&mut self) -> io::Result<&mut Box<dyn SerialPort>> {
+        let port = match self.port.take() {
+            Some(port) => port,
+            None => serialport::new(&self.path, BAUD_RATE)
                 .timeout(WRITE_TIMEOUT)
-                .open()
-            {
-                Ok(port) => {
-                    eprintln!("enttec: connected to {}", self.path);
-                    self.port = Some(port);
-                    self.is_missing_reported = false;
-                }
-                Err(error) if !self.is_missing_reported => {
-                    eprintln!(
-                        "enttec: cannot open {}: {error}; retrying every frame (check the USB cable, or run `blimey devices`)",
-                        self.path
-                    );
-                    self.is_missing_reported = true;
-                }
-                Err(_) => {}
-            }
-        }
-        self.port.as_mut()
+                .open()?,
+        };
+        Ok(self.port.insert(port))
     }
 }
 
@@ -209,6 +209,37 @@ mod tests {
             "a second of frames took {:?} to hand over",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn a_box_is_logged_when_it_hangs_or_comes_back_not_every_frame() {
+        let port_on = |path: String| Port {
+            path,
+            port: None,
+            is_working: None,
+        };
+        let logged = |port: &mut Port, frames: usize| -> Vec<String> {
+            (0..frames)
+                .filter_map(|_| port.write(&[0; DMX_CHANNELS]))
+                .collect()
+        };
+        let (_never_read, hung) = serialport::TTYPort::pair().unwrap();
+        let mut device = EmulatedEnttec::plug_in().unwrap();
+        let mut replugged = port_on(device.path());
+
+        let hanging = logged(&mut port_on(hung.name().unwrap()), 8);
+        logged(&mut replugged, 2);
+        device.unplug();
+        logged(&mut replugged, 2);
+        device.plug_back_in().unwrap();
+        let back = logged(&mut replugged, 3);
+
+        assert!(hanging.len() <= 2, "{hanging:#?}");
+        assert!(
+            hanging.last().unwrap().contains("timed out"),
+            "{hanging:#?}"
+        );
+        assert_eq!(back, [format!("enttec: sending to {}", device.path())]);
     }
 
     #[test]
