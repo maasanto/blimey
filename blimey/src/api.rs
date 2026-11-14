@@ -20,7 +20,7 @@ use blimey_engine::duration::TimeSignature;
 use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::pattern::Pattern;
-use blimey_engine::pixel::{self, PixelScene};
+use blimey_engine::pixel::{self, PixelScene, Rhythm};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
 use blimey_engine::song::Song;
@@ -554,15 +554,17 @@ impl TimedLook {
     /// Shows `overlay`, or shows it for another `lifetime`.
     fn show(&self, overlay: Overlay) {
         let mut shown = lock(&self.shown);
+        // A swell that has run would show no edit to its curve or length: a new rhythm starts
+        // the preview again, any other edit carries on where it is.
         let started = match (&*shown, &overlay) {
             (
                 Some(Shown {
-                    overlay: Overlay::Pixel { .. },
+                    overlay: Overlay::Pixel { scene: shown, .. },
                     started,
                     ..
                 }),
-                Overlay::Pixel { .. },
-            ) => *started,
+                Overlay::Pixel { scene, .. },
+            ) if rhythms(shown).eq(rhythms(scene)) => *started,
             _ => None,
         };
         *shown = Some(Shown {
@@ -602,6 +604,13 @@ impl TimedLook {
             }
         }
     }
+}
+
+fn rhythms(scene: &PixelScene) -> impl Iterator<Item = &Rhythm> {
+    scene
+        .layers
+        .iter()
+        .filter_map(|layer| layer.rhythm.as_ref())
 }
 
 #[cfg(test)]
@@ -799,6 +808,52 @@ mod tests {
             [2],
             "a new PUT doesn't restart it"
         );
+    }
+
+    #[test]
+    fn a_pixel_preview_starts_again_when_a_layer_rhythm_changes() {
+        let rig = Rig::parse(
+            "fixtures:\n  - { name: dot, type: pixel-grid, columns: 1, rows: 1, colour_order: RGB, address: 1, canvas: { x: 0.5, y: 0.5 } }\n",
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        let overlay = |color: &str, duration: &str| {
+            Overlay::Pixel {
+            scene: Box::new(
+                PixelScene::parse(
+                    &Show::default(),
+                    Default::default(),
+                    json!({ "name": "rise", "type": "pixel", "layers": [
+                        { "shape": "fill", "params": { "color": color }, "swell": { "duration": duration } },
+                    ] }),
+                )
+                .unwrap(),
+            ),
+            clock: ClockFollower::new(120.0, Default::default()),
+        }
+        };
+        let preview = TimedLook::new(PREVIEW_LIFETIME);
+        let lit = |seconds: u64| {
+            let mut out = Universes {
+                enttec: [0; 512],
+                artnet: rig.artnet_frames(),
+            };
+            preview.apply(&rig, Duration::from_secs(seconds), &mut out);
+            out.enttec[0..3].to_vec()
+        };
+
+        preview.show(overlay("#ff0000", "2s"));
+        assert_eq!(lit(10), [0, 0, 0], "the swell starts on the first frame");
+        assert_eq!(lit(12), [255, 0, 0], "and ends 2 s later");
+        preview.show(overlay("#00ff00", "2s"));
+        assert_eq!(
+            lit(13),
+            [0, 255, 0],
+            "a new colour keeps the swell where it is"
+        );
+        preview.show(overlay("#00ff00", "4s"));
+        assert_eq!(lit(14), [0, 0, 0], "a new swell starts again");
+        assert_eq!(lit(16), [0, 128, 0]);
     }
 
     #[test]
