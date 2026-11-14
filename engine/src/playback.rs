@@ -557,6 +557,38 @@ mod tests {
         assert_eq!(beats, [(40, 3.0, Some(1.0)), (41, 3.0, None)]);
     }
 
+    /// A pixel cue fired without a pattern layer has no bar line; saving one onto it while it
+    /// plays must not take the output down.
+    #[test]
+    fn a_pattern_layer_saved_onto_a_playing_pixel_cue_shows_the_layer_until_it_fires_again() {
+        let with_layer = |extra: &str| {
+            let song = format!(
+                "program: 1\ncues:\n  40:\n    name: red\n    type: pixel\n    layers:\n      - {{ shape: fill, params: {{ color: \"#ff0000\" }}{extra} }}\n"
+            );
+            let mut show = cues_show();
+            show.songs = vec![Song::parse("edited", &song, &show).unwrap()];
+            show
+        };
+        let (before, after) = (
+            with_layer(""),
+            with_layer(
+                ", pattern: { length: 1 bar, hits: [{ at: 2, shape: hold, length: 1 beat, level: 100% }] }",
+            ),
+        );
+        let mut playback = Playback::default();
+        for message in [[CUE_PROGRAM_CHANGE, 1].as_slice(), &[CUE_NOTE_ON, 40, 127]] {
+            let event = MidiEvent {
+                at: Duration::ZERO,
+                message: message.to_vec(),
+            };
+            playback.apply(&before, &event);
+        }
+
+        let output = playback.render(&after, &Look::default(), Duration::from_millis(100));
+
+        assert_eq!(output.enttec[4], 255, "rgb-par red, as it was");
+    }
+
     /// The builder's playhead follows a pattern that drives a pixel cue's intensity, though
     /// the pattern draws nothing itself.
     #[test]

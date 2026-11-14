@@ -373,13 +373,12 @@ impl Rhythm {
         match self {
             Rhythm::Swell(swell) => swell.level(clock, timing.started, now),
             // Until its loop starts, the layer shows as it is, as a pattern linked to the cue's
-            // intensity leaves the cue.
-            Rhythm::Pattern(hits) => {
-                let bar_line = timing
-                    .bar_line
-                    .expect("a pixel cue with a pattern layer has a bar line");
-                hits.level(bar_line, now).unwrap_or(1.0)
-            }
+            // intensity leaves the cue. A cue fired before a save gave it a pattern has no bar
+            // line: its loop starts at the next note-on.
+            Rhythm::Pattern(hits) => timing
+                .bar_line
+                .and_then(|bar_line| hits.level(bar_line, now))
+                .unwrap_or(1.0),
         }
     }
 }
