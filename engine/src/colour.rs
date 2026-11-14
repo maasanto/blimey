@@ -31,19 +31,28 @@ impl Rgb {
     }
 
     pub fn to_hex(self) -> String {
-        let mut hex = String::with_capacity(7);
-        self.push_hex(&mut hex);
-        hex
+        self.hex().as_str().to_owned()
     }
 
-    /// Appends `#rrggbb` to `out`. Without `format!`: the stream writes one per pixel per frame.
-    pub fn push_hex(self, out: &mut String) {
+    /// `#rrggbb` on the stack: the stream writes one per pixel per frame.
+    pub fn hex(self) -> Hex {
         const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        out.push('#');
-        for value in [self.red, self.green, self.blue].map(to_dmx) {
-            out.push(char::from(DIGITS[usize::from(value >> 4)]));
-            out.push(char::from(DIGITS[usize::from(value & 0xf)]));
+        let mut hex = [b'#'; 7];
+        let components = [self.red, self.green, self.blue].map(to_dmx);
+        for (digits, value) in hex[1..].chunks_exact_mut(2).zip(components) {
+            digits[0] = DIGITS[usize::from(value >> 4)];
+            digits[1] = DIGITS[usize::from(value & 0xf)];
         }
+        Hex(hex)
+    }
+}
+
+/// `#rrggbb`, from `Rgb::hex`.
+pub struct Hex([u8; 7]);
+
+impl Hex {
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("hex digits are ASCII")
     }
 }
 

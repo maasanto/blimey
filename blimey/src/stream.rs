@@ -320,9 +320,8 @@ pub fn pixel_colours(rig: &Rig, frame: &Frame, artnet: &ArtNetFrames) -> Value {
 
 /// Serialized straight to text, without a `Value` per pixel: it goes out every frame.
 #[derive(Serialize)]
+#[serde(tag = "type", rename = "frame")]
 struct FrameMessage<'frame> {
-    #[serde(rename = "type")]
-    kind: &'static str,
     at_ms: u64,
     dmx: &'frame [u8],
     pixels: PixelColours<'frame>,
@@ -330,7 +329,7 @@ struct FrameMessage<'frame> {
     status: &'frame Status,
 }
 
-/// `{ "<fixture or grid>": ["#rrggbb", …] }`, written without a `String` per pixel.
+/// `{ "<fixture or grid>": ["#rrggbb", …] }`, written without allocating per pixel.
 struct PixelColours<'frame> {
     rig: &'frame Rig,
     frame: &'frame Frame,
@@ -339,25 +338,25 @@ struct PixelColours<'frame> {
 
 impl Serialize for PixelColours<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let colours = self.rig.pixel_colours(self.frame, self.artnet);
-        let mut map = serializer.serialize_map(Some(colours.len()))?;
-        for (name, colours) in &colours {
-            map.serialize_entry(name, &HexColours(colours))?;
+        let Self { rig, frame, artnet } = *self;
+        let mut map = serializer.serialize_map(Some(rig.fixtures.len() + rig.grids.len()))?;
+        for fixture in &rig.fixtures {
+            map.serialize_entry(&fixture.name, &HexColours(fixture.pixel_colours(frame)))?;
+        }
+        for grid in &rig.grids {
+            map.serialize_entry(&grid.name, &HexColours(grid.pixel_colours(frame, artnet)))?;
         }
         map.end()
     }
 }
 
-struct HexColours<'colours>(&'colours [Rgb]);
+struct HexColours<Colours>(Colours);
 
-impl Serialize for HexColours<'_> {
+impl<Colours: ExactSizeIterator<Item = Rgb> + Clone> Serialize for HexColours<Colours> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        let mut hex = String::with_capacity(7);
-        for colour in self.0 {
-            hex.clear();
-            colour.push_hex(&mut hex);
-            seq.serialize_element(&hex)?;
+        for colour in self.0.clone() {
+            seq.serialize_element(colour.hex().as_str())?;
         }
         seq.end()
     }
@@ -371,7 +370,6 @@ fn frame_message(
     status: &Status,
 ) -> String {
     let message = FrameMessage {
-        kind: "frame",
         at_ms: at.as_millis() as u64,
         dmx: frame,
         pixels: PixelColours { rig, frame, artnet },
