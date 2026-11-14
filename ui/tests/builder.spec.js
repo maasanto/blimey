@@ -100,12 +100,14 @@ test('a look entry without a colour shows it keeps the colour from below', async
   await expect(allWash.getByText('colour from below')).toHaveCount(0);
 });
 
-test('editing a pixel cue in the form keeps the fields the form does not show', async ({ page, show, startEngine }) => {
-  const pixelCue = (head) =>
-    `  40:\n${head}    effect: chase\n` +
-    '    params: { color: deep-blue, width: 0.2, speed: 1 bar, direction: left-to-right }\n' +
-    '    layer_2: { shape: sweep, blend: add }\n    seed: 7\n';
-  const songFile = addSong(show, HEADER + BLACKOUT + pixelCue('    name: bridge-chase\n    type: pixel\n'));
+test('editing a pixel cue in the form keeps its layers, in the layers form', async ({ page, show, startEngine }) => {
+  const songFile = addSong(
+    show,
+    HEADER + BLACKOUT +
+      '  40:\n    name: bridge-chase\n    type: pixel\n    effect: chase\n' +
+      '    params: { color: deep-blue, width: 0.2, speed: 1 bar, direction: left-to-right }\n' +
+      '    layer_2: { shape: sweep, blend: add }\n    seed: 7\n',
+  );
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
 
@@ -117,7 +119,10 @@ test('editing a pixel cue in the form keeps the fields the form does not show', 
 
   await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
-    HEADER + BLACKOUT + pixelCue('    name: bridge-sweep\n    type: pixel\n    fade_in: 1 beat\n    release: 2s\n'),
+    HEADER + BLACKOUT +
+      '  40:\n    name: bridge-sweep\n    type: pixel\n    fade_in: 1 beat\n    release: 2s\n    seed: 7\n    layers:\n' +
+      '      -\n        effect: chase\n        params: { color: deep-blue, width: 0.2, speed: 1 bar, direction: left-to-right }\n' +
+      '      - { shape: sweep, blend: add }\n',
   );
 });
 

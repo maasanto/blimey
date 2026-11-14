@@ -8,12 +8,13 @@
   let pausedLook = $state(null);
   /**
    * The cue being edited, as in the song file, and its note. `replaces` is the cue as loaded,
-   * `{ note, cue }`, so the engine can refuse the save if the file changed since.
+   * `{ note, cue }`, so the engine can refuse the save if the file changed since. `hidden`
+   * marks the pixel cue's layers left off the preview while editing.
    */
   let form = $state(newForm());
 
   function newForm() {
-    return { note: null, replaces: null, cue: { name: '', type: 'scene' } };
+    return { note: null, replaces: null, cue: { name: '', type: 'scene' }, hidden: [] };
   }
 </script>
 
@@ -22,8 +23,9 @@
   import { beatsPerBar } from './duration.js';
   import FrontView from './FrontView.svelte';
   import PadBank, { LAST_NOTE } from './PadBank.svelte';
+  import { asLayers } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
-  import PixelSceneEditor, { newPixelCue } from './PixelSceneEditor.svelte';
+  import StageComposer from './StageComposer.svelte';
   import SwellEditor from './SwellEditor.svelte';
 
   // Channel 2, where cues and song select live (docs/api.md, Playback).
@@ -54,10 +56,11 @@
   const targets = $derived(engine.rig ? [...Object.keys(engine.rig.groups), ...engine.rig.fixtures.map((fixture) => fixture.name)] : []);
   const values = $derived(Object.fromEntries($state.snapshot(look).map(({ target, settings }) => [target, settings])));
   const isPixel = $derived(form.cue.type === 'pixel');
-  /** What the output previews while editing: the pixel scene in the cue form, or the look; null for nothing. */
+  const shownLayers = $derived(isPixel ? form.cue.layers.filter((_, index) => !form.hidden[index]) : []);
+  /** What the output previews while editing: the pixel cue's shown layers, or the look; null for nothing. */
   const shown = $derived(
-    isPixel && songName
-      ? { path: '/api/preview/pixel', body: { song: songName, cue: withoutEmptyTimes(form.cue) } }
+    shownLayers.length && songName
+      ? { path: '/api/preview/pixel', body: { song: songName, cue: { ...withoutEmptyTimes(form.cue), layers: $state.snapshot(shownLayers) } } }
       : !isPixel && Object.keys(values).length
         ? { path: '/api/preview', body: values }
         : null,
@@ -77,7 +80,7 @@
     scene: () => ({ type: 'scene' }),
     swell: () => ({ type: 'swell', target: { [targets[0]]: { dimmer: '100%' } }, duration: '4 bars' }),
     pattern: () => ({ type: 'pattern', length: '1 bar', target: { [targets[0]]: 'dimmer' }, hits: [] }),
-    pixel: newPixelCue,
+    pixel: () => ({ type: 'pixel', layers: [] }),
   };
 
   /** Starts the new cue over as `type`, keeping what the form shows for every type. */
@@ -85,6 +88,7 @@
     const { name, fade_in, release } = form.cue;
     const kept = { name, ...(release && { release }), ...(fade_in && FADE_IN_TYPES.includes(type) && { fade_in }) };
     form.cue = { ...kept, ...newCue[type]() };
+    form.hidden = [];
   }
 
   async function attempt(action) {
@@ -180,7 +184,8 @@
       else form = { ...newForm(), note };
       return;
     }
-    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: $state.snapshot(cue) };
+    const edited = cue.type === 'pixel' ? asLayers($state.snapshot(cue)) : $state.snapshot(cue);
+    form = { note, replaces: { note, cue: $state.snapshot(cue) }, cue: edited, hidden: [] };
     if (cue.type === 'scene') {
       look = Object.entries($state.snapshot(cue.values)).map(([target, settings]) => ({ target, settings }));
     }
@@ -388,18 +393,7 @@
         onmove={(from, to) => attempt(() => moveCue(from, to))}
       />
     {/if}
-    {#if isPixel}
-      <fieldset class="pixel-editor" disabled={!editable || !song}>
-        <PixelSceneEditor
-          bind:cue={form.cue}
-          palettes={summary?.palettes}
-          {cues}
-          savedName={form.replaces?.cue.name ?? null}
-          paused={isPaused}
-          onlink={(note) => attempt(() => linkIntensity(note))}
-        />
-      </fieldset>
-    {:else}
+    {#if !isPixel}
     <fieldset class="look" disabled={!editable}>
       <legend>Look</legend>
       {#each look as entry, index (entry.target)}
@@ -489,7 +483,7 @@
         {#if form.cue.type === 'scene'}
           Saves the look above as this scene. Times take ms, s, beats or bars.
         {:else if isPixel}
-          Saves the pixel scene above as this cue. Times take ms, s, beats or bars.
+          Saves the look on the stage as this cue, hidden areas included. Times take ms, s, beats or bars.
         {:else if form.cue.type === 'swell' || form.cue.type === 'pattern'}
           Shape the {form.cue.type} below, then save it. Times take ms, s, beats or bars.
         {:else}
@@ -498,7 +492,9 @@
         {#if form.note == null}Pick an empty pad or a note for it.{:else if form.replaces !== null}A new note moves the cue there on save.{/if}
       </p>
       <div class="row">
-        <button disabled={form.note == null || !form.cue.name} onclick={() => attempt(saveCue)}>Save cue</button>
+        <button disabled={form.note == null || !form.cue.name || (isPixel && !form.cue.layers.length)} onclick={() => attempt(saveCue)}>
+          Save cue
+        </button>
         {#if form.replaces !== null}
           <button onclick={() => attempt(() => audition(form.replaces.note))}>
             {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
@@ -510,7 +506,27 @@
     </fieldset>
   </div>
 
-  <div><FrontView /></div>
+  <div>
+    {#if isPixel}
+      <fieldset class="composer" disabled={!editable || !song}>
+        <!-- A cue opened from a pad, or a new one, starts with nothing selected. -->
+        {#key form}
+          <StageComposer
+            bind:cue={form.cue}
+            bind:hidden={form.hidden}
+            palettes={summary?.palettes}
+            {editable}
+            paused={isPaused}
+            {cues}
+            savedName={form.replaces?.cue.name ?? null}
+            onlink={(note) => attempt(() => linkIntensity(note))}
+          />
+        {/key}
+      </fieldset>
+    {:else}
+      <FrontView />
+    {/if}
+  </div>
 </div>
 
 <fieldset disabled={!editable || !song}>
@@ -571,7 +587,7 @@
     align-items: start;
   }
 
-  .pixel-editor {
+  .composer {
     min-width: 0;
   }
 

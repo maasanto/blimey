@@ -39,6 +39,7 @@ function replayFirstFrame(show, messages) {
 }
 
 const pad = (page, note) => page.locator(`[data-pad="${note}"]`);
+const ingredient = (page, name) => page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name });
 
 /** Whether the picker's thumbnail canvas has a lit pixel. */
 const isPainted = (button) =>
@@ -47,23 +48,24 @@ const isPainted = (button) =>
     return data.some((value, index) => index % 4 !== 3 && value > 0);
   });
 
-test('a two-layer pixel scene plays after a restart as the engine renders its saved file', async ({ page, show, startEngine }) => {
+test('a two-layer pixel look plays after a restart as the engine renders its saved file', async ({ page, show, startEngine }) => {
   const songFile = addSong(show, HEADER.replace('cues:\n', ''));
   const first = await startEngine();
   await page.goto(`${first.url}#builder`);
 
-  // 1. A new pixel cue: gradient in deep blue, plus a red bar added on layer 2.
+  // 1. A new pixel cue: a deep-blue gradient over the whole stage, plus a red bar added over it.
   await pad(page, 40).click();
   await page.getByLabel('Type').selectOption('pixel');
   await page.getByLabel('Name').fill('two-layer');
-  const gradient = page.getByRole('button', { name: 'Layer 1 shape: gradient' });
+  await ingredient(page, 'Wash').click();
+  const gradient = page.getByRole('button', { name: 'Shape: gradient' });
   await expect.poll(() => isPainted(gradient), 'thumbnails rendered by the engine').toBe(true);
   await gradient.click();
-  await page.getByRole('button', { name: 'Layer 1 colour: deep-blue' }).click();
-  await page.getByLabel('Layer 2', { exact: true }).check();
-  await page.getByRole('button', { name: 'Layer 2 shape: bar' }).click();
-  await page.getByLabel('Layer 2 colour', { exact: true }).fill('#ff0000');
-  await page.getByLabel('Layer 2 width').fill('0.5');
+  await page.getByRole('button', { name: 'Colour: deep-blue' }).click();
+  await ingredient(page, 'Chase').click();
+  await page.getByRole('button', { name: 'Motion: static' }).click();
+  await page.getByLabel('Colour', { exact: true }).fill('#ff0000');
+  await page.getByLabel('Width', { exact: true }).fill('0.5');
   await page.getByLabel('Blend').selectOption('add');
 
   // 2. Save it.
@@ -71,10 +73,9 @@ test('a two-layer pixel scene plays after a restart as the engine renders its sa
   await expect(page.getByText('Saved cue 40 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(
     HEADER +
-      '  40:\n    name: two-layer\n    type: pixel\n    shape: gradient\n    effect: static\n' +
-      '    params: { color: deep-blue, width: 0.25 }\n' +
-      '    layer_2:\n      shape: bar\n      effect: static\n      params: { color: "#ff0000", width: 0.5 }\n      blend: add\n' +
-      '    seed: 7\n',
+      '  40:\n    name: two-layer\n    type: pixel\n    layers:\n' +
+      '      -\n        shape: gradient\n        params: { color: deep-blue }\n        blend: over\n' +
+      '      -\n        shape: bar\n        effect: static\n        params: { color: "#ff0000", width: 0.5, speed: 1 bar }\n        blend: add\n',
   );
   const rendered = replayFirstFrame(show, [SELECT_SONG, FIRE_40]);
   expect(rendered.slice(0, 64).some((value) => value > 0), 'the washes are lit').toBe(true);

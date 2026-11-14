@@ -234,6 +234,8 @@ test('from the keyboard, the cue form auditions a cue and moves it to a free not
   await page.getByRole('button', { name: 'Save cue' }).press('Enter');
   await expect(pad(page, 44)).toHaveAccessibleName('Pad 44: chase');
   await expect(pad(page, 40)).toHaveAccessibleName('Pad 40: empty');
-  expect(readFileSync(songFile, 'utf8')).toBe(SONG.replace('  40:', '  44:'));
+  // Saved from the stage composer, the pixel cue takes the layers form.
+  const moved = '  44:\n    name: chase\n    type: pixel\n    layers:\n      -\n        effect: chase\n        params: { color: deep-blue, width: 0.25 }\n';
+  expect(readFileSync(songFile, 'utf8')).toBe(HEADER + HOUSE + VERSE + CHORUS + RISE + moved);
   midi.close();
 });
