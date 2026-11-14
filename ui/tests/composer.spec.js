@@ -244,7 +244,7 @@ test.describe('on three rows of washes', () => {
     await page.getByText('Position and phase').click();
     await expect(page.getByLabel('Area left')).toHaveValue('0.475');
     await expect(page.getByLabel('Area bottom'), 'a full-height area has nowhere to go').toHaveValue('0');
-    await expect(page.getByText('Unsaved changes')).toBeVisible();
+    await expect(page.locator('.status')).toHaveText('Unsaved changes');
 
     await page.keyboard.press('Control+s');
     await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();

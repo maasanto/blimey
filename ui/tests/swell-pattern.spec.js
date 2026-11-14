@@ -208,8 +208,8 @@ test('a new scene keeps its release across types; a shorter loop keeps its hits 
   await expect(page.getByLabel('Release')).toHaveValue('2s');
 
   // Two bars of 7/8 are 7 beats, the second bar starting on beat 3.5.
-  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('link', { name: '← Scenes' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Leave without saving' }).click();
   await pad(page, 42).click();
   await expect(page.locator('.lane .bar-line')).toHaveCount(2);
   await expect(page.locator('.lane .bar-line').nth(1)).toHaveAttribute('x1', '3.5');

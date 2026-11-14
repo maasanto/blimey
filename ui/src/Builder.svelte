@@ -41,7 +41,7 @@
     return opened !== null && form.unchanged !== null && unchangedOf(form) !== form.unchanged;
   }
 
-  const LEAVE_QUESTION = 'This scene has unsaved changes. Leave the editor and lose them?';
+  const LEAVE_QUESTION = 'This scene has unsaved changes.';
 
   // Here rather than on the component: edits are kept while other pages are open, and a reload
   // or a closed tab would lose them all the same.
@@ -109,15 +109,23 @@
   /** The look's layers as saved, which an audition plays. */
   const savedLayers = $derived(form.replaces?.cue.type === 'pixel' ? asLayers(form.replaces.cue).layers : []);
   const isDirtyNow = $derived(isDirty());
+  /** The name of the scene already on the number typed, when it is another scene's. */
+  const numberTakenBy = $derived(form.number !== form.replaces?.note ? (song?.cues?.[form.number]?.name ?? '') : '');
   /** Why the scene can't be saved yet, or an empty string. */
   const saveBlocker = $derived.by(() => {
     if (form.number == null) return 'Give the scene a number.';
+    if (numberTakenBy) return `Scene ${form.number} is taken by ${numberTakenBy}.`;
     if (!form.cue.name) return 'Name the scene to save it.';
     if (form.cue.type === 'scene' && !form.sceneKept) return 'Waiting for the rig.';
     if (isPixel && !form.sceneKept && !form.cue.layers.length) return 'Put an area on the stage to save it.';
     return '';
   });
   const canSave = $derived(editable && song && !saveBlocker);
+
+  $effect(() => {
+    document.title = opened && isDirtyNow ? `• ${form.replaces ? `Scene ${form.replaces.note}` : 'New scene'} — Blimey` : 'Blimey';
+    return () => (document.title = 'Blimey');
+  });
 
   /** What a new scene of each type starts as. */
   const newCue = {
@@ -205,9 +213,11 @@
     if (!location.hash.startsWith('#builder')) return;
     const next = sceneInUrl();
     if (next?.song === opened?.song && next?.number === opened?.number) return;
-    if (isDirty() && !confirm(LEAVE_QUESTION)) {
+    if (isDirty()) {
+      const destination = location.hash;
       // Replacing fires `hashchange` again, so the Builder tab follows; the check above then finds the scene open.
       location.replace(sceneHash(opened));
+      askToLeave(destination);
       return;
     }
     opened = next?.number > HIGHEST_NUMBER ? null : next;
@@ -227,8 +237,35 @@
 
   function leaveEditor(event) {
     if (!isDirty()) return;
-    if (confirm(LEAVE_QUESTION)) form.unchanged = null;
-    else event.preventDefault();
+    event.preventDefault();
+    askToLeave('#builder');
+  }
+
+  /** The hash to go to once the unsaved edits are saved or dropped, while the leave prompt is up. */
+  let leaving = null;
+  let leavePrompt = $state();
+
+  // Read only by the prompt's buttons, so it needn't be cleared when the prompt closes.
+  function askToLeave(destination) {
+    leaving = destination;
+    if (!leavePrompt.open) leavePrompt.showModal();
+  }
+
+  function leaveWithoutSaving() {
+    form.unchanged = null;
+    const destination = leaving;
+    leavePrompt.close();
+    location.hash = destination;
+  }
+
+  async function saveAndLeave() {
+    const destination = leaving;
+    try {
+      await saveScene();
+    } finally {
+      leavePrompt.close();
+    }
+    location.hash = destination;
   }
 
   /**
@@ -457,7 +494,11 @@
     </div>
     <div class="row">
       <label>Name <input bind:value={form.cue.name} /></label>
-      <label>Number <input type="number" min="0" max={HIGHEST_NUMBER} title="A new number moves the scene there on save" bind:value={form.number} /></label>
+      <label>
+        Number
+        <input type="number" min="0" max={HIGHEST_NUMBER} title="A new number moves the scene there on save" aria-invalid={!!numberTakenBy || undefined} bind:value={form.number} />
+        {#if numberTakenBy}<span class="error" role="status">Taken by {numberTakenBy}</span>{/if}
+      </label>
       {#if isPixel}
         <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" title="ms, s, beats or bars" /></label>
       {/if}
@@ -485,6 +526,16 @@
       <p class="hint">Saving makes this fixed look a look on the stage.</p>
     {/if}
   </fieldset>
+
+  <dialog class="leave" bind:this={leavePrompt} aria-labelledby="leave-question">
+    <p id="leave-question">{LEAVE_QUESTION}</p>
+    <div class="row">
+      <button class="primary" disabled={!canSave} onclick={() => attempt(saveAndLeave)}>Save and leave</button>
+      <button class="danger" onclick={leaveWithoutSaving}>Leave without saving</button>
+      <button class="quiet" onclick={() => leavePrompt.close()}>Stay</button>
+    </div>
+    {#if saveBlocker}<p class="hint">{saveBlocker}</p>{/if}
+  </dialog>
 
   {#if isPixel && song}
     <!-- A scene opened, or a new one, starts with nothing selected. -->
@@ -676,6 +727,35 @@
 
   .scene p {
     margin: 0;
+  }
+
+  .scene label .error {
+    font-size: 13px;
+  }
+
+  input[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  .leave {
+    min-width: 24em;
+    padding: 20px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+  }
+
+  .leave::backdrop {
+    background: rgb(0 0 0 / 0.6);
+  }
+
+  .leave p {
+    margin: 0 0 14px;
+  }
+
+  .leave .hint {
+    margin: 10px 0 0;
   }
 
   .rhythm {

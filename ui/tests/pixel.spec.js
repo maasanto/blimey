@@ -115,8 +115,8 @@ test("linking a pattern to a pixel scene's intensity saves it as the pattern's t
       pattern.replace('{ all-wash: dimmer }', '{ red-wash: intensity }'),
   );
   // The rename isn't saved: leaving the editor asks first.
-  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('link', { name: '← Scenes' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Leave without saving' }).click();
   await page.getByRole('button', { name: 'Undo (1)' }).click();
   await pad(page, 40).click();
   await expect(page.getByText('not linked')).toBeVisible();
