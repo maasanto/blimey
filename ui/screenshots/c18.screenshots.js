@@ -31,6 +31,7 @@ test.describe('on three rows of washes', () => {
     await page.getByRole('button', { name: 'Rhythm: swell' }).click();
     await groovesDrawn(page);
     await painted(page.getByRole('button', { name: 'Shape: fill' }));
+    await painted(page.getByRole('button', { name: 'Sparkle', exact: true }));
     await page.getByRole('group', { name: 'Rhythm' }).scrollIntoViewIfNeeded();
     await shoot(page, 'groove-thumbnails-in-the-inspector');
 

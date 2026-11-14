@@ -1051,6 +1051,27 @@ mod tests {
         );
     }
 
+    /// The builder's Hits ingredient, half-beat punches on every beat of a bar, lone on its cue:
+    /// the frames on the beat catch each punch at its peak.
+    #[test]
+    fn a_thumbnail_of_short_hits_shows_them_lit() {
+        let punch = |at: u8| serde_json::json!({ "at": at, "shape": "ramp-down", "length": "0.5 beats", "level": "100%" });
+        let hits = [1, 2, 3, 4].map(punch);
+        let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [{
+            "shape": "fill", "params": { "color": "#ff0000" }, "blend": "over",
+            "pattern": { "length": "1 bar", "hits": hits },
+        }] });
+
+        let frames = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+
+        let red: Vec<f32> = frames.iter().map(|frame| frame[0].red).collect();
+        assert_eq!(
+            red,
+            [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+            "on each beat, dark half a beat after"
+        );
+    }
+
     #[test]
     fn each_blend_meets_the_layer_below_as_documented() {
         let rgb = |red, green, blue| Rgb { red, green, blue };
