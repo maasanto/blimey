@@ -141,9 +141,13 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
             .into_iter()
             .map(|(note, cue)| {
                 let cue_type = cue["type"].as_str().unwrap_or_default().to_owned();
-                let cue = in_order(cue, &schema["$defs"][&cue_type]["properties"]);
+                let mut cue = in_order(cue, &schema["$defs"][&cue_type]["properties"]);
                 match cue_type.as_str() {
                     "pixel" => (note, pixel_layers_in_order(cue, schema)),
+                    "pattern" => {
+                        hits_in_order(&mut cue, schema);
+                        (note, cue)
+                    }
                     _ => (note, cue),
                 }
             })
@@ -176,10 +180,23 @@ fn pixel_layers_in_order(mut cue: Value, schema: &Value) -> Value {
                     *value = in_order(value.take(), &layer_properties[key]["properties"]);
                 }
             }
+            if let Some(pattern) = layer.get_mut("pattern") {
+                hits_in_order(pattern, schema);
+            }
             params_in_order(layer);
         }
     }
     cue
+}
+
+/// Each of a pattern's `hits`, a pattern cue's or a pixel layer's, in schema order.
+fn hits_in_order(pattern: &mut Value, schema: &Value) {
+    let hit_properties = &schema["$defs"]["pattern"]["properties"]["hits"]["items"]["properties"];
+    if let Some(Value::Array(hits)) = pattern.get_mut("hits") {
+        for hit in hits {
+            *hit = in_order(hit.take(), hit_properties);
+        }
+    }
 }
 
 /// An object's keys in the order of `properties`; keys it doesn't list follow as given.
@@ -765,7 +782,7 @@ mod tests {
                     "mute": ["inner-wash"],
                     "blend": "over",
                     "pattern": {
-                        "hits": [{ "at": 1, "shape": "sine", "length": "1 beat", "level": "100%" }],
+                        "hits": [{ "level": "100%", "length": "1 beat", "shape": "sine", "at": 1 }],
                         "length": "1 bar",
                     },
                     "level": "60%",
