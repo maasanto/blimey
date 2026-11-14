@@ -95,8 +95,8 @@ impl SwellTiming {
 pub struct CueTiming {
     /// See `Cue::start`.
     pub started: Moment,
-    /// Where the loop of a pattern on a pixel cue's layer starts: `Pattern::start` of the note.
-    pub bar_line: Moment,
+    /// See `Cue::bar_line`.
+    pub bar_line: Option<Moment>,
     /// The note-off, once there is one: a released pixel cue's layer rhythms stay where they
     /// were then, and it fades out from there, as a released pattern cue does.
     pub released: Option<Moment>,
@@ -228,6 +228,15 @@ impl Cue {
         match self {
             Cue::Pattern(_) => Pattern::start(clock, at),
             _ => clock.moment(at),
+        }
+    }
+
+    /// For a pixel cue with a `pattern` on a layer, where that loop starts for a note-on at
+    /// `at`, worked out then, as for a pattern cue; `None` for other cues.
+    pub fn bar_line(&self, clock: &ClockFollower, at: Duration) -> Option<Moment> {
+        match self {
+            Cue::Pixel(scene) if scene.has_pattern_layer() => Some(Pattern::start(clock, at)),
+            _ => None,
         }
     }
 

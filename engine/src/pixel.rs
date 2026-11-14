@@ -373,7 +373,12 @@ impl Rhythm {
             Rhythm::Swell(swell) => swell.level(clock, timing.started, now),
             // Until its loop starts, the layer shows as it is, as a pattern linked to the cue's
             // intensity leaves the cue.
-            Rhythm::Pattern(hits) => hits.level(timing.bar_line, now).unwrap_or(1.0),
+            Rhythm::Pattern(hits) => {
+                let bar_line = timing
+                    .bar_line
+                    .expect("a pixel cue with a pattern layer has a bar line");
+                hits.level(bar_line, now).unwrap_or(1.0)
+            }
         }
     }
 }
@@ -403,6 +408,10 @@ fn muted(rig: &Rig, name: &str) -> Result<Vec<String>, String> {
 }
 
 impl PixelScene {
+    pub(crate) fn has_pattern_layer(&self) -> bool {
+        (self.layers.iter()).any(|layer| matches!(layer.rhythm, Some(Rhythm::Pattern(_))))
+    }
+
     /// A pixel cue as in a song file, `type: pixel` included, its colours from `show` and its
     /// patterns' bars from `time_signature`.
     pub fn parse(
@@ -608,7 +617,7 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
         .map_err(|_| "speed is too long to render a cycle of".to_string())?;
     let timing = CueTiming {
         started,
-        bar_line: started,
+        bar_line: Some(started),
         released: None,
     };
     let frames = (0..THUMBNAIL_FRAMES).map(|index| {

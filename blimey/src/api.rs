@@ -572,7 +572,7 @@ impl TimedLook {
                 let note = *active.started.get_or_insert(at);
                 let timing = CueTiming {
                     started: clock.moment(note),
-                    bar_line: Pattern::start(clock, note),
+                    bar_line: Some(Pattern::start(clock, note)),
                     released: None,
                 };
                 scene.draw(rig, clock, timing, at, 1.0, out);

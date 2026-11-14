@@ -11,7 +11,6 @@ use crate::clock_follower::{ClockFollower, Moment};
 use crate::cue::{Cue, CueTiming};
 use crate::fixture::Attribute;
 use crate::look::{self, Look, VirtualDimmers};
-use crate::pattern::Pattern;
 use crate::rig::Rig;
 use crate::song::Song;
 use crate::{ArtNetFrames, DMX_CHANNELS, Frame, MidiEvent, Show, Universe, Universes};
@@ -66,8 +65,8 @@ pub enum CueAction {
 struct ActiveCue {
     note: u8,
     started: Moment,
-    /// Where a pattern on a pixel cue's layer starts its loop, worked out at the note.
-    bar_line: Moment,
+    /// See `Cue::bar_line`.
+    bar_line: Option<Moment>,
     /// Note-on velocity as 0–1.
     intensity: f32,
     released: Option<Release>,
@@ -180,7 +179,7 @@ impl Playback {
             return;
         };
         let started = cue.start(clock, at);
-        let bar_line = Pattern::start(clock, at);
+        let bar_line = cue.bar_line(clock, at);
         // A retriggered cue fades out under its new instance.
         self.release(show, note, at);
         self.cues.push(ActiveCue {
