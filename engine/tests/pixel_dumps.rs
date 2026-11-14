@@ -857,6 +857,34 @@ fn two_layers_rhythms_do_not_affect_each_other() {
     assert_ne!(right(&both), right(&still), "the swell shows");
 }
 
+/// As above, under a MIDI clock at 120 BPM, not the song's 150: the clock moves musical time on
+/// at every tick, and the rhythm still stops at the note-off. The note lands just after the bar
+/// 2 line at 2.5 s, so the loop starts there: an 80% hold over 2 beats, released after one, at
+/// 3 s, over 1 s.
+#[test]
+fn a_release_mid_hit_under_a_midi_clock_fades_from_where_the_hit_was() {
+    let cues = "  60:\n    name: hit\n    type: pixel\n    release: 1s\n    layers:\n      - { shape: fill, params: { color: \"#ff0000\" }, pattern: { length: 1 bar, hits: [{ at: 1, shape: hold, length: 2 beats, level: 80% }] } }\n";
+    let seconds = Duration::from_secs_f64;
+    let origin = 0.5;
+    let tick = 0.5 / 24.0;
+    let mut messages = vec![(seconds(origin - 0.001), vec![0xFA])];
+    messages
+        .extend((0..=6 * 24).map(|index| (seconds(origin + f64::from(index) * tick), vec![0xF8])));
+    messages.push((seconds(2.51), vec![0x91, 60, 127]));
+    messages.push((seconds(3.0), vec![0x81, 60, 0]));
+    messages.sort_by_key(|(at, _)| *at);
+
+    let frames = render_show(cues_show(), cues, &messages, 160);
+
+    // The RGB par's red, at DMX 5, every 25 ms.
+    let red = |seconds: f64| frames[(seconds * 40.0).round() as usize].values[4];
+    assert_eq!(
+        [red(2.75), red(3.0), red(3.75)],
+        [204, 204, 51],
+        "the hit, the note-off, three quarters faded out where the hit would have ended"
+    );
+}
+
 /// A layer's rhythm scales it as `level` does: between hits an `over` layer vanishes and the
 /// layer below shows. At 150 BPM a beat is 16 frames.
 #[test]

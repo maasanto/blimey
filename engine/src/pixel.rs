@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
 use crate::colour::{Rgb, RgbwMode, to_dmx};
-use crate::cue::{CueEntry, SwellTiming};
+use crate::cue::{CueEntry, CueTiming, SwellTiming};
 use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{Level, colour, draw_pixel};
@@ -226,16 +226,6 @@ pub enum Rhythm {
     Pattern(Loop),
 }
 
-/// Where a pixel cue's layer rhythms are.
-#[derive(Debug, Clone, Copy)]
-pub struct RhythmTime {
-    /// Where a pattern's loop starts: `Pattern::start` of the note.
-    pub bar_line: Moment,
-    /// Now, or the note-off once there is one: a released cue fades out from the levels its
-    /// rhythms had, as a released pattern cue does.
-    pub at: Duration,
-}
-
 impl PixelEntry {
     pub(crate) fn name(&self) -> &str {
         &self.name
@@ -377,15 +367,13 @@ impl LayerEntry {
 }
 
 impl Rhythm {
-    /// The level, 0–1, at `time.at` of a cue whose note came at `started`.
-    fn level(&self, clock: &ClockFollower, started: Moment, time: RhythmTime) -> f64 {
+    /// The level, 0–1, `now` of a cue played with `timing`.
+    fn level(&self, clock: &ClockFollower, timing: CueTiming, now: Moment) -> f64 {
         match self {
-            Rhythm::Swell(swell) => swell.level(clock, started, time.at),
+            Rhythm::Swell(swell) => swell.level(clock, timing.started, now),
             // Until its loop starts, the layer shows as it is, as a pattern linked to the cue's
             // intensity leaves the cue.
-            Rhythm::Pattern(hits) => hits
-                .level(time.bar_line, clock.moment(time.at))
-                .unwrap_or(1.0),
+            Rhythm::Pattern(hits) => hits.level(timing.bar_line, now).unwrap_or(1.0),
         }
     }
 }
@@ -432,25 +420,22 @@ impl PixelScene {
     ///
     /// `intensity` (0–1) is the cue's input level, today the note's velocity: it goes on the
     /// dimmer channel of fixtures that have one, and scales the colours of the others.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         rig: &Rig,
         clock: &ClockFollower,
-        started: Moment,
+        timing: CueTiming,
         at: Duration,
-        rhythm_time: RhythmTime,
         intensity: f32,
         out: &mut Universes,
     ) {
+        let rhythm_now = timing.released.unwrap_or_else(|| clock.moment(at));
         let mut rhythms: [f32; MAX_LAYERS] = std::array::from_fn(|index| {
             let rhythm = self
                 .layers
                 .get(index)
                 .and_then(|layer| layer.rhythm.as_ref());
-            rhythm.map_or(1.0, |rhythm| {
-                rhythm.level(clock, started, rhythm_time) as f32
-            })
+            rhythm.map_or(1.0, |rhythm| rhythm.level(clock, timing, rhythm_now) as f32)
         });
         // A lone layer's rhythm goes on the cue's intensity, so a fixture with a dimmer channel
         // follows it there, as it would a swell or pattern linked to the cue's intensity.
@@ -472,7 +457,7 @@ impl PixelScene {
             Some(layer.at(
                 &drawn.lines[index],
                 clock,
-                started,
+                timing.started,
                 at,
                 seed,
                 rhythms[index],
@@ -621,17 +606,18 @@ pub fn thumbnail(show: &Show, cue: serde_json::Value) -> Result<Vec<Vec<Rgb>>, S
         .unwrap_or_else(|| cycles_in_a_second(Length::Bars(1.0)));
     let cycle = Duration::try_from_secs_f64(1.0 / cycles_per_second)
         .map_err(|_| "speed is too long to render a cycle of".to_string())?;
+    let timing = CueTiming {
+        started,
+        bar_line: started,
+        released: None,
+    };
     let frames = (0..THUMBNAIL_FRAMES).map(|index| {
         let mut out = Universes {
             enttec: [0; DMX_CHANNELS],
             artnet: ArtNetFrames::new(),
         };
         let at = cycle.mul_f64(index as f64 / THUMBNAIL_FRAMES as f64);
-        let rhythm_time = RhythmTime {
-            bar_line: started,
-            at,
-        };
-        scene.draw(&rig, &clock, started, at, rhythm_time, 1.0, &mut out);
+        scene.draw(&rig, &clock, timing, at, 1.0, &mut out);
         let (_, colours) = rig.pixel_colours(&out.enttec, &out.artnet).remove(0);
         colours
     });

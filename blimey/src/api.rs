@@ -15,11 +15,11 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
-use blimey_engine::cue::resolve_look;
+use blimey_engine::cue::{CueTiming, resolve_look};
 use blimey_engine::envelope::Envelope;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::pattern::Pattern;
-use blimey_engine::pixel::{self, PixelScene, RhythmTime};
+use blimey_engine::pixel::{self, PixelScene};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
 use blimey_engine::{Show, Universes};
@@ -570,11 +570,12 @@ impl TimedLook {
             }
             Overlay::Pixel { scene, clock } => {
                 let note = *active.started.get_or_insert(at);
-                let rhythm_time = RhythmTime {
+                let timing = CueTiming {
+                    started: clock.moment(note),
                     bar_line: Pattern::start(clock, note),
-                    at,
+                    released: None,
                 };
-                scene.draw(rig, clock, clock.moment(note), at, rhythm_time, 1.0, out);
+                scene.draw(rig, clock, timing, at, 1.0, out);
             }
         }
     }

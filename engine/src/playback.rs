@@ -8,11 +8,10 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
-use crate::cue::Cue;
+use crate::cue::{Cue, CueTiming};
 use crate::fixture::Attribute;
 use crate::look::{self, Look, VirtualDimmers};
 use crate::pattern::Pattern;
-use crate::pixel::RhythmTime;
 use crate::rig::Rig;
 use crate::song::Song;
 use crate::{ArtNetFrames, DMX_CHANNELS, Frame, MidiEvent, Show, Universe, Universes};
@@ -311,16 +310,16 @@ impl Playback {
                 },
             };
             let mut lit_dimmers = dimmers.clone();
-            let rhythm_time = RhythmTime {
+            let timing = CueTiming {
+                started: active.started,
                 bar_line: active.bar_line,
-                at: active.released.as_ref().map_or(at, |release| release.at.at),
+                released: active.released.as_ref().map(|release| release.at),
             };
             cue.draw(
                 &show.rig,
                 clock,
-                active.started,
+                timing,
                 at,
-                rhythm_time,
                 intensity,
                 &mut lit,
                 &mut lit_dimmers,

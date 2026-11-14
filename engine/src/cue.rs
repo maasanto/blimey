@@ -13,7 +13,7 @@ use crate::duration::{Length, TimeSignature};
 use crate::envelope::Envelope;
 use crate::look::{self, Look, LookSettings, VirtualDimmers};
 use crate::pattern::{Pattern, PatternEntry, PatternTarget};
-use crate::pixel::{PixelEntry, PixelScene, RhythmTime};
+use crate::pixel::{PixelEntry, PixelScene};
 use crate::rig::Rig;
 use crate::{Show, Universes};
 
@@ -83,10 +83,23 @@ impl SwellTiming {
         Envelope::RampUp
     }
 
-    /// The level, 0–1, at `at` of a swell whose note came at `started`.
-    pub fn level(&self, clock: &ClockFollower, started: Moment, at: Duration) -> f64 {
-        self.curve.level(clock.progress(self.duration, started, at))
+    /// The level, 0–1, `now` of a swell whose note came at `started`.
+    pub fn level(&self, clock: &ClockFollower, started: Moment, now: Moment) -> f64 {
+        self.curve
+            .level(clock.progress_to(self.duration, started, now))
     }
+}
+
+/// When a playing cue's note came and went, as drawing it needs.
+#[derive(Debug, Clone, Copy)]
+pub struct CueTiming {
+    /// See `Cue::start`.
+    pub started: Moment,
+    /// Where the loop of a pattern on a pixel cue's layer starts: `Pattern::start` of the note.
+    pub bar_line: Moment,
+    /// The note-off, once there is one: a released pixel cue's layer rhythms stay where they
+    /// were then, and it fades out from there, as a released pattern cue does.
+    pub released: Option<Moment>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -225,7 +238,7 @@ impl Cue {
             Cue::Scene(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Pixel(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Swell(swell) => {
-                let level = swell.timing.level(clock, started, at);
+                let level = swell.timing.level(clock, started, clock.moment(at));
                 match swell.target {
                     SwellTarget::Look(_) => level,
                     SwellTarget::Intensity(_) => 1.0 - level,
@@ -274,17 +287,15 @@ impl Cue {
     }
 
     /// Draws the cue at full opacity over `out` and the layers' virtual `dimmers`, as it is at
-    /// `at` after it started at `started`, its dimmers scaled by `intensity` (0–1). A pattern's
-    /// dimmer target is its fixtures as below, darkened by `intensity`. `rhythm_time` places a
-    /// pixel cue's layer rhythms.
+    /// `at` with `timing`, its dimmers scaled by `intensity` (0–1). A pattern's dimmer target is
+    /// its fixtures as below, darkened by `intensity`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         rig: &Rig,
         clock: &ClockFollower,
-        started: Moment,
+        timing: CueTiming,
         at: Duration,
-        rhythm_time: RhythmTime,
         intensity: f32,
         out: &mut Universes,
         dimmers: &mut VirtualDimmers,
@@ -292,9 +303,7 @@ impl Cue {
         let frame = &mut out.enttec;
         let mut look = match self {
             // Pixel cues draw above every other cue, so no look reads virtual dimmers after them.
-            Cue::Pixel(scene) => {
-                return scene.draw(rig, clock, started, at, rhythm_time, intensity, out);
-            }
+            Cue::Pixel(scene) => return scene.draw(rig, clock, timing, at, intensity, out),
             Cue::Scene(scene) => scene.look.clone(),
             Cue::Swell(swell) => match &swell.target {
                 SwellTarget::Look(look) => look.clone(),
