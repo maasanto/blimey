@@ -77,6 +77,34 @@ fn fire_mirrors_the_frame_over_art_net_on_the_chosen_universe() {
     assert_eq!(second.sequence, first.sequence + 1);
 }
 
+/// Under launchd stderr is a log file, which a full disk stops taking; a closed pipe fails the
+/// same way. Losing the log must not stop the light.
+#[test]
+fn output_carries_on_when_stderr_cannot_be_written() {
+    let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+    receiver
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let (closed, stderr) = std::io::pipe().unwrap();
+    drop(closed);
+    let child = Command::new(env!("CARGO_BIN_EXE_blimey"))
+        .arg("fire")
+        .arg(format!("{FIXTURES}/shows/four-washes"))
+        .args(["--set", "all-wash", "color=deep-blue", "dimmer=60%"])
+        .arg("--artnet")
+        .arg(receiver.local_addr().unwrap().to_string())
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    let mut engine = Running(child);
+
+    let mut buffer = [0; 1024];
+    let size = receiver.recv(&mut buffer).expect("an Art-Net frame");
+
+    assert_eq!(decode(&buffer[..size]).channels, reference_channels());
+    assert!(engine.0.try_wait().unwrap().is_none(), "the engine exited");
+}
+
 #[test]
 fn a_universe_without_artnet_is_refused() {
     let output = Command::new(env!("CARGO_BIN_EXE_blimey"))

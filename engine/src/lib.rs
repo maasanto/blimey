@@ -30,7 +30,7 @@ pub use playback::{CueAction, CueEvent, CueStatus, Status, resume_messages};
 pub use show::Show;
 
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Write};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -238,7 +238,8 @@ pub fn run(
         }
         let output = playback.render(show, look, deadline);
         if let Some(line) = playback.log_line(deadline) {
-            eprintln!("blimey: {line}");
+            // Not eprintln!, which panics when stderr can't be written, as on a full disk.
+            let _ = writeln!(io::stderr(), "blimey: {line}");
         }
         sink.status(&playback.status(show, deadline));
         // Reported by the driver; see `DmxSink::send_artnet`.

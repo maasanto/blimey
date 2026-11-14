@@ -1,3 +1,13 @@
+/// Shadows std's `eprintln!` for every module below: std's panics when stderr can't be written,
+/// as under launchd once the disk is full, and a log line must never stop the light.
+// Warning: keep it above the `mod` lines, or modules after it get std's again.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod api;
 mod artnet;
 mod enttec;
