@@ -9,10 +9,11 @@
 
 <script>
   import { engine, request } from './engine.svelte.js';
+  import { clamp, tidy } from './layers.js';
 
   /**
    * While a look is composed on the stage: `overlay` draws above the rig and fixtures stay put;
-   * `caught` outlines pixels, fixture or grid name → pixel indices; `crossedOut` names the
+   * `caught` outlines pixels, fixture or grid name → a set of pixel indices; `crossedOut` names the
    * fixtures and grids to cross out.
    */
   let { overlay, caught, crossedOut } = $props();
@@ -32,9 +33,6 @@
     engine.rig;
     drag = null;
   });
-
-  const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
-  const round = (value) => Math.round(value * 1000) / 1000;
 
   /** The canvas point under a pointer event, which may be off the canvas. */
   export function canvasPoint(event) {
@@ -88,8 +86,8 @@
   async function save(name, dx, dy) {
     const rig = await request('GET', '/api/show/rig.yaml');
     const { canvas } = rig.fixtures.find((fixture) => fixture.name === name);
-    const x = round(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
-    const y = round(clamp(canvas.y + dy, 0, 1));
+    const x = tidy(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
+    const y = tidy(clamp(canvas.y + dy, 0, 1));
     if (x === canvas.x && y === canvas.y) return false;
     Object.assign(canvas, { x, y });
     await request('PUT', '/api/show/rig.yaml', rig);
@@ -175,7 +173,7 @@
       {#each fixture.pixels as pixel, index (index)}
         <circle
           data-pixel={index}
-          class:caught={caughtPixels?.includes(index)}
+          class:caught={caughtPixels?.has(index)}
           cx={screenX(pixel.x)}
           cy={screenY(pixel.y)}
           r={PIXEL_RADIUS}
@@ -201,7 +199,7 @@
       {#each grid.pixels as pixel, index (index)}
         <rect
           data-pixel={index}
-          class:caught={caughtPixels?.includes(index)}
+          class:caught={caughtPixels?.has(index)}
           x={screenX(pixel.x) - cell.width / 2}
           y={screenY(pixel.y) - cell.height / 2}
           width={cell.width}

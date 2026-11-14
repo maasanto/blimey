@@ -33,8 +33,21 @@ export function asLayers(cue) {
   return { ...rest, layers: layer_2 ? [first, layer_2] : [first] };
 }
 
-const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+export const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 export const tidy = (value) => Math.round(value * 1000) / 1000;
+
+/** How far each field of `area` can go, the others held, with the area still on the canvas. */
+const fieldLimits = (area) => ({
+  x: [0, 1 - area.width],
+  y: [0, 1 - area.height],
+  width: [MIN_SIZE, 1 - area.x],
+  height: [MIN_SIZE, 1 - area.y],
+});
+
+/** `area` with `key` set to `value`, limited so the area stays on the canvas. */
+export const withAreaField = (area, key, value) => ({ ...area, [key]: tidy(clamp(value, ...fieldLimits(area)[key])) });
+
+export const isSameArea = (area, other) => ['x', 'y', 'width', 'height'].every((key) => area[key] === other[key]);
 
 /** As the engine draws: left and bottom edges in, right and top ones only on the canvas's edge. */
 function within(position, start, length) {
@@ -44,12 +57,12 @@ function within(position, start, length) {
 
 export const catches = (area, { x, y }) => within(x, area.x, area.width) && within(y, area.y, area.height);
 
-/** Each fixture and grid with a pixel in `area`: name → the indices of those pixels. */
+/** Each fixture and grid with a pixel in `area`: name → the set of those pixels' indices. */
 export function caughtPixels(rig, area) {
   const caught = new Map();
   for (const { name, pixels } of [...rig.fixtures, ...(rig.grids ?? [])]) {
     const indices = pixels.flatMap((pixel, index) => (catches(area, pixel) ? [index] : []));
-    if (indices.length) caught.set(name, indices);
+    if (indices.length) caught.set(name, new Set(indices));
   }
   return caught;
 }
@@ -94,10 +107,10 @@ export function moveArea(area, dx, dy, edges) {
     const wanted = start + delta;
     const byStart = snap(wanted, lines);
     const byEnd = snap(wanted + length, lines) - length;
-    const landed = Math.abs(byEnd - wanted) < Math.abs(byStart - wanted) ? byEnd : byStart;
-    return tidy(clamp(landed, 0, 1 - length));
+    return Math.abs(byEnd - wanted) < Math.abs(byStart - wanted) ? byEnd : byStart;
   };
-  return { ...area, x: along(area.x, area.width, dx, edges.x), y: along(area.y, area.height, dy, edges.y) };
+  const moved = withAreaField(area, 'x', along(area.x, area.width, dx, edges.x));
+  return withAreaField(moved, 'y', along(area.y, area.height, dy, edges.y));
 }
 
 /** `area` with the edges in `sides` (`left`, `right`, `top`, `bottom`) dragged by (`dx`, `dy`). */
