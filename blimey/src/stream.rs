@@ -261,7 +261,12 @@ async fn send_stream(mut socket: WebSocket, stream: Stream) {
         // are never starved by frames. A client that lags on MIDI skips the events it missed.
         let message = tokio::select! {
             biased;
-            Ok(()) = rig.changed() => rig_message(&rig.borrow_and_update(), stream.mode).to_string(),
+            // Built from a copy: the render loop locks the rig every frame, and a big rig's
+            // message takes milliseconds.
+            Ok(()) = rig.changed() => {
+                let current = rig.borrow_and_update().clone();
+                rig_message(&current, stream.mode).to_string()
+            }
             Ok(event) = midi.recv() => event.to_string(),
             Ok(()) = frames.changed() => frames.borrow_and_update().to_string(),
             else => return,
