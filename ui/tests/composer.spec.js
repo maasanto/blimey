@@ -83,12 +83,18 @@ test.describe('on three rows of washes', () => {
   test.use({ showSource: 'tests/fixtures/shows/three-rows' });
   const DARK = ['--set', 'all-wash', 'dimmer=0%'];
 
+  /** The builder on the example without its swell; C15's song with it sorts first. */
+  async function openChorusBuild(page, url) {
+    await page.goto(`${url}#builder`);
+    await page.getByLabel('Song').selectOption('chorus-build');
+  }
+
   test("plan §16's example look built on the stage saves C14's reference and plays its dump", async ({ page, show, startEngine }) => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const reference = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
     expect((await page.request.delete(`${url}api/songs/chorus-build/cues/43`)).status()).toBe(204);
-    await page.goto(`${url}#builder`);
+    await openChorusBuild(page, url);
 
     await pad(page, 43).click();
     await page.getByLabel('Type').selectOption('pixel');
@@ -132,7 +138,7 @@ test.describe('on three rows of washes', () => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const saved = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
-    await page.goto(`${url}#builder`);
+    await openChorusBuild(page, url);
     await pad(page, 43).click();
     const selected = page.locator('.area.selected');
 
@@ -153,7 +159,7 @@ test.describe('on three rows of washes', () => {
 
   test('a cancelled press adds no area and puts a resized one back', async ({ page, startEngine }) => {
     const { url } = await startEngine({ look: DARK });
-    await page.goto(`${url}#builder`);
+    await openChorusBuild(page, url);
     await pad(page, 43).click();
     await page.evaluate(() => addEventListener('pointerdown', (event) => (window.lastPointer = event.pointerId), true));
     const cancelPress = async () => {
@@ -185,7 +191,7 @@ test.describe('on three rows of washes', () => {
   test('the inspector keeps an area on the stage, sets its phase and lists every mute', async ({ page, show, startEngine }) => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const { url } = await startEngine({ look: DARK });
-    await page.goto(`${url}#builder`);
+    await openChorusBuild(page, url);
     await pad(page, 43).click();
 
     await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
@@ -213,7 +219,7 @@ test.describe('on three rows of washes', () => {
 
   test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {
     const engine = await startEngine({ look: DARK });
-    await page.goto(`${engine.url}#builder`);
+    await openChorusBuild(page, engine.url);
     await pad(page, 43).click();
     await engine.stop();
     await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
@@ -230,7 +236,7 @@ test.describe('on three rows of washes', () => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const saved = readFileSync(songFile, 'utf8');
     const { url } = await startEngine({ look: DARK });
-    await page.goto(`${url}#builder`);
+    await openChorusBuild(page, url);
     await pad(page, 43).click();
     const lowLeft = page.locator('[data-fixture="low-1"] circle').first();
     await expect(lowLeft).toHaveAttribute('fill', '#ffd2a0');
