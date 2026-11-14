@@ -294,7 +294,13 @@ impl ClockFollower {
     /// How far through `length` it is at `at`, from 0 to 1, counting from `from`. Beats and bars
     /// count elapsed beats, so they follow the tempo while they run. A zero length is done at once.
     pub fn progress(&self, length: Length, from: Moment, at: Duration) -> f64 {
-        let (elapsed, span) = self.elapsed(length, from, at);
+        self.progress_to(length, from, self.moment(at))
+    }
+
+    /// As `progress`, at `to` rather than at a time: a moment taken earlier still counts the
+    /// beats it had, where the beats of a past time follow the clock since.
+    pub fn progress_to(&self, length: Length, from: Moment, to: Moment) -> f64 {
+        let (elapsed, span) = self.elapsed(length, from, to);
         if span > 0.0 {
             (elapsed / span).clamp(0.0, 1.0)
         } else {
@@ -305,17 +311,20 @@ impl ClockFollower {
     /// How many `length`s have passed at `at` since `from`, unclamped, for effects that repeat.
     /// Counts as `progress` does. `length` must not be zero.
     pub fn cycles(&self, length: Length, from: Moment, at: Duration) -> f64 {
-        let (elapsed, span) = self.elapsed(length, from, at);
+        let (elapsed, span) = self.elapsed(length, from, self.moment(at));
         elapsed / span
     }
 
-    /// Time or beats from `from` to `at`, and `length` in the same unit.
-    fn elapsed(&self, length: Length, from: Moment, at: Duration) -> (f64, f64) {
-        let beats = || self.beats(at) - from.beats;
+    /// Time or beats from `from` to `to`, and `length` in the same unit.
+    fn elapsed(&self, length: Length, from: Moment, to: Moment) -> (f64, f64) {
+        let beats = to.beats - from.beats;
         match length {
-            Length::Time(span) => (at.saturating_sub(from.at).as_secs_f64(), span.as_secs_f64()),
-            Length::Beats(span) => (beats(), span),
-            Length::Bars(bars) => (beats(), bars * self.time_signature.beats_per_bar()),
+            Length::Time(span) => (
+                to.at.saturating_sub(from.at).as_secs_f64(),
+                span.as_secs_f64(),
+            ),
+            Length::Beats(span) => (beats, span),
+            Length::Bars(bars) => (beats, bars * self.time_signature.beats_per_bar()),
         }
     }
 

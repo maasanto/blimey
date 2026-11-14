@@ -1,10 +1,10 @@
 <script>
-  import { formatLength, lengthInBeats, parseLength } from './duration.js';
+  import { beatsIn, formatLength, parseLength } from './duration.js';
   import { SHAPES, curveLevels, curvePoints, envelope } from './envelope.svelte.js';
   import TargetPicker from './TargetPicker.svelte';
 
   /**
-   * `cue` is the pattern as in the song file; `saved` is the cue as saved, which is what an
+   * `cue` is the pattern as in the song file, a cue or a pixel layer's `pattern`; `saved` is it as saved, which is what an
    * audition plays, or null before the first save. `beats` is how far the saved cue's loop has
    * played while it is auditioned (the stream's `beats`); `onaudition` starts or stops that.
    */
@@ -65,7 +65,7 @@
     cue.length = formatLength(count, 'bars');
     cue.hits = cue.hits.filter((other) => other.at - 1 < beats);
     for (const other of cue.hits) {
-      if (lengthInBeats(parseLength(other.length) ?? { count: 0, unit: 'beats' }, barBeats) > beats) {
+      if (beatsIn(other.length, barBeats) > beats) {
         other.length = formatLength(count, 'bars');
       }
     }
@@ -81,13 +81,14 @@
   }
 
   /** The hit's drawn length in beats, at most the loop. */
-  const drawnBeats = (other) => Math.min(lengthInBeats(parseLength(other.length) ?? { count: 0, unit: 'beats' }, barBeats) ?? 0, loopBeats);
+  const drawnBeats = (other) => Math.min(beatsIn(other.length, barBeats), loopBeats);
 </script>
 
 <fieldset class="editor">
   <legend>Pattern</legend>
   <div class="row">
-    <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer="dimmer" />
+    <!-- A pixel layer's pattern has no target: it plays on its layer. -->
+    {#if cue.target}<TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer="dimmer" />{/if}
     <label>
       Bars
       <select value={bars} onchange={(event) => setBars(Number(event.currentTarget.value))}>
@@ -191,7 +192,7 @@
   <div class="row">
     <button disabled={!saved} onclick={onaudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
     <span class="hint">
-      {saved ? 'Loops the saved cue from the next bar line. Save to hear changes.' : 'Save the cue to audition it.'}
+      {saved ? 'Loops the saved scene from the next bar line. Save to hear changes.' : 'Save the scene to audition it.'}
     </span>
   </div>
 </fieldset>

@@ -14,6 +14,7 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
+use blimey_engine::pixel;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
     ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status, Universes,
@@ -274,6 +275,7 @@ fn rig_message(rig: &Rig, mode: Mode) -> Value {
                 "address": fixture.address,
                 "channels": fixture.channels.iter().map(|channel| &channel.name).collect::<Vec<_>>(),
                 "pixels": fixture.pixels.iter().map(|pixel| json!({ "x": pixel.x, "y": pixel.y })).collect::<Vec<_>>(),
+                "colour": pixel::has_emitters(fixture),
             })
         })
         .collect();
@@ -488,13 +490,24 @@ mod tests {
         live_parameters[2] = 0.5;
         let status = Status {
             song: Some("tell-me".into()),
-            cues: vec![CueStatus {
-                note: 36,
-                name: "verse-blue".into(),
-                intensity: 1.0,
-                released: false,
-                beats: 2.5,
-            }],
+            cues: vec![
+                CueStatus {
+                    note: 36,
+                    name: "verse-blue".into(),
+                    intensity: 1.0,
+                    released: false,
+                    beats: 2.5,
+                    loop_beats: None,
+                },
+                CueStatus {
+                    note: 40,
+                    name: "hits".into(),
+                    intensity: 1.0,
+                    released: false,
+                    beats: 2.5,
+                    loop_beats: Some(-0.5),
+                },
+            ],
             master: 0.25,
             live_parameters,
         };
@@ -510,7 +523,10 @@ mod tests {
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
             message["cues"],
-            json!([{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }])
+            json!([
+                { "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 },
+                { "note": 40, "name": "hits", "intensity": 1.0, "released": false, "beats": 2.5, "loop_beats": -0.5 },
+            ])
         );
         assert_eq!(message["master"], 0.25);
         assert_eq!(message["live_parameters"][2], 0.5);
@@ -541,5 +557,26 @@ mod tests {
             json!([{ "name": "wall", "pixels": [{ "x": 0.25, "y": 0.5 }, { "x": 0.75, "y": 0.5 }] }])
         );
         assert_eq!(frame["pixels"]["wall"], json!(["#000000", "#ff0000"]));
+    }
+
+    #[test]
+    fn fixtures_say_whether_they_have_colour_for_pixel_cues_to_light() {
+        let show = Show::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/fixtures/shows/pixel-layers"
+        )))
+        .unwrap();
+
+        let rig_message = rig_message(&show.rig, Mode::Show);
+
+        let colour = |name: &str| {
+            let fixtures = rig_message["fixtures"].as_array().unwrap();
+            fixtures
+                .iter()
+                .find(|fixture| fixture["name"] == name)
+                .unwrap()["colour"]
+                .clone()
+        };
+        assert_eq!([colour("smoke-dimmer"), colour("par")], [false, true]);
     }
 }

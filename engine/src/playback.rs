@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::clock_follower::{ClockFollower, Moment};
-use crate::cue::Cue;
+use crate::cue::{Cue, CueTiming};
 use crate::fixture::Attribute;
 use crate::look::{self, Look, VirtualDimmers};
 use crate::rig::Rig;
@@ -65,6 +65,8 @@ pub enum CueAction {
 struct ActiveCue {
     note: u8,
     started: Moment,
+    /// See `Cue::bar_line`.
+    bar_line: Option<Moment>,
     /// Note-on velocity as 0–1.
     intensity: f32,
     released: Option<Release>,
@@ -96,6 +98,10 @@ pub struct CueStatus {
     /// Beats since the cue started, or for a pattern since its loop did: negative while the
     /// loop waits for its bar line. Places the builder's playhead.
     pub beats: f64,
+    /// For a pixel cue with a `pattern` on a layer, beats since those loops started, as `beats`
+    /// counts a pattern cue's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_beats: Option<f64>,
 }
 
 impl Default for Playback {
@@ -177,11 +183,13 @@ impl Playback {
             return;
         };
         let started = cue.start(clock, at);
+        let bar_line = cue.bar_line(clock, at);
         // A retriggered cue fades out under its new instance.
         self.release(show, note, at);
         self.cues.push(ActiveCue {
             note,
             started,
+            bar_line,
             intensity: f32::from(velocity) / MIDI_DATA_MAX,
             released: None,
         });
@@ -305,10 +313,15 @@ impl Playback {
                 },
             };
             let mut lit_dimmers = dimmers.clone();
+            let timing = CueTiming {
+                started: active.started,
+                bar_line: active.bar_line,
+                released: active.released.as_ref().map(|release| release.at),
+            };
             cue.draw(
                 &show.rig,
                 clock,
-                active.started,
+                timing,
                 at,
                 intensity,
                 &mut lit,
@@ -337,12 +350,14 @@ impl Playback {
                 .into_iter()
                 .filter_map(|active| {
                     let cue = song?.cues.get(&active.note)?;
+                    let now = self.clock.as_ref()?.beats(at);
                     Some(CueStatus {
                         note: active.note,
                         name: cue.name().into(),
                         intensity: active.intensity,
                         released: active.released.is_some(),
-                        beats: self.clock.as_ref()?.beats(at) - active.started.beats,
+                        beats: now - active.started.beats,
+                        loop_beats: active.bar_line.map(|bar_line| now - bar_line.beats),
                     })
                 })
                 .collect(),
@@ -511,6 +526,35 @@ mod tests {
 
         assert_eq!(beats(1.5), [(39, 2.0), (42, -1.0)]);
         assert_eq!(beats(3.25), [(39, 5.5), (42, 2.5)]);
+    }
+
+    /// The builder's playhead on a pixel cue's layer pattern counts from the bar line its
+    /// loop starts on, a swell layer's from the note.
+    #[test]
+    fn status_counts_a_pixel_cues_loop_beats_from_its_bar_line() {
+        let mut show = cues_show();
+        let song = "program: 1\ncues:\n  40:\n    name: hits\n    type: pixel\n    layers:\n      - { shape: fill, swell: { duration: 1 bar } }\n      - { shape: fill, pattern: { length: 1 bar, hits: [{ at: 1, shape: hold, length: 1 beat, level: 100% }] } }\n  41: { name: still, type: pixel, params: { color: \"#ff0000\" } }\n";
+        show.songs = vec![Song::parse("layered", song, &show).unwrap()];
+        let mut playback = Playback::default();
+        let seconds = Duration::from_secs_f64;
+        // No clock, 120 BPM: the note lands mid-bar, so the loop starts on the bar 2 line at 2 s.
+        for (at, message) in [
+            (0.0, [CUE_PROGRAM_CHANGE, 1].as_slice()),
+            (1.0, &[CUE_NOTE_ON, 40, 127]),
+            (1.0, &[CUE_NOTE_ON, 41, 127]),
+        ] {
+            let event = MidiEvent {
+                at: seconds(at),
+                message: message.to_vec(),
+            };
+            playback.apply(&show, &event);
+        }
+
+        let status = playback.status(&show, seconds(2.5));
+        let beats: Vec<(u8, f64, Option<f64>)> = (status.cues.iter())
+            .map(|cue| (cue.note, cue.beats, cue.loop_beats))
+            .collect();
+        assert_eq!(beats, [(40, 3.0, Some(1.0)), (41, 3.0, None)]);
     }
 
     /// The builder's playhead follows a pattern that drives a pixel cue's intensity, though

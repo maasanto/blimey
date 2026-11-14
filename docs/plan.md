@@ -468,7 +468,7 @@ A pixel cue gains `layers`, bottom first:
 
 ### Not in this version
 
-Areas that aren't rectangles (mute covers the need), held cues that mix, rotated fixtures, custom-drawn shapes, tapping a rhythm in, generated variations of a look.
+Areas that aren't rectangles (mute covers the need), held cues that mix, rotated fixtures, custom-drawn shapes, tapping a rhythm in, generated variations of a look, control from Reaper by scene and song number (open question 5).
 
 ### Chunks
 
@@ -479,6 +479,7 @@ Areas that aren't rectangles (mute covers the need), held cues that mix, rotated
 | C16 | Builder: pad bank | C10 | C14, C15 |
 | C17 | Builder: stage composer | C14, C16 | C15 |
 | C18 | Builder: rhythm per area, and the old cue types | C15, C17 | — |
+| C19 | Builder: scenes home, scenes by number | C18 | — |
 
 ### C14 — Pixel layers: areas, mute, blend
 
@@ -515,9 +516,17 @@ Areas that aren't rectangles (mute covers the need), held cues that mix, rotated
 - **Acceptance:** Playwright: the 1 / 2 / 3.5 pattern built on one area saves the reference YAML and its dump matches C15's; each scene of `tell-me`, converted and fired alone, matches the original scene's dump within one DMX step per channel; editing one area's rhythm leaves the other layers' YAML untouched.
 - **Human check:** rebuild one song section end to end from the pads at the laptop.
 
+### C19 — Builder: scenes home, scenes by number
+
+- **Goal:** the builder opens on the song's scenes, edits one scene on a screen of its own, and speaks of scenes and numbers rather than cues and MIDI notes.
+- **Build:** two screens in the Builder tab. The scenes home: the song bar and a full-width grid of pads, one per scene in number order with its live thumbnail, name and number, then a New scene pad; holding a pad auditions it, a click opens it, and each pad has an Audition/Release button for the keyboard. The scene editor, at `#builder/<song>/<number>` so the browser's Back returns home: the stage composer across the screen width, or the swell or pattern editor, with the scene's name, number, fade in, release, Save, Audition, Duplicate and Delete; leaving it with unsaved edits asks first. "Cue" becomes "scene" in the builder, and a v1 scene it keeps as it is a "fixed look". A song shows as "Song N", N its `program`, and a new one takes the next free number; a new scene takes the lowest free number from 1, Duplicate the next free one above, and the Number field renumbers on save. The bank switcher, drag-to-move and every mention of notes, programs, MIDI and velocity leave the builder. The show-file format, the API and the engine don't change: scene N still fires on note N and song N on program N (docs/api.md).
+- **Acceptance:** Playwright against the engine with `FakeDmx`: the home lists the song's scenes in number order and nothing note-related; a click opens the editor, and its link and the browser's Back return home; leaving with unsaved edits asks first; a new scene takes the lowest free number and saves under it; renumbering onto a taken number is refused and the file is untouched; a new song takes the next free number; holding a pad and the keyboard audition send note-on and note-off; show mode is read-only.
+- **Human check:** browse `tell-me` from the scenes home at the laptop, open a scene, change it and go back; note anything unclear.
+
 ### Open questions
 
 1. A converted scene becomes a pixel cue, which sits above scenes in the playback order. Songs built in the composer don't notice; a song mixing old scenes and converted ones might.
 2. A bar hung vertically needs a rotation on its `canvas` entry, which a fixture doesn't have today. Wait for the fixture.
 3. A light with no colour pixels (a plain dimmer) is outside pixel cues and still needs a scene cue. Not the case of any fixture in the rig.
 4. Should the pixels a cue doesn't cover be see-through, so that held cues mix? Left out; revisit if the Reaper sessions want to stack looks.
+5. How Reaper selects a song and fires a scene, now that the builder knows them only by number, is designed in a later chunk. Until then scene N is channel-2 note N and song N is channel-2 Program Change N.

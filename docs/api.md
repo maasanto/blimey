@@ -215,10 +215,17 @@ Plan §7's other effect names map onto these: `solid` is `static` with the defau
 | `level` | A percentage, how much the layer shows: it dims a `max` or `add` layer, as a scene's `dimmer`, and fades an `over` or `mask` layer into the ones below. At `0%` the layer changes nothing | `100%` |
 | `blend` | How the layer meets the ones below it, inside its area: `max` (the brighter per emitter), `add` (the sum, clipped at full), `mask` (the layers below show only where this layer's shape is lit, as much as it is), or `over` (this layer covers the ones below as much as it is lit, so a lit pixel replaces them and a dark one lets them show; with a `background`, it covers its whole area) | `max` |
 | `mute` | Fixtures, grids or groups the layer leaves to the layers below | none |
+| `swell` | The layer's own rhythm: `{ duration: 4 bars, curve: ease-in }`, the `duration` and `curve` of a swell cue | none |
+| `pattern` | The layer's own rhythm: `{ length: 1 bar, hits: [{ at: 1, shape: sine, length: 1 beat, level: 100% }] }`, the `length` and `hits` of a pattern cue | none |
 
 A pixel no layer draws, outside every area or muted on every layer whose area holds it, keeps the layers below the cue, as a fixture without colour emitters does; a fixture none of whose pixels is drawn keeps its dimmer channel too. A pixel some layer draws is driven, dark where the layers leave it dark. Each layer's sparkle differs from the others' under the same `seed`. Outside its area, and on what it mutes, a layer changes nothing, a `mask` included.
 
-The cue is refused at load, with its line, for an area with no width or height (`layer 1: area: width 0 and height 1 must both be above 0`) or past the canvas (`layer 2: area: canvas { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`. A layer's own `swell` or `pattern` (plan §16) is refused for now, as any unknown key.
+**Layer rhythms.** A layer takes a `swell` or a `pattern`, not both, timed as the cue types of the same name: a swell runs along its curve from note-on, then holds; a pattern's loop starts on the bar line after note-on and repeats, dark between hits. The rhythm's level scales the layer as `level` does, so at 0 an `over` or `mask` layer lets the layers below show, and multiplies with `level`, with the cue's velocity and fades, and with any [intensity link](#intensity-links) on the cue. Each layer keeps its own rhythm. Specifics:
+
+- Until its loop starts, a pattern leaves the layer as it is, as a pattern linked to the cue's intensity does. A one-layer cue with a rhythm so renders the same frames as that cue without it plus the same swell or pattern linked to its intensity, fired with it at velocity 127: the rhythm goes on the cue's intensity, so on the dimmer channel of fixtures that have one. With more layers, each rhythm scales its layer's colour.
+- On note-off the rhythms stop where they are and the cue fades out from there over its own `release`: a release mid-hit fades over the cue's release time rather than finishing the hit.
+
+The cue is refused at load, with its line, for an area with no width or height (`layer 1: area: width 0 and height 1 must both be above 0`) or past the canvas (`layer 2: area: canvas { x: 0.75, y: 0, width: 0.5, height: 1 } leaves the 0-1 stage canvas`), a `mute` name the rig doesn't have (`layer 1: mute: "inner-wash" is neither a fixture nor a group in the rig`), a layer with both rhythms (`layer 1: a layer has a swell or a pattern, not both`), a pattern a pattern cue couldn't play (`layer 2: pattern: length must be 1, 2, 3 or 4 bars`), more than 8 layers, and `layers` next to `shape`, `effect`, `params` or `layer_2`.
 
 **The older form.** Instead of `layers`, a cue can give one layer's `shape`, `effect` and `params` at its top and an optional `layer_2` with its own, plus `blend`: the same two layers over the whole canvas, rendering the same frames.
 
@@ -281,7 +288,7 @@ Every fixture has a colour and an intensity. A fixture with a dimmer channel sho
 - A fixture given a colour takes every channel from the look, with channels the look doesn't drive at their profile default: the colour as written, at the look's dimmer. A colour at 100% shows exactly as written, a dim palette colour included.
 - A fixture given only a dimmer keeps everything below but its intensity: the colour from below, at full, at the look's dimmer. `deep-blue` at 60% under `{ dimmer: 100% }` becomes `deep-blue` at full, on a dimmer channel or a virtual one. A `{ dimmer: 0% }` blackout keeps that colour, so a dimmer-only swell after it brings the scene back up. With nothing below, there is no colour to light and the fixture stays dark. Legacy notes and other raw DMX below count as a colour at full, at intensity 100%. The colour below is already converted, so `rgbw` without a `color` (from this entry or an earlier one of the same look) is refused: `all-wash: rgbw needs a color for "wash-1": …`.
 
-This applies wherever looks are used: scene `values`, swell `target`, a pattern's look target, the `safe_look` and `fire --set`. A scene or swell fades from the layers below toward that look, so `chorus-swell`'s `{ all-wash: { dimmer: 100% } }` brings the scene under it to full. Velocity scales the look's dimmer, as for any look. The builder's previews are the exception: see [Look preview](#look-preview-put-and-delete-apipreview).
+This applies wherever looks are used: scene `values`, swell `target`, a pattern's look target, the `safe_look` and `fire --set`. A scene or swell fades from the layers below toward that look, so `chorus-swell`'s `{ all-wash: { dimmer: 100% } }` brings the scene under it to full. Velocity scales the look's dimmer, as for any look.
 
 ## CLI
 
@@ -312,7 +319,7 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 `--listen` serves the web UI at `http://<address>/`, the WebSocket stream at `/ws` and the HTTP API at `/api`. Once bound it prints `streaming on ws://<address>/ws`, then `UI on http://<address>/ in <mode> mode`; port 0 picks a free port.
 
-**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, new songs, cue edits, undo and redo, look previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
+**Modes.** Show mode is the default, for gigs: the engine reads the show once at start and never again, never writes to the show folder, and the API refuses every change with `403`: saves, new songs, cue edits, undo and redo, previews, posted MIDI and fixture tests. Reads still work. `--edit` starts it in edit mode instead: the show is hot reloaded and the UI may do all of these. Art-Net is off in both unless `--artnet` is given. A browser build of the UI comes embedded in the binary; build it with `pnpm --dir ui install && pnpm --dir ui build` before `cargo build`, or the binary serves a page saying so.
 
 `--artnet` mirrors every frame as one ArtDmx packet (Art-Net 4, protocol version 14) to an IPv4 node, unicast or broadcast; the port defaults to 6454 and `--artnet` alone sends to 127.0.0.1. `--artnet-universe` is the 15-bit port-address (Net, Sub-Net, Universe), from 0, default 0. Art-Net is off unless asked. A send error is reported once on stderr and never stops the render loop. The same node also gets every Art-Net universe the rig's pixel grids use, one packet each per frame, blackout included; each universe numbers its packets on its own. If a grid uses universe 0 and `--artnet-universe` isn't given, the grid keeps universe 0 and the Enttec frame isn't mirrored (the engine says so on stderr): give `--artnet-universe` to mirror it elsewhere. An `--artnet-universe` that is also a grid's universe is refused. Without `--artnet`, a rig with Art-Net grids starts with a warning that they get no output. See [blenderdmx.md](blenderdmx.md) for a 3D preview.
 
@@ -376,7 +383,7 @@ Errors come back as `{ "error": "<what went wrong>" }` with `404` (unknown file,
 
 ### Show summary: `GET /api/show`
 
-What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each.
+What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each, which the builder shows as the song's number.
 
 ```json
 { "palettes": { "deep-blue": "#0028ff" }, "songs": [{ "name": "tell-me", "program": 3 }] }
@@ -395,6 +402,12 @@ Reads and replaces a whole show file. `<file>` is a path in the show folder: `ri
 4. Hot reload picks the file up on the next frame: a readdressed fixture moves on every output, and stream clients get the new `rig` message. A `204` means the file is written, not yet rendered.
 
 To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
+
+### Scenes and songs in the builder
+
+The builder calls each cue a scene and goes by numbers, never notes or programs. A scene is stored as a cue entry under the song's `cues:`, and its number is that entry's key: scene 36 is `cues: { 36: … }`, saved and deleted through `/api/songs/<song>/cues/36`. A song's number is its `program`. A swell or pattern cue is a swell or pattern scene; a `type: scene` cue the builder can't open on the stage stays a "fixed look". Valid numbers are what the endpoints take.
+
+Until a later chunk designs control from Reaper, the mapping is the engine's: scene N fires on channel-2 note N and song N is selected by channel-2 Program Change N. The builder's auditions send exactly that through `POST /api/midi`.
 
 ### Cues: `PUT` and `DELETE /api/songs/<song>/cues/<note>`
 
@@ -440,23 +453,17 @@ The engine keeps the last 50 saves made through the API, across all show files: 
 
 If the file has changed since the save or undo (by hand, say), the step is refused with `409` rather than lose that change; it stays in the history, to try again once the file is put back. A step whose earlier content no longer passes the checks, such as an undo back to a song that was broken before a fix, never could be made: it is refused with `422` and dropped, so it doesn't block the steps before it.
 
-### Look preview: `PUT` and `DELETE /api/preview`
-
-`PUT` shows a look on every output while the builder edits it (`204`). The body is a look in the shape of a scene's `values`, `{ "all-wash": { "color": "deep-blue", "dimmer": "60%" } }`, resolved like one: an unknown fixture, group or colour is a `422`. The preview draws above every layer, the master dimmer included, on the fixtures it names; the others keep the show's output. Nothing is saved.
-
-Both previews, this one and the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel), draw on the frame as output, after the master. A pixel scene sets its own colours, so it shows as it will play. A look entry with only a `dimmer` reads the colour below from that frame's DMX, at intensity 100%, instead of from the virtual dimmers playback keeps: on a fixture without a dimmer channel it can dim what is shown but not bring a dimmed colour back to full, as the same look does when it plays as a cue.
-
-It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves no look on stage. `DELETE`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
-
 ### Pixel scene preview: `PUT /api/preview/pixel`
 
-Shows a pixel cue on every output while the builder edits it, in place of the look preview (`204`). The body is the song and the cue as in its file:
+Shows a pixel cue on every output while the builder edits it (`204`). The body is the song and the cue as in its file:
 
 ```json
 { "song": "tell-me", "cue": { "name": "bridge-chase", "type": "pixel", "effect": "chase", "params": { "color": "amber", "width": 0.25 } } }
 ```
 
-The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, as the look preview does, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it. It lasts, refreshes and clears like the look preview, with which it shares `DELETE /api/preview`; one replaces the other. Nothing is saved.
+The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, on the frame as output after the master dimmer, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. Layer rhythms play too: a swell from that first frame, a pattern's loop from the next bar line counted from engine start, in the song's `time_signature`. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it, unless a layer's `swell` or `pattern` changed: then it starts again, so the edited rhythm plays from its start. Nothing is saved.
+
+It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, so the builder sends it again every few seconds while it shows; a builder that closed or crashed leaves nothing on stage. `DELETE /api/preview`, or a channel-2 note-on posted to `POST /api/midi` (an audition, which should show the cue), clears it at once.
 
 ### Pixel thumbnail: `POST /api/pixel-thumbnail`
 
@@ -467,14 +474,15 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 ```
 
 - The grid is RGB and fills the canvas.
-- `frames` are 8 moments evenly over one cycle of the slowest moving layer's `speed` (1 bar when every layer is `static`), from the note, with beats at 120 BPM.
+- `?song=tell-me` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
+- `frames` are 8 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note, with beats at 120 BPM. Layer rhythms play from the note too, a pattern's loop starting at once.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
 
 ### Cue thumbnails: `GET /api/songs/<song>/thumbnails`
 
-What each saved cue of the song looks like, for the builder's pads, by note. The engine loads the show once for the request and renders every cue from the song file, aside from the output: nothing is saved or shown, and it works in show mode. An unknown song is a `404`; a cue that can't be rendered, such as a pixel cue whose `speed` is too long to show a cycle of, is a `422` naming it.
+What each saved cue of the song looks like, for the pads of the builder's scenes home, by note (the scene's number). The engine loads the show once for the request and renders every cue from the song file, aside from the output: nothing is saved or shown, and it works in show mode. An unknown song is a `404`; a cue that can't be rendered, such as a pixel cue whose `speed` is too long to show a cycle of, is a `422` naming it.
 
 ```json
 { "36": { "frames": ["…"] }, "39": { "levels": ["…"] } }
@@ -487,7 +495,7 @@ A scene or pixel cue's thumbnail is `frames`, each the colour every pixel of the
 ```
 
 - A scene is one frame: the cue drawn as playback draws it, over a dark stage with nothing below. A fixture given only a dimmer stays dark.
-- A pixel cue is 8 frames, timed as in the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail): evenly over one cycle of layer 1's `speed`, with beats at 120 BPM.
+- A pixel cue is 8 frames, timed as in the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail), with beats at 120 BPM.
 - Fade-in, release and velocity are left out.
 
 A swell or pattern cue's thumbnail is its envelope, `levels`: 129 levels, 0–1, evenly spaced from start to end.
@@ -507,7 +515,7 @@ Plays one MIDI message as if it came in from the MIDI port, to audition cues wit
 { "message": [145, 36, 127] }
 ```
 
-`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the look preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
+`message` is the raw bytes, status byte first, in the same shape as the stream's `midi` message. It acts on the next frame, stamped with that frame's time, and is streamed as a `midi` message. Anything but one well-formed message is a `422`. A channel-2 note-on also clears the pixel scene preview. To fire a cue: Program Change for its song on channel 2 (`[193, <program>]`) unless the song is already selected, then note-on (`[145, <note>, 127]`); release it with note-off (`[129, <note>, 0]`).
 
 ### Curve levels: `POST /api/envelope`
 
@@ -541,7 +549,8 @@ Server to client only, one JSON object per text message. Every message has a `ty
       "mode": "16ch",
       "address": 1,
       "channels": ["Red 1", "Green 1", "Blue 1", "White 1", "…"],
-      "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"]
+      "pixels": [{ "x": 0.115625, "y": 0.2 }, "…"],
+      "colour": true
     }
   ],
   "grids": [
@@ -554,6 +563,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `protocol` is bumped only by a breaking change to this stream.
 - `mode`: `edit` or `show` (see [Modes](#cli)).
 - `channels` lists channel names in DMX order, starting at `address`.
+- `colour`: whether the fixture has colour emitters. A pixel cue lights only those, so the builder keeps a `type: scene` cue that targets a fixture without them a fixed look.
 - `pixels` are canvas positions, in pixel order; for a grid, in wiring order.
 - `grids`: the rig's [pixel grids](#rigyaml), apart from `fixtures` since they have no profile, mode or single address.
 
@@ -576,7 +586,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
 - `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `song`: the selected song's name, or `null`.
-- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off. `beats` is the musical time since the cue started, at the frame's time and tempo; for a pattern it counts from the bar line its loop starts on, so it is negative while the loop waits for it.
+- `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off. `beats` is the musical time since the cue started, at the frame's time and tempo; for a pattern it counts from the bar line its loop starts on, so it is negative while the loop waits for it. A pixel cue with a `pattern` on a layer also has `loop_beats`, counted the same way from the bar line its layers' loops start on.
 - `master`: the master dimmer, 0–1.
 - `live_parameters`: CC 20–27 on channel 2, as 0–1.
 

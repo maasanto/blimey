@@ -1,6 +1,6 @@
 # Blimey — agent guide
 
-Blimey is a headless DMX lighting engine driven by Reaper over MIDI, replacing ENTTEC EMU for Fossile's show. The spec is [docs/plan.md](docs/plan.md); section 14 defines the work packages (C0–C13), section 15 the validation strategy and section 16 the builder rework (C14–C18). Read them before starting a chunk.
+Blimey is a headless DMX lighting engine driven by Reaper over MIDI, replacing ENTTEC EMU for Fossile's show. The spec is [docs/plan.md](docs/plan.md); section 14 defines the work packages (C0–C13), section 15 the validation strategy and section 16 the builder rework (C14–C19). Read them before starting a chunk.
 
 ## Repo layout
 

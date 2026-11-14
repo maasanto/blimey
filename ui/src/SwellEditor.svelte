@@ -1,10 +1,10 @@
 <script>
-  import { formatLength, lengthInBeats, parseLength } from './duration.js';
+  import { beatsIn, formatLength, lengthInBeats, parseLength } from './duration.js';
   import { SAMPLES, SHAPES, curveLevels, curvePoints, envelope } from './envelope.svelte.js';
   import TargetPicker from './TargetPicker.svelte';
 
   /**
-   * `cue` is the swell as in the song file; `saved` is the cue as saved, which is what an audition
+   * `cue` is the swell as in the song file, a cue or a pixel layer's `swell`; `saved` is it as saved, which is what an audition
    * plays, or null before the first save. `beats` is how far the saved cue has played while it is
    * auditioned (the stream's `beats`); `onaudition` starts or stops that, `onrestart` plays it
    * again from the top.
@@ -32,7 +32,7 @@
   const units = $derived([...new Set(['beats', 'bars', length.unit])]);
   const swellBeats = $derived(lengthInBeats(length, barBeats));
   /** The saved swell's length in beats: null for one timed in s or ms, which has no playhead. */
-  const savedBeats = $derived(saved ? lengthInBeats(parseLength(saved.duration) ?? { count: 0, unit: 's' }, barBeats) : null);
+  const savedBeats = $derived(saved ? beatsIn(saved.duration, barBeats) : null);
   const progress = $derived(beats === undefined || !savedBeats ? null : Math.min(Math.max(beats / savedBeats, 0), 1));
 
   // Only an audition started here loops: a cue fired from Reaper or the cue list plays as fired.
@@ -98,9 +98,12 @@
 
 <fieldset class="editor">
   <legend>Swell</legend>
-  <div class="row">
-    <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer={{ dimmer: '100%' }} />
-  </div>
+  <!-- A pixel layer's swell has no target: it plays on its layer. -->
+  {#if cue.target}
+    <div class="row">
+      <TargetPicker bind:target={cue.target} {targets} {pixelCues} {palettes} dimmer={{ dimmer: '100%' }} />
+    </div>
+  {/if}
   <div class="row">
     <label>
       Curve
@@ -171,11 +174,11 @@
     <button disabled={!saved} onclick={toggleAudition}>{beats === undefined ? 'Audition loop' : 'Stop audition'}</button>
     <span class="hint">
       {#if !saved}
-        Save the cue to audition it.
+        Save the scene to audition it.
       {:else if savedBeats}
-        Plays the saved cue, again each time its end has held for a bar. Save to hear changes.
+        Plays the saved scene, again each time its end has held for a bar. Save to hear changes.
       {:else}
-        Plays the saved cue once: a swell timed in s or ms has no playhead or loop. Save to hear changes.
+        Plays the saved scene once: a swell timed in s or ms has no playhead or loop. Save to hear changes.
       {/if}
     </span>
   </div>

@@ -26,3 +26,6 @@ export function beatsPerBar(timeSignature = '4/4') {
 export function lengthInBeats({ count, unit }, barBeats) {
   return { beats: count, bars: count * barBeats }[unit] ?? null;
 }
+
+/** `text`, a length as a song file writes it, in beats: 0 for one in time, or for text that isn't a length. */
+export const beatsIn = (text, barBeats) => lengthInBeats(parseLength(text) ?? { count: 0, unit: 'beats' }, barBeats) ?? 0;

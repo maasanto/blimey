@@ -1,10 +1,24 @@
+<script module>
+  // The 0–1 canvas (docs/api.md) drawn as the audience sees the stage, at a 16:9 ratio.
+  export const WIDTH = 1600;
+  export const HEIGHT = 900;
+  /** Screen position of a canvas point: y runs up from the floor, the screen's runs down. */
+  export const screenX = (x) => x * WIDTH;
+  export const screenY = (y) => (1 - y) * HEIGHT;
+</script>
+
 <script>
   import { engine, request } from './engine.svelte.js';
+  import { clamp, tidy } from './layers.js';
 
-  // The 0–1 canvas (docs/api.md) drawn as the audience sees the stage, at a 16:9 ratio, with a
-  // margin so fixtures on an edge stay whole.
-  const WIDTH = 1600;
-  const HEIGHT = 900;
+  /**
+   * While a look is composed on the stage: `overlay` draws above the rig and fixtures stay put;
+   * `caught` outlines pixels, fixture or grid name → a set of pixel indices; `crossedOut` names the
+   * fixtures and grids to cross out.
+   */
+  let { overlay, caught, crossedOut } = $props();
+
+  /** Room around the canvas, so fixtures on an edge stay whole. */
   const MARGIN = 70;
   const PIXEL_RADIUS = 18;
   const GRID = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
@@ -20,19 +34,14 @@
     drag = null;
   });
 
-  const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
-  const round = (value) => Math.round(value * 1000) / 1000;
-  /** Screen position of a canvas point: y runs up from the floor, the screen's runs down. */
-  const screenX = (x) => x * WIDTH;
-  const screenY = (y) => (1 - y) * HEIGHT;
-
-  function canvasPoint(event) {
+  /** The canvas point under a pointer event, which may be off the canvas. */
+  export function canvasPoint(event) {
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
     return { x: point.x / WIDTH, y: 1 - point.y / HEIGHT };
   }
 
   function grab(event, fixture) {
-    if (!editable || drag?.saving) return;
+    if (!editable || drag?.saving || overlay) return;
     error = '';
     const xs = fixture.pixels.map((pixel) => pixel.x);
     const { y } = fixture.pixels[0];
@@ -77,8 +86,8 @@
   async function save(name, dx, dy) {
     const rig = await request('GET', '/api/show/rig.yaml');
     const { canvas } = rig.fixtures.find((fixture) => fixture.name === name);
-    const x = round(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
-    const y = round(clamp(canvas.y + dy, 0, 1));
+    const x = tidy(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
+    const y = tidy(clamp(canvas.y + dy, 0, 1));
     if (x === canvas.x && y === canvas.y) return false;
     Object.assign(canvas, { x, y });
     await request('PUT', '/api/show/rig.yaml', rig);
@@ -108,18 +117,24 @@
 <svelte:window onpointermove={move} onpointerup={drop} />
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
-<p class="hint">
-  {#if editable}
-    Drag a fixture to move it. It is saved to <code>rig.yaml</code> when you let go.
-  {:else}
-    Show mode: positions are locked. Start the engine with <code>--edit</code> to move fixtures.
-  {/if}
-</p>
+{#if !overlay}
+  <p class="hint">
+    {#if editable}
+      Drag a fixture to move it. It is saved to <code>rig.yaml</code> when you let go.
+    {:else}
+      Show mode: positions are locked. Start the engine with <code>--edit</code> to move fixtures.
+    {/if}
+  </p>
+{/if}
+
+{#snippet cross(left, top, right, bottom)}
+  <path class="crossed" d="M{left} {top}L{right} {bottom}M{left} {bottom}L{right} {top}" />
+{/snippet}
 
 <svg
   bind:this={svg}
   viewBox="{-MARGIN} {-MARGIN} {WIDTH + 2 * MARGIN} {HEIGHT + 2 * MARGIN}"
-  class:editable
+  class:editable={editable && !overlay}
   role="img"
   aria-label="Front view"
 >
@@ -138,31 +153,34 @@
     {@const colours = engine.frame?.pixels[fixture.name] ?? []}
     {@const first = fixture.pixels[0]}
     {@const last = fixture.pixels.at(-1)}
+    {@const body = {
+      left: screenX(first.x) - PIXEL_RADIUS - 6,
+      top: screenY(first.y) - PIXEL_RADIUS - 6,
+      right: screenX(last.x) + PIXEL_RADIUS + 6,
+      bottom: screenY(first.y) + PIXEL_RADIUS + 6,
+    }}
+    {@const caughtPixels = caught?.get(fixture.name)}
     <g
       class="fixture"
       data-fixture={fixture.name}
+      data-crossed-out={crossedOut?.has(fixture.name) || undefined}
       transform={offset(fixture)}
       onpointerdown={(event) => grab(event, fixture)}
       role="button"
       tabindex="-1"
     >
-      <rect
-        x={screenX(first.x) - PIXEL_RADIUS - 6}
-        y={screenY(first.y) - PIXEL_RADIUS - 6}
-        width={screenX(last.x) - screenX(first.x) + 2 * PIXEL_RADIUS + 12}
-        height={2 * PIXEL_RADIUS + 12}
-        rx="10"
-        class="body"
-      />
+      <rect x={body.left} y={body.top} width={body.right - body.left} height={body.bottom - body.top} rx="10" class="body" />
       {#each fixture.pixels as pixel, index (index)}
         <circle
           data-pixel={index}
+          class:caught={caughtPixels?.has(index)}
           cx={screenX(pixel.x)}
           cy={screenY(pixel.y)}
           r={PIXEL_RADIUS}
           fill={colours[index] ?? '#000000'}
         />
       {/each}
+      {#if crossedOut?.has(fixture.name)}{@render cross(body.left, body.top, body.right, body.bottom)}{/if}
       <text x={screenX((first.x + last.x) / 2)} y={screenY(first.y) + PIXEL_RADIUS + 32} class="label">
         {fixture.name}
       </text>
@@ -175,10 +193,13 @@
     {@const cell = gridCell(grid.pixels)}
     {@const xs = grid.pixels.map((pixel) => screenX(pixel.x))}
     {@const bottom = Math.max(...grid.pixels.map((pixel) => screenY(pixel.y)))}
-    <g class="pixel-grid" data-grid={grid.name}>
+    {@const top = Math.min(...grid.pixels.map((pixel) => screenY(pixel.y)))}
+    {@const caughtPixels = caught?.get(grid.name)}
+    <g class="pixel-grid" data-grid={grid.name} data-crossed-out={crossedOut?.has(grid.name) || undefined}>
       {#each grid.pixels as pixel, index (index)}
         <rect
           data-pixel={index}
+          class:caught={caughtPixels?.has(index)}
           x={screenX(pixel.x) - cell.width / 2}
           y={screenY(pixel.y) - cell.height / 2}
           width={cell.width}
@@ -186,9 +207,14 @@
           fill={colours[index] ?? '#000000'}
         />
       {/each}
+      {#if crossedOut?.has(grid.name)}
+        {@render cross(Math.min(...xs) - cell.width / 2, top - cell.height / 2, Math.max(...xs) + cell.width / 2, bottom + cell.height / 2)}
+      {/if}
       <text x={(Math.min(...xs) + Math.max(...xs)) / 2} y={bottom + cell.height / 2 + 26} class="label">{grid.name}</text>
     </g>
   {/each}
+
+  {@render overlay?.()}
 </svg>
 
 <style>
@@ -235,6 +261,18 @@
   .pixel-grid rect {
     stroke: #23252b;
     stroke-width: 1;
+  }
+
+  circle.caught,
+  .pixel-grid rect.caught {
+    stroke: var(--accent);
+    stroke-width: 6;
+  }
+
+  .crossed {
+    stroke: #ff7b7b;
+    stroke-width: 6;
+    stroke-linecap: round;
   }
 
   .label {
