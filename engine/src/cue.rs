@@ -113,6 +113,10 @@ pub enum SwellTarget {
 
 pub(crate) const INSTANT: Length = Length::Time(Duration::ZERO);
 
+/// In tests, a cue of this name panics when drawn, to test what a bug in a cue does.
+#[cfg(test)]
+pub(crate) const PANICS_IN_TESTS: &str = "panics-in-tests";
+
 /// A song's pixel cues by name, for targets that name one: name → notes.
 pub(crate) type PixelCues = BTreeMap<String, BTreeSet<u8>>;
 
@@ -309,6 +313,8 @@ impl Cue {
         out: &mut Universes,
         dimmers: &mut VirtualDimmers,
     ) {
+        #[cfg(test)]
+        assert_ne!(self.name(), PANICS_IN_TESTS, "a test made this cue panic");
         let frame = &mut out.enttec;
         let mut look = match self {
             // Pixel cues draw above every other cue, so no look reads virtual dimmers after them.

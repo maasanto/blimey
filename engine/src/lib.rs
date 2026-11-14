@@ -261,7 +261,7 @@ pub fn run(
             }
         }
         let output = playback.render(show, look, deadline);
-        if let Some(line) = playback.log_line(deadline) {
+        for line in playback.log_lines(deadline) {
             sink.log(&line);
         }
         sink.status(&playback.status(show, deadline));

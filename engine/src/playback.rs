@@ -3,6 +3,7 @@
 //! then cues, then the master dimmer.
 
 use std::collections::BTreeMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -42,6 +43,8 @@ pub(crate) struct Playback {
     live_parameters: [f32; LIVE_PARAMETERS],
     /// Cues started or released since the last `take_cue_events`.
     cue_events: Vec<CueEvent>,
+    /// Cues dropped for failing to draw since the last `log_lines`, as lines for the log.
+    failures: Vec<String>,
 }
 
 /// A cue starting or being released, for the event log.
@@ -115,6 +118,7 @@ impl Default for Playback {
             master: 1.0,
             live_parameters: [0.0; LIVE_PARAMETERS],
             cue_events: Vec::new(),
+            failures: Vec::new(),
         }
     }
 }
@@ -236,13 +240,15 @@ impl Playback {
         std::mem::take(&mut self.cue_events)
     }
 
-    /// A line for the log when the selected song's tempo source changes (see `ClockFollower`).
-    pub fn log_line(&mut self, at: Duration) -> Option<String> {
-        let line = self.clock.as_mut()?.log_line(at)?;
-        Some(format!(
-            "{}: {line}",
-            self.song.as_deref().unwrap_or_default()
-        ))
+    /// Lines for the log: cues dropped since the last call, and a line when the selected song's
+    /// tempo source changes (see `ClockFollower`).
+    pub fn log_lines(&mut self, at: Duration) -> Vec<String> {
+        let mut lines = std::mem::take(&mut self.failures);
+        let song = self.song.as_deref().unwrap_or_default();
+        if let Some(line) = self.clock.as_mut().and_then(|clock| clock.log_line(at)) {
+            lines.push(format!("{song}: {line}"));
+        }
+        lines
     }
 
     /// Panic: clears legacy levels and cues and puts up the song's safe look.
@@ -297,6 +303,7 @@ impl Playback {
                 *intensity_scales.entry(*note).or_insert(1.0) *= 1.0 - darkened;
             }
         }
+        let mut failed = Vec::new();
         for active in self.layered(song) {
             let cue = &song.cues[&active.note];
             if cue.intensity_targets().is_some() {
@@ -318,15 +325,22 @@ impl Playback {
                 bar_line: active.bar_line,
                 released: active.released.as_ref().map(|release| release.at),
             };
-            cue.draw(
-                &show.rig,
-                clock,
-                timing,
-                at,
-                intensity,
-                &mut lit,
-                &mut lit_dimmers,
-            );
+            // A bug in one cue costs that cue, not the frame: its half-drawn copy is dropped.
+            let drawn = panic::catch_unwind(AssertUnwindSafe(|| {
+                cue.draw(
+                    &show.rig,
+                    clock,
+                    timing,
+                    at,
+                    intensity,
+                    &mut lit,
+                    &mut lit_dimmers,
+                );
+            }));
+            if drawn.is_err() {
+                failed.push(active.note);
+                continue;
+            }
             dimmers.crossfade(&lit_dimmers, opacity);
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
@@ -335,8 +349,21 @@ impl Playback {
                 crossfade(output.frame_mut(Universe::ArtNet(*universe)), lit, opacity);
             }
         }
+        self.drop_failed(song, &failed);
         apply_master(&show.rig, self.master, &mut output);
         output
+    }
+
+    /// Drops the cues on `notes`, which panicked while drawing, until they are fired again.
+    fn drop_failed(&mut self, song: &Song, notes: &[u8]) {
+        for note in notes {
+            self.cues.retain(|active| active.note != *note);
+            self.failures.push(format!(
+                "{}: cue {note} {:?} FAILED TO DRAW and is dropped until it is fired again; the other cues play on",
+                song.name,
+                song.cues[note].name()
+            ));
+        }
     }
 
     /// The state behind the frame due at `at`.
@@ -413,6 +440,7 @@ fn apply_master(rig: &Rig, master: f32, output: &mut Universes) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue::PANICS_IN_TESTS;
     use crate::{FRAME_PERIOD, MidiFile, MidiSource};
     use std::path::Path;
 
@@ -555,6 +583,44 @@ mod tests {
             .map(|cue| (cue.note, cue.beats, cue.loop_beats))
             .collect();
         assert_eq!(beats, [(40, 3.0, Some(1.0)), (41, 3.0, None)]);
+    }
+
+    #[test]
+    fn a_cue_that_panics_is_dropped_and_the_rest_of_the_frame_renders() {
+        let mut show = cues_show();
+        let song = format!(
+            "program: 1\ncues:\n  36: {{ name: red, type: scene, values: {{ rgb-par: {{ color: \"#ff0000\" }} }} }}\n  37: {{ name: {PANICS_IN_TESTS}, type: pixel }}\n"
+        );
+        show.songs = vec![Song::parse("broken", &song, &show).unwrap()];
+        let mut playback = Playback::default();
+        for message in [
+            [CUE_PROGRAM_CHANGE, 1].as_slice(),
+            &[CUE_NOTE_ON, 36, 127],
+            &[CUE_NOTE_ON, 37, 127],
+        ] {
+            let event = MidiEvent {
+                at: Duration::ZERO,
+                message: message.to_vec(),
+            };
+            playback.apply(&show, &event);
+        }
+
+        let first = playback.render(&show, &Look::default(), Duration::ZERO);
+        let logged = playback.log_lines(Duration::ZERO);
+        let next = playback.render(&show, &Look::default(), FRAME_PERIOD);
+
+        assert_eq!(first.enttec[4..7], [255, 0, 0], "rgb-par red, cue 36");
+        assert_eq!(next.enttec, first.enttec);
+        let notes: Vec<u8> = (playback.status(&show, FRAME_PERIOD).cues.iter())
+            .map(|cue| cue.note)
+            .collect();
+        assert_eq!(notes, [36], "cue 37 is dropped");
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.contains(&format!("broken: cue 37 \"{PANICS_IN_TESTS}\""))),
+            "{logged:?}"
+        );
     }
 
     /// A pixel cue fired without a pattern layer has no bar line; saving one onto it while it
