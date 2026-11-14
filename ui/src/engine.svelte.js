@@ -50,7 +50,7 @@ function countFrame() {
 
 connect();
 
-/** Calls the HTTP API; throws the engine's error message on failure, with the HTTP `status`. */
+/** Calls the HTTP API; throws the engine's error message on failure. */
 export async function request(method, path, body) {
   const response = await fetch(path, {
     method,
@@ -59,8 +59,7 @@ export async function request(method, path, body) {
   });
   if (!response.ok) {
     const refusal = await response.json().catch(() => null);
-    const message = refusal?.error ?? `${method} ${path} failed with HTTP ${response.status}`;
-    throw Object.assign(new Error(message), { status: response.status });
+    throw new Error(refusal?.error ?? `${method} ${path} failed with HTTP ${response.status}`);
   }
   return response.status === 204 ? null : response.json();
 }

@@ -18,6 +18,36 @@
   function newForm() {
     return { number: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null, unchanged: null };
   }
+
+  function withoutEmptyTimes(edited) {
+    const cue = $state.snapshot(edited);
+    for (const optional of ['fade_in', 'release']) if (!cue[optional]) delete cue[optional];
+    return cue;
+  }
+
+  /** The scene as saved from `edited`: a fixed look that stays one keeps its values. */
+  function cueToSave(edited) {
+    if (!edited.sceneKept) return withoutEmptyTimes(edited.cue);
+    const { name, fade_in, release } = edited.cue;
+    return withoutEmptyTimes({ ...edited.replaces.cue, name, fade_in, release });
+  }
+
+  function unchangedOf(edited) {
+    return JSON.stringify({ number: edited.number, cue: cueToSave(edited) });
+  }
+
+  /** Whether the scene in the editor has edits not saved yet: checked on leaving, not on every edit. */
+  function isDirty() {
+    return opened !== null && form.unchanged !== null && unchangedOf(form) !== form.unchanged;
+  }
+
+  const LEAVE_QUESTION = 'This scene has unsaved changes. Leave the editor and lose them?';
+
+  // Here rather than on the component: edits are kept while other pages are open, and a reload
+  // or a closed tab would lose them all the same.
+  addEventListener('beforeunload', (event) => {
+    if (isDirty()) event.preventDefault();
+  });
 </script>
 
 <script>
@@ -78,7 +108,6 @@
   );
   /** The look's layers as saved, which an audition plays. */
   const savedLayers = $derived(form.replaces?.cue.type === 'pixel' ? asLayers(form.replaces.cue).layers : []);
-  const isDirty = $derived(editable && opened !== null && form.unchanged !== null && unchangedOf(form) !== form.unchanged);
 
   /** What a new scene of each type starts as. */
   const newCue = {
@@ -111,7 +140,7 @@
   }
 
   const sceneNumbers = () => new Set(cues.map(({ note }) => note));
-  const songFile = () => `/api/show/songs/${songName}.yaml`;
+  const songFile = (name) => `/api/show/songs/${name}.yaml`;
   const sceneHash = ({ song, number }) => `#builder/${song}/${number}`;
 
   /** The scene `#builder/<song>/<number>` names, or null for the scenes home. */
@@ -120,8 +149,15 @@
     return name && /^\d+$/.test(number ?? '') ? { song: name, number: Number(number) } : null;
   }
 
+  /** Loads the selected song; a response for a song switched away from meanwhile is dropped. */
   async function loadSong() {
-    song = songName ? await request('GET', songFile()) : null;
+    const name = songName;
+    const loaded = name ? await request('GET', songFile(name)) : null;
+    if (name === songName) showSong(loaded);
+  }
+
+  function showSong(loaded) {
+    song = loaded;
     tempo = song?.bpm ?? DEFAULT_BPM;
   }
 
@@ -159,20 +195,30 @@
     if (!location.hash.startsWith('#builder')) return;
     const next = sceneInUrl();
     if (next?.song === opened?.song && next?.number === opened?.number) return;
-    if (isDirty && !confirm('This scene has unsaved changes. Leave the editor and lose them?')) {
-      history.pushState(null, '', sceneHash(opened));
+    if (isDirty() && !confirm(LEAVE_QUESTION)) {
+      // Replacing fires `hashchange` again, so the Builder tab follows; the check above then finds the scene open.
+      location.replace(sceneHash(opened));
       return;
     }
-    opened = next;
+    opened = next?.number > HIGHEST_NUMBER ? null : next;
     form = newForm();
-    if (next) {
+    if (next && !opened) {
+      error = `There is no scene ${next.number}: scene numbers go from 0 to ${HIGHEST_NUMBER}.`;
+      location.replace('#builder');
+    } else if (next) {
       attempt(() =>
         openScene(next).catch((failure) => {
-          location.replace('#builder');
+          if (opened === next) location.replace('#builder');
           throw failure;
         }),
       );
     }
+  }
+
+  function leaveEditor(event) {
+    if (!isDirty()) return;
+    if (confirm(LEAVE_QUESTION)) form.unchanged = null;
+    else event.preventDefault();
   }
 
   /**
@@ -180,9 +226,10 @@
    * `layers` form; a fixed look opens as it is, until the rig is known to convert it.
    */
   async function openScene(scene) {
-    songName = scene.song;
-    await loadSong();
+    const loaded = await request('GET', songFile(scene.song));
     if (opened !== scene) return;
+    songName = scene.song;
+    showSong(loaded);
     const cue = song.cues?.[scene.number];
     if (!cue) {
       form = { ...newForm(), number: scene.number };
@@ -237,34 +284,14 @@
   /** Takes the look off the output when the browser page goes; nobody is left to hear back. */
   const clearPreview = () => editable && fetch('/api/preview', { method: 'DELETE', keepalive: true });
 
-  function withoutEmptyTimes(edited) {
-    const cue = $state.snapshot(edited);
-    for (const optional of ['fade_in', 'release']) if (!cue[optional]) delete cue[optional];
-    return cue;
-  }
-
-  /** The scene as saved from `edited`: a fixed look that stays one keeps its values. */
-  function cueToSave(edited) {
-    if (!edited.sceneKept) return withoutEmptyTimes(edited.cue);
-    const { name, fade_in, release } = edited.cue;
-    return withoutEmptyTimes({ ...edited.replaces.cue, name, fade_in, release });
-  }
-
-  function unchangedOf(edited) {
-    return JSON.stringify({ number: edited.number, cue: cueToSave(edited) });
-  }
-
   /** Saves the scene under its number, which moves it there if it had another. */
   async function saveScene() {
     const { number } = form;
     try {
       await request('PUT', `/api/songs/${songName}/cues/${number}`, { cue: cueToSave(form), replaces: form.replaces });
     } catch (failure) {
-      const taken = song.cues?.[number];
-      if (failure.status === 409 && taken && number !== form.replaces?.note) {
-        throw new Error(`Scene ${number} is already ${taken.name}: pick a free number, or open that scene.`);
-      }
-      throw failure;
+      if (!failure.message.includes('already fires cue')) throw failure;
+      throw new Error(`Scene ${number} is already ${song.cues?.[number]?.name ?? 'taken'}: pick a free number, or open that scene.`);
     }
     notice = `Saved scene ${number} in ${songName}.`;
     await reloadAfterSave();
@@ -340,9 +367,9 @@
     try {
       await request('POST', '/api/songs', { name, program, ...(bpm ? { bpm } : {}), ...(time_signature ? { time_signature } : {}) });
     } catch (failure) {
+      if (!failure.message.includes('already selects song')) throw failure;
       const taken = summary.songs.find((entry) => entry.program === program);
-      if (failure.status === 422 && taken) throw new Error(`Song ${program} is already ${taken.name}: pick a free number.`);
-      throw failure;
+      throw new Error(`Song ${program} is already ${taken?.name ?? 'taken'}: pick a free number.`);
     }
     newSong = null;
     songName = name;
@@ -389,7 +416,7 @@
 {/if}
 
 {#if opened}
-  <p class="back"><a href="#builder">← Scenes</a></p>
+  <p class="back"><a href="#builder" onclick={leaveEditor}>← Scenes</a></p>
 
   <fieldset class="scene" disabled={!editable || !song}>
     <legend>

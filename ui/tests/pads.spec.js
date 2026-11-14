@@ -113,6 +113,99 @@ test('browser back returns home, and leaving with unsaved edits asks first', asy
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
 });
 
+test('a refused leave keeps history and the Builder tab on the scene', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#monitor`);
+  const dialogs = [];
+  const answerNext = (accept) =>
+    page.once('dialog', (dialog) => {
+      dialogs.push(dialog.message());
+      return accept ? dialog.accept() : dialog.dismiss();
+    });
+
+  await page.getByRole('link', { name: 'Builder' }).click();
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('changed');
+  answerNext(false);
+  await page.goBack();
+  await expect(page).toHaveURL(/#builder\/demo\/40$/);
+  await expect(page.getByLabel('Name')).toHaveValue('changed');
+
+  // Back once more leaves the builder without asking: the edits wait there, as on any tab switch.
+  await page.goBack();
+  await expect(page).toHaveURL(/#monitor$/);
+  await page.getByRole('link', { name: 'Builder' }).click();
+  await expect(page).toHaveURL(/#builder\/demo\/40$/);
+  await expect(page.getByLabel('Name')).toHaveValue('changed');
+
+  answerNext(true);
+  await backToScenes(page).click();
+  await expect(pad(page, 40)).toBeVisible();
+  expect(dialogs, 'one question per refused or accepted leave').toHaveLength(2);
+});
+
+test('unsaved edits are guarded with the engine gone and when the page unloads', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const engine = await startEngine();
+  await page.goto(`${engine.url}#builder`);
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('changed');
+  await engine.stop();
+  await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
+
+  const dialogs = [];
+  page.once('dialog', (dialog) => {
+    dialogs.push(dialog.type());
+    return dialog.dismiss();
+  });
+  await backToScenes(page).click();
+  await expect(page.getByLabel('Name')).toHaveValue('changed');
+  expect(dialogs).toEqual(['confirm']);
+
+  const unloading = page.waitForEvent('dialog');
+  await page.close({ runBeforeUnload: true });
+  const prompt = await unloading;
+  expect(prompt.type()).toBe('beforeunload');
+  await prompt.accept();
+});
+
+test('a URL to an unknown song or a number the engine never takes goes home, saying why', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+
+  await page.goto(`${url}#builder/no-such-song/3`);
+  await expect(page).toHaveURL(/#builder$/);
+  await expect(page.getByRole('alert')).toContainText('no-such-song');
+  await expect(page.getByLabel('Song')).toHaveValue('demo');
+  await expect(pad(page, 36)).toBeVisible();
+
+  await page.goto(`${url}#builder/demo/300`);
+  await expect(page).toHaveURL(/#builder$/);
+  await expect(page.getByRole('alert')).toHaveText('There is no scene 300: scene numbers go from 0 to 127.');
+  await expect(pad(page, 36)).toBeVisible();
+});
+
+test("a slow load of the song switched away from doesn't replace the one opened from the URL", async ({ page, show, startEngine }) => {
+  addSong(show);
+  writeFileSync(path.join(show, 'songs/encore.yaml'), 'program: 2\ncues:\n  5:\n    name: encore-look\n    type: pixel\n    params: { color: deep-blue }\n');
+  const { url } = await startEngine();
+  await page.route('**/api/show/songs/demo.yaml', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+
+  // The home starts loading demo; a link to encore's scene comes in before it arrives.
+  await page.goto(`${url}#builder`);
+  await expect(page.getByLabel('Song')).toHaveValue('demo');
+  await page.evaluate(() => (location.hash = '#builder/encore/5'));
+  await expect(page.getByLabel('Name')).toHaveValue('encore-look');
+  await page.waitForTimeout(2000);
+  await backToScenes(page).click();
+  await expect(pad(page, 5)).toHaveAccessibleName('Scene 5: encore-look');
+  await expect(pad(page, 36)).toHaveCount(0);
+});
+
 test('a new scene takes the lowest free number and saves under it', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);
   const { url } = await startEngine();
@@ -168,6 +261,12 @@ test('renumbering to a taken number is refused, leaving the file untouched; a fr
   await page.getByRole('button', { name: 'Save', exact: true }).press('Enter');
   await expect(page.getByRole('alert')).toHaveText('Scene 36 is already verse: pick a free number, or open that scene.');
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
+
+  // A scene changed on disk since it was opened is refused as such, whatever the number.
+  writeFileSync(songFile, SONG.replace('name: chase', 'name: chase-by-hand'));
+  await page.getByRole('button', { name: 'Save', exact: true }).press('Enter');
+  await expect(page.getByRole('alert')).toContainText('cue 40 changed since it was loaded');
+  writeFileSync(songFile, SONG);
 
   await page.getByLabel('Number').fill('44');
   await page.getByRole('button', { name: 'Save', exact: true }).press('Enter');
