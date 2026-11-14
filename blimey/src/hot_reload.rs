@@ -8,21 +8,38 @@ use std::time::SystemTime;
 
 use blimey_engine::{Show, ShowSource};
 
+use crate::state::LastGoodShow;
+
 pub struct HotReload {
     dir: PathBuf,
     show: Show,
     stamps: Vec<FileStamp>,
+    /// Where each show that reloads is kept, if anywhere.
+    last_good: Option<LastGoodShow>,
 }
 
 type FileStamp = (PathBuf, Option<SystemTime>, u64);
 
 impl HotReload {
     pub fn load(dir: &Path) -> io::Result<HotReload> {
+        let stamps = stamps(dir);
         Ok(HotReload {
             dir: dir.to_path_buf(),
-            stamps: stamps(dir),
+            stamps,
             show: Show::load(dir)?,
+            last_good: None,
         })
+    }
+
+    /// Plays `show`, loaded from `dir` or standing in for it, until `dir` changes, then
+    /// reloads from `dir`, keeping each show that loads in `last_good`.
+    pub fn new(dir: &Path, show: Show, last_good: Option<LastGoodShow>) -> HotReload {
+        HotReload {
+            dir: dir.to_path_buf(),
+            stamps: stamps(dir),
+            show,
+            last_good,
+        }
     }
 }
 
@@ -36,6 +53,9 @@ impl ShowSource for HotReload {
                 Ok(show) => {
                     self.show = show;
                     eprintln!("blimey: reloaded {}", self.dir.display());
+                    if let Some(last_good) = &self.last_good {
+                        last_good.save(&self.dir);
+                    }
                 }
                 Err(error) => eprintln!("blimey: {error}; still running the previous show"),
             }

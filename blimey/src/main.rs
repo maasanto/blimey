@@ -56,7 +56,7 @@ use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
 use crate::recorder::Recorder;
 use crate::soak::{Setlist, Soak};
-use crate::state::Resumed;
+use crate::state::{LastGoodShow, Resumed};
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
 #[derive(Parser)]
@@ -216,6 +216,39 @@ impl Outputs {
         Ok(match self.mode() {
             Mode::Edit => Box::new(HotReload::load(show_dir)?),
             Mode::Show => Box::new(Show::load(show_dir)?),
+        })
+    }
+
+    /// As `shows`, keeping the show in `last_good` each time it loads. A show that fails to
+    /// load at start is reported, and the last one that loaded stands in; in edit mode the show
+    /// folder, where saves still go, reloads over it once fixed. Without one, the error stands.
+    fn live_shows(
+        &self,
+        show_dir: &Path,
+        last_good: Option<LastGoodShow>,
+    ) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+        let show = match Show::load(show_dir) {
+            Ok(show) => {
+                if let Some(last_good) = &last_good {
+                    last_good.save(show_dir);
+                }
+                show
+            }
+            Err(error) => {
+                let Some(show) = last_good.as_ref().and_then(LastGoodShow::load) else {
+                    return Err(error.into());
+                };
+                eprintln!(
+                    "blimey: {error}\nblimey: PLAYING THE LAST SHOW THAT LOADED, kept in the state folder, until {} loads again: fix it, then restart{}",
+                    show_dir.display(),
+                    if self.edit { " or save the fix" } else { "" }
+                );
+                show
+            }
+        };
+        Ok(match self.mode() {
+            Mode::Edit => Box::new(HotReload::new(show_dir, show, last_good)),
+            Mode::Show => Box::new(show),
         })
     }
 
@@ -437,12 +470,14 @@ fn run(
     outputs: &Outputs,
     state_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    let mut shows = check_run(show_dir, outputs)?;
+    check_outputs(outputs)?;
     let state_dir = state_dir.or_else(|| {
         state::default_dir()
             .map_err(|error| eprintln!("state: {error}; running without saved state or event log"))
             .ok()
     });
+    let last_good = state_dir.as_deref().map(LastGoodShow::new);
+    let mut shows = outputs.live_shows(show_dir, last_good)?;
     let recorder = Recorder::start(state_dir.as_deref(), show_dir, outputs.mode().name());
     let resume = recorder.saved().resume_events(shows.current());
     let mut clock = MonotonicClock::default();
@@ -532,13 +567,20 @@ fn soak(
     })
 }
 
-/// What `run` refuses to start without: somewhere to send frames, and a show that loads.
-/// Returns the show to play.
-fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+/// What a new install needs: somewhere to send frames, and a show that loads, which `run` can
+/// do without only once it has a last good show to start from.
+fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<(), Box<dyn Error>> {
+    check_outputs(outputs)?;
+    Show::load(show_dir)?;
+    Ok(())
+}
+
+/// What `run` refuses to start without: somewhere to send frames.
+fn check_outputs(outputs: &Outputs) -> Result<(), Box<dyn Error>> {
     if !outputs.any() {
         return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
     }
-    Ok(outputs.shows(show_dir)?)
+    Ok(())
 }
 
 /// Checks `run_args` as `blimey run` would at start, so launchd never restarts an engine that
@@ -769,6 +811,65 @@ fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<d
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// The outputs of `blimey run <show> --artnet <extra>`.
+    fn run_outputs(extra: &[&str]) -> Outputs {
+        let args = ["blimey", "run", "show", "--artnet"].iter().chain(extra);
+        match Command::parse_from(args) {
+            Command::Run { outputs, .. } => outputs,
+            _ => unreachable!("parsed as `run`"),
+        }
+    }
+
+    /// The songs' first cue names, to tell shows apart.
+    fn cue_names(shows: &mut Box<dyn ShowSource>) -> Vec<String> {
+        let songs = &shows.current().songs;
+        songs
+            .iter()
+            .map(|song| song.cues[&36].name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_show_broken_before_a_start_plays_as_it_last_loaded_until_fixed() {
+        let scratch = std::env::temp_dir().join(format!("blimey-last-good-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let (show_dir, state_dir) = (scratch.join("show"), scratch.join("state"));
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/shows/cues");
+        for file in [
+            "rig.yaml",
+            "palettes.yaml",
+            "fixtures/dimmer-par.yaml",
+            "fixtures/rgb-par.yaml",
+            "songs/second.yaml",
+        ] {
+            fs::create_dir_all(show_dir.join(file).parent().unwrap()).unwrap();
+            fs::copy(source.join(file), show_dir.join(file)).unwrap();
+        }
+        let song = show_dir.join("songs/second.yaml");
+        let good = fs::read_to_string(&song).unwrap();
+        let last_good = || Some(LastGoodShow::new(&state_dir));
+        let (show_mode, edit_mode) = (run_outputs(&[]), run_outputs(&["--edit"]));
+
+        show_mode.live_shows(&show_dir, last_good()).unwrap();
+        fs::write(&song, good.replace("green", "not-a-colour")).unwrap();
+        let in_show_mode = cue_names(&mut show_mode.live_shows(&show_dir, last_good()).unwrap());
+        let mut edited = edit_mode.live_shows(&show_dir, last_good()).unwrap();
+        let before_the_fix = cue_names(&mut edited);
+        fs::write(&song, good.replace("green-fade", "fixed-fade")).unwrap();
+        let after_the_fix = cue_names(&mut edited);
+        let without_a_copy = show_mode.live_shows(&scratch.join("missing"), None);
+
+        assert_eq!(in_show_mode, ["green-fade"]);
+        assert_eq!(before_the_fix, ["green-fade"]);
+        assert_eq!(
+            after_the_fix,
+            ["fixed-fade"],
+            "the show folder, not the copy, reloads"
+        );
+        assert!(without_a_copy.is_err());
+        fs::remove_dir_all(scratch).unwrap();
+    }
 
     /// Set in the copy of the test binary that `a_panic_on_a_background_thread_exits` runs.
     const PANICKING_COPY: &str = "BLIMEY_TEST_PANICKING_COPY";
