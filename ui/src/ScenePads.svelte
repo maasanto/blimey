@@ -188,7 +188,7 @@
   </ol>
   <p class="hint">
     {#if editable}
-      Click a scene to edit it; hold it, or use its ▶ button, to audition it.
+      Click a scene to edit it. Hold it, or press its ▶, to audition it on the rig.
     {:else}
       Show mode: scenes open read-only and don't audition.
     {/if}
@@ -218,11 +218,15 @@
     min-width: 0;
     padding: 6px;
     text-align: left;
-    background: #1c1e24;
-    border-radius: 8px;
+    background: var(--panel);
+    border-radius: var(--radius);
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s,
+      transform 0.1s;
   }
 
   .pad.new {
@@ -230,9 +234,18 @@
     border-style: dashed;
   }
 
+  .pad.new:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+
   .pad.playing {
     border-color: var(--accent);
-    box-shadow: 0 0 12px rgb(255 190 80 / 0.45);
+    box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgb(255 190 80 / 0.35);
+  }
+
+  .pad.playing .number {
+    color: var(--accent);
   }
 
   .pad.held {
@@ -243,9 +256,25 @@
     position: absolute;
     top: 10px;
     right: 10px;
-    padding: 0 8px;
-    font-size: 12px;
-    background: rgb(22 23 27 / 0.8);
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    font-size: 11px;
+    line-height: 1;
+    background: rgb(22 23 27 / 0.85);
+    opacity: 0.7;
+    transition: opacity 0.15s;
+  }
+
+  .slot:hover .audition,
+  .audition:focus-visible,
+  .playing + .audition {
+    opacity: 1;
+  }
+
+  .playing + .audition {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .thumbnail {
