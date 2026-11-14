@@ -1,3 +1,8 @@
+<script module>
+  /** The highest MIDI note, and so the last pad. */
+  export const LAST_NOTE = 127;
+</script>
+
 <script>
   import { engine, request } from './engine.svelte.js';
   import { curvePoints } from './envelope.svelte.js';
@@ -13,9 +18,11 @@
   const PADS_PER_BANK = 16;
   /** Banks line up on note 36 (C1), where drum pads and the show's cues start. */
   const ALIGNED_ON = 36;
-  const LAST_NOTE = 127;
-  const FIRST_BANK = ALIGNED_ON - PADS_PER_BANK * Math.ceil(ALIGNED_ON / PADS_PER_BANK);
-  const BANKS = Array.from({ length: Math.ceil((LAST_NOTE + 1 - FIRST_BANK) / PADS_PER_BANK) }, (_, index) => FIRST_BANK + PADS_PER_BANK * index);
+  /** Each bank's first and last note. 36 is 4 + 2 × 16, so notes 0–3 make a short first bank. */
+  const BANKS = [{ first: 0, last: 3 }];
+  for (let first = 4; first <= LAST_NOTE; first += PADS_PER_BANK) {
+    BANKS.push({ first, last: Math.min(first + PADS_PER_BANK - 1, LAST_NOTE) });
+  }
   /** A press held this long auditions; a shorter one opens the pad. */
   const HOLD_MS = 250;
   /** A press that moves this far drags the cue to another pad. */
@@ -26,8 +33,13 @@
   const WIDTH = 160;
   const HEIGHT = 90;
   const FIXTURE_RADIUS = 6;
+  /** Room above and below the canvas, so pixels and curves on its edges show whole. */
+  const MARGIN = FIXTURE_RADIUS;
+  const PICTURE_RATIO = `${WIDTH} / ${HEIGHT + 2 * MARGIN}`;
+  /** How much of the space between a grid's pixels each one fills. */
+  const GRID_PIXEL_FILL = 0.9;
 
-  let bank = $state(ALIGNED_ON);
+  let bank = $state.raw(BANKS.find(({ first }) => first === ALIGNED_ON));
   let tick = $state(0);
   /** `GET …/thumbnails` for `song`: note → thumbnail, replaced whole by the next one. */
   let thumbnails = $state.raw({ song: null, byNote: {} });
@@ -36,14 +48,9 @@
   let pressed = $state(null);
   let isClickSuppressed = false;
 
-  const notesOf = (start) =>
-    Array.from({ length: PADS_PER_BANK }, (_, index) => start + index).filter((note) => note >= 0 && note <= LAST_NOTE);
+  const notesOf = ({ first, last }) => Array.from({ length: last - first + 1 }, (_, index) => first + index);
   const notes = $derived(notesOf(bank));
-  const range = (start) => {
-    const shown = notesOf(start);
-    return `${shown[0]}–${shown.at(-1)}`;
-  };
-  const cueCount = (start) => notesOf(start).filter((note) => cues[note]).length;
+  const cueCount = (shown) => notesOf(shown).filter((note) => cues[note]).length;
 
   /**
    * Every pixel of the rig on the thumbnail. A fixture's pixels are drawn larger than life, so
@@ -53,7 +60,7 @@
     ...(engine.rig?.fixtures ?? []).flatMap(({ name, pixels }) => pixels.map((pixel, index) => ({ name, index, ...pixel, radius: FIXTURE_RADIUS }))),
     ...(engine.rig?.grids ?? []).flatMap(({ name, pixels }) => {
       const spacing = Math.min(gap(pixels.map((pixel) => pixel.x)) * WIDTH, gap(pixels.map((pixel) => pixel.y)) * HEIGHT);
-      const radius = Math.min(FIXTURE_RADIUS, 0.45 * spacing);
+      const radius = Math.min(FIXTURE_RADIUS, (GRID_PIXEL_FILL * spacing) / 2);
       return pixels.map((pixel, index) => ({ name, index, ...pixel, radius }));
     }),
   ]);
@@ -63,7 +70,10 @@
     return Math.min(...sorted.slice(1).map((position, index) => position - sorted[index]));
   }
 
+  // Only while a pad on show moves: a still bank redraws nothing.
+  const isAnimated = $derived(notes.some((note) => cues[note] && thumbnailOf(note)?.frames?.length > 1));
   $effect(() => {
+    if (!isAnimated) return;
     const timer = setInterval(() => (tick += 1), THUMBNAIL_FRAME_MS);
     return () => clearInterval(timer);
   });
@@ -90,17 +100,22 @@
 
   const thumbnailOf = (note) => (thumbnails.song === songName ? thumbnails.byNote[note] : undefined);
 
+  /** Whether `event` belongs to the press under way. */
+  const isPressing = (event) => pressed !== null && event.pointerId === pressed.pointer;
+
   function press(event, note) {
-    if (event.button !== 0 || !cues[note]) return;
-    pressed = { note, x: event.clientX, y: event.clientY, gesture: 'click', over: null, started: null };
+    // One press at a time: another finger or pointer is ignored until this one lets go.
+    if (pressed !== null || event.button !== 0 || !cues[note]) return;
+    pressed = { pointer: event.pointerId, note, x: event.clientX, y: event.clientY, gesture: 'click', over: null, started: null };
     pressed.timer = setTimeout(() => {
       pressed.gesture = 'hold';
-      pressed.started = onhold(note);
+      // A cue already playing, from Reaper or the editor, is left to play: no note-on or note-off.
+      if (!isPlaying(note)) pressed.started = onhold(note);
     }, HOLD_MS);
   }
 
   function drag(event) {
-    if (!pressed || pressed.gesture === 'hold') return;
+    if (!isPressing(event) || pressed.gesture === 'hold') return;
     if (pressed.gesture === 'click') {
       if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) < DRAG_PX) return;
       clearTimeout(pressed.timer);
@@ -109,20 +124,20 @@
     const under = document.elementFromPoint(event.clientX, event.clientY);
     // Dragging over another bank's button opens it, to drop the cue there.
     const bankButton = under?.closest('[data-bank]');
-    if (bankButton) bank = Number(bankButton.dataset.bank);
+    if (bankButton) bank = BANKS.find(({ first }) => first === Number(bankButton.dataset.bank));
     const pad = under?.closest('[data-pad]');
     pressed.over = pad ? Number(pad.dataset.pad) : null;
   }
 
-  function letGo() {
-    if (!pressed) return;
+  function letGo(event) {
+    if (!isPressing(event)) return;
     const { note, gesture, over, started, timer } = pressed;
     clearTimeout(timer);
     pressed = null;
     // The click that follows a hold or a drag isn't one.
     isClickSuppressed = gesture !== 'click';
     setTimeout(() => (isClickSuppressed = false));
-    if (gesture === 'hold') started.then(() => onrelease(note));
+    started?.then(() => onrelease(note));
     if (gesture === 'drag' && over !== null && over !== note) onmove(note, over);
   }
 
@@ -134,7 +149,7 @@
 <svelte:window onpointermove={drag} onpointerup={letGo} onpointercancel={letGo} />
 
 {#snippet picture(thumbnail)}
-  <svg viewBox="0 -6 {WIDTH} {HEIGHT + 12}" class="thumbnail" aria-hidden="true">
+  <svg viewBox="0 {-MARGIN} {WIDTH} {HEIGHT + 2 * MARGIN}" class="thumbnail" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">
     {#if thumbnail?.levels}
       <polyline class="level" points={curvePoints(thumbnail.levels, { width: WIDTH, height: HEIGHT })} />
     {:else if thumbnail?.frames}
@@ -148,16 +163,16 @@
 
 <section class="bank" aria-label="Pads">
   <div class="banks" role="group" aria-label="Banks">
-    {#each BANKS as start (start)}
-      {@const count = cueCount(start)}
+    {#each BANKS as shown (shown.first)}
+      {@const count = cueCount(shown)}
       <button
-        data-bank={start}
+        data-bank={shown.first}
         class:filled={count}
-        aria-pressed={bank === start}
-        aria-label="Notes {range(start)}{count ? `, ${count} ${count === 1 ? 'cue' : 'cues'}` : ''}"
-        onclick={() => (bank = start)}
+        aria-pressed={bank === shown}
+        aria-label="Notes {shown.first}–{shown.last}{count ? `, ${count} ${count === 1 ? 'cue' : 'cues'}` : ''}"
+        onclick={() => (bank = shown)}
       >
-        {range(start)}
+        {shown.first}–{shown.last}
       </button>
     {/each}
   </div>
@@ -181,7 +196,7 @@
         {#if cue}
           {@render picture(thumbnailOf(note))}
         {:else}
-          <span class="thumbnail add">+</span>
+          <span class="thumbnail add" style:aspect-ratio={PICTURE_RATIO}>+</span>
         {/if}
         <span class="label">
           <span class="name">{cue?.name ?? 'New cue'}</span>
@@ -280,7 +295,6 @@
   .thumbnail {
     display: block;
     width: 100%;
-    aspect-ratio: 160 / 102;
     background: #101114;
     border-radius: 4px;
   }
