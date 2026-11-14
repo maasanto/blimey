@@ -57,8 +57,26 @@
     return Math.min(...sorted.slice(1).map((position, index) => position - sorted[index]));
   }
 
-  // Only while a pad moves: still pads redraw nothing.
-  const isAnimated = $derived(numbers.some((number) => thumbnailOf(number)?.frames?.length > 1));
+  /** The numbers of the pads on screen: only those animate, the others hold their first frame. */
+  let inView = $state.raw(new Set());
+  const watcher = new IntersectionObserver((entries) => {
+    const shown = new Set(inView);
+    for (const { target, isIntersecting } of entries) {
+      const number = Number(target.dataset.pad);
+      if (isIntersecting) shown.add(number);
+      else shown.delete(number);
+    }
+    inView = shown;
+  });
+  $effect(() => () => watcher.disconnect());
+
+  function watch(pad) {
+    watcher.observe(pad);
+    return () => watcher.unobserve(pad);
+  }
+
+  // Only while a pad on screen moves: still pads redraw nothing.
+  const isAnimated = $derived(numbers.some((number) => inView.has(number) && thumbnailOf(number)?.frames?.length > 1));
   $effect(() => {
     if (!isAnimated) return;
     const timer = setInterval(() => (tick += 1), THUMBNAIL_FRAME_MS);
@@ -116,12 +134,12 @@
 
 <svelte:window onpointerup={letGo} onpointercancel={letGo} />
 
-{#snippet picture(thumbnail)}
+{#snippet picture(thumbnail, isMoving)}
   <svg viewBox="0 {-MARGIN} {WIDTH} {HEIGHT + 2 * MARGIN}" class="thumbnail" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">
     {#if thumbnail?.levels}
       <polyline class="level" points={curvePoints(thumbnail.levels, { width: WIDTH, height: HEIGHT })} />
     {:else if thumbnail?.frames}
-      {@const frame = thumbnail.frames[tick % thumbnail.frames.length]}
+      {@const frame = thumbnail.frames[isMoving ? tick % thumbnail.frames.length : 0]}
       {#each lights as light (`${light.name}:${light.index}`)}
         <circle cx={light.x * WIDTH} cy={(1 - light.y) * HEIGHT} r={light.radius} fill={frame[light.name]?.[light.index] ?? '#000000'} />
       {/each}
@@ -143,8 +161,10 @@
           aria-label="Scene {number}: {cues[number].name}"
           onpointerdown={(event) => press(event, number)}
           onclick={() => click(number)}
+          oncontextmenu={(event) => event.preventDefault()}
+          {@attach watch}
         >
-          {@render picture(thumbnailOf(number))}
+          {@render picture(thumbnailOf(number), inView.has(number))}
           <span class="label">
             <span class="name">{cues[number].name}</span>
             <span class="number">{number}</span>
@@ -201,7 +221,8 @@
     background: #1c1e24;
     border-radius: 8px;
     user-select: none;
-    touch-action: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .pad.new {
