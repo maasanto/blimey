@@ -24,6 +24,8 @@
   /** How wide a pad's picture may be for its height: a single row of washes, or a square grid. */
   const WIDEST = 3;
   const NARROWEST = 1;
+  /** A pad never zooms in closer than this, so a small rig's pixels and a curve's stroke keep their scale. */
+  const NARROWEST_FRAME = WIDTH / 2;
   /** How much of the space between a grid's pixels each one fills. */
   const GRID_PIXEL_FILL = 0.9;
 
@@ -71,6 +73,10 @@
     let y = Math.min(...ys) - MARGIN;
     let width = Math.max(...xs) + MARGIN - x;
     let height = Math.max(...ys) + MARGIN - y;
+    if (width < NARROWEST_FRAME) {
+      x -= (NARROWEST_FRAME - width) / 2;
+      width = NARROWEST_FRAME;
+    }
     if (width / height > WIDEST) {
       const wanted = width / WIDEST;
       y -= (wanted - height) / 2;
@@ -165,15 +171,11 @@
 {#snippet picture(thumbnail, isMoving)}
   <svg {viewBox} class="thumbnail" style:aspect-ratio={pictureRatio} aria-hidden="true">
     {#if thumbnail?.levels}
-      <polyline
-        class="level"
-        points={curvePoints(thumbnail.levels, { x: frame.x + MARGIN, width: frame.width - 2 * MARGIN, height: frame.height - 2 * MARGIN })}
-        transform="translate(0 {frame.y + MARGIN})"
-      />
+      <polyline class="level" points={curvePoints(thumbnail.levels, { x: frame.x + MARGIN, y: frame.y + MARGIN, width: frame.width - 2 * MARGIN, height: frame.height - 2 * MARGIN })} />
     {:else if thumbnail?.frames}
-      {@const frame = thumbnail.frames[isMoving ? tick % thumbnail.frames.length : 0]}
+      {@const colours = thumbnail.frames[isMoving ? tick % thumbnail.frames.length : 0]}
       {#each lights as light (`${light.name}:${light.index}`)}
-        <circle cx={light.x * WIDTH} cy={(1 - light.y) * HEIGHT} r={light.radius} fill={frame[light.name]?.[light.index] ?? '#000000'} />
+        <circle cx={light.x * WIDTH} cy={(1 - light.y) * HEIGHT} r={light.radius} fill={colours[light.name]?.[light.index] ?? '#000000'} />
       {/each}
     {/if}
   </svg>
@@ -293,7 +295,7 @@
     padding: 0;
     font-size: 11px;
     line-height: 1;
-    background: rgb(22 23 27 / 0.85);
+    background: var(--bg-veil);
     opacity: 0.7;
     transition: opacity 0.15s;
   }
