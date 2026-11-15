@@ -35,8 +35,8 @@ export function curveLevels(curve) {
   return sampled[key];
 }
 
-/** SVG polyline points for `levels` across `width` × `height`, level 1 at the top. */
-export function curvePoints(levels, { x = 0, width, height, scale = 1 }) {
+/** SVG polyline points for `levels` across `width` × `height` from (`x`, `y`), level 1 at the top. */
+export function curvePoints(levels, { x = 0, y = 0, width, height, scale = 1 }) {
   const last = levels.length - 1;
-  return levels.map((level, index) => `${x + (width * index) / last},${height * (1 - level * scale)}`).join(' ');
+  return levels.map((level, index) => `${x + (width * index) / last},${y + height * (1 - level * scale)}`).join(' ');
 }

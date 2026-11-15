@@ -14,6 +14,7 @@
    * to tell unsaved edits.
    */
   let form = $state(newForm());
+  let isShowing = false;
 
   function newForm() {
     return { number: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null, unchanged: null };
@@ -41,7 +42,7 @@
     return opened !== null && form.unchanged !== null && unchangedOf(form) !== form.unchanged;
   }
 
-  const LEAVE_QUESTION = 'This scene has unsaved changes. Leave the editor and lose them?';
+  const LEAVE_QUESTION = 'This scene has unsaved changes.';
 
   // Here rather than on the component: edits are kept while other pages are open, and a reload
   // or a closed tab would lose them all the same.
@@ -108,6 +109,34 @@
   );
   /** The look's layers as saved, which an audition plays. */
   const savedLayers = $derived(form.replaces?.cue.type === 'pixel' ? asLayers(form.replaces.cue).layers : []);
+  /**
+   * Whether the scene has unsaved edits, for the status and the title: checked on a timer, as
+   * `isDirty()` serializes the whole scene, which a drag on the stage would do on every pointer move.
+   */
+  let isDirtyNow = $state(false);
+  const DIRTY_CHECK_MS = 500;
+  $effect(() => {
+    if (!opened) return;
+    const timer = setInterval(() => (isDirtyNow = isDirty()), DIRTY_CHECK_MS);
+    return () => clearInterval(timer);
+  });
+  /** The name of the scene already on the number typed, when it is another scene's. */
+  const numberTakenBy = $derived(form.number !== form.replaces?.note ? (song?.cues?.[form.number]?.name ?? '') : '');
+  /** Why the scene can't be saved yet, or an empty string. */
+  const saveBlocker = $derived.by(() => {
+    if (form.number == null) return 'Give the scene a number.';
+    if (numberTakenBy) return `Scene ${form.number} is taken by ${numberTakenBy}.`;
+    if (!form.cue.name) return 'Name the scene to save it.';
+    if (form.cue.type === 'scene' && !form.sceneKept) return 'Waiting for the rig.';
+    if (isPixel && !form.sceneKept && !form.cue.layers.length) return 'Put an area on the stage to save it.';
+    return '';
+  });
+  const canSave = $derived(editable && song && !saveBlocker);
+
+  $effect(() => {
+    document.title = opened && isDirtyNow ? `• ${form.replaces ? `Scene ${form.replaces.note}` : 'New scene'} — Blimey` : 'Blimey';
+    return () => (document.title = 'Blimey');
+  });
 
   /** What a new scene of each type starts as. */
   const newCue = {
@@ -191,17 +220,27 @@
    * Shows what the URL names, the scenes home or a scene in the editor, unless leaving the
    * editor would lose unsaved edits the user wants to keep: then the URL goes back to the scene.
    */
+  // Whether the Builder tab is on screen: a URL followed while it opens is where it opens, not a leave.
+  $effect(() => {
+    isShowing = true;
+    return () => (isShowing = false);
+  });
+
   function followUrl() {
     if (!location.hash.startsWith('#builder')) return;
     const next = sceneInUrl();
     if (next?.song === opened?.song && next?.number === opened?.number) return;
-    if (isDirty() && !confirm(LEAVE_QUESTION)) {
+    if (isDirty()) {
+      const destination = location.hash;
       // Replacing fires `hashchange` again, so the Builder tab follows; the check above then finds the scene open.
       location.replace(sceneHash(opened));
+      // A tab opened on another URL while a scene has edits shows that scene again, as any tab switch does.
+      if (isShowing) askToLeave({ hash: destination, isReplaced: true });
       return;
     }
     opened = next?.number > HIGHEST_NUMBER ? null : next;
     form = newForm();
+    isDirtyNow = false;
     if (next && !opened) {
       error = `There is no scene ${next.number}: scene numbers go from 0 to ${HIGHEST_NUMBER}.`;
       location.replace('#builder');
@@ -217,8 +256,50 @@
 
   function leaveEditor(event) {
     if (!isDirty()) return;
-    if (confirm(LEAVE_QUESTION)) form.unchanged = null;
-    else event.preventDefault();
+    event.preventDefault();
+    askToLeave({ hash: '#builder', isReplaced: false });
+  }
+
+  /**
+   * Where to go once the unsaved edits are saved or dropped, while the leave prompt is up: the
+   * `hash`, and whether the history entry it was on already holds the scene, so going there
+   * replaces it rather than adding one. Read only by the prompt's buttons, so never cleared.
+   */
+  let leaving = null;
+  let leavePrompt = $state();
+
+  function askToLeave(destination) {
+    leaving = destination;
+    if (!leavePrompt.open) leavePrompt.showModal();
+  }
+
+  function goOn({ hash, isReplaced }) {
+    if (isReplaced) location.replace(hash);
+    else location.hash = hash;
+  }
+
+  function leaveWithoutSaving() {
+    form.unchanged = null;
+    const destination = leaving;
+    leavePrompt.close();
+    goOn(destination);
+  }
+
+  async function saveAndLeave() {
+    const destination = leaving;
+    try {
+      await save();
+    } finally {
+      leavePrompt.close();
+    }
+    goOn(destination);
+  }
+
+  /** The save under way, so a second request while it runs joins it rather than racing it. */
+  let saving = null;
+  function save() {
+    saving ??= saveScene().finally(() => (saving = null));
+    return saving;
   }
 
   /**
@@ -297,6 +378,7 @@
     await reloadAfterSave();
     form.replaces = { note: number, cue: $state.snapshot(song.cues[number]) };
     form.unchanged = unchangedOf(form);
+    isDirtyNow = false;
     if (number !== opened.number) {
       opened = { song: songName, number };
       location.replace(sceneHash(opened));
@@ -402,10 +484,22 @@
     await midi([NOTE_ON, number, FULL_VELOCITY]);
   }
 
+  /** ⌘S / Ctrl+S saves the open scene, ⌘↩ / Ctrl+↩ auditions or releases it. */
+  function shortcut(event) {
+    if (!opened || !(event.metaKey || event.ctrlKey) || event.altKey || event.repeat || leavePrompt?.open) return;
+    if (event.key === 's') {
+      event.preventDefault();
+      if (canSave) attempt(save);
+    } else if (event.key === 'Enter' && editable && form.replaces !== null) {
+      event.preventDefault();
+      attempt(() => audition(form.replaces.note));
+    }
+  }
+
   followUrl();
 </script>
 
-<svelte:window onpagehide={clearPreview} onhashchange={followUrl} />
+<svelte:window onpagehide={clearPreview} onhashchange={followUrl} onkeydown={shortcut} />
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notice}<p class="notice" aria-live="polite">{notice}</p>{/if}
@@ -416,62 +510,67 @@
 {/if}
 
 {#if opened}
-  <p class="back"><a href="#builder" onclick={leaveEditor}>← Scenes</a></p>
-
   <fieldset class="scene" disabled={!editable || !song}>
-    <legend>
-      {#if form.replaces !== null}Scene {form.replaces.note}{:else}New scene{/if}
-    </legend>
-    <div class="row">
-      <label>Name <input bind:value={form.cue.name} /></label>
-      <label>Number <input type="number" min="0" max={HIGHEST_NUMBER} bind:value={form.number} /></label>
-      {#if isPixel}
-        <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" /></label>
-      {/if}
-      <label>Release <input bind:value={form.cue.release} placeholder="0s" /></label>
+    <div class="bar">
+      <a class="back" href="#builder" onclick={leaveEditor}>← Scenes</a>
+      <strong class="title">{#if form.replaces !== null}Scene {form.replaces.note}{:else}New scene{/if}</strong>
       {#if form.replaces !== null}<span class="kind">{KINDS[form.replaces.cue.type]}</span>{/if}
-    </div>
-    <p class="hint" role={form.sceneKept ? 'status' : undefined}>
-      {#if form.sceneKept}
-        This fixed look stays as it is, read-only on the stage: {form.sceneKept}. It plays as before; you can still rename, renumber, audition,
-        duplicate or delete it.
-      {:else if form.cue.type === 'scene'}
-        The fixed look opens on the stage once the engine sends the rig.
-      {:else if isPixel}
-        Saves the look on the stage as this scene, hidden areas included{form.replaces?.cue.type === 'scene' ? ': this fixed look becomes a look' : ''}.
-      {:else}
-        Shape the {KINDS[form.cue.type].toLowerCase()} below, then save it.
-      {/if}
-      Times take ms, s, beats or bars.
-      {#if form.replaces !== null}A new number moves the scene there on save.{/if}
-    </p>
-    {#if form.replaces === null}
-      <p class="hint">
-        {#if isPixel}
-          To drive other scenes instead, make a
-          <button class="link" onclick={() => changeType('swell')}>swell scene</button> or a
-          <button class="link" onclick={() => changeType('pattern')}>pattern scene</button>.
-        {:else}
-          <button class="link" onclick={() => changeType('pixel')}>Make a look instead</button>
-        {/if}
-      </p>
-    {/if}
-    <div class="row">
-      <button
-        disabled={form.number == null || !form.cue.name || (form.cue.type === 'scene' && !form.sceneKept) || (isPixel && !form.sceneKept && !form.cue.layers.length)}
-        onclick={() => attempt(saveScene)}
-      >
-        Save
-      </button>
+      <span class="status" class:dirty={isDirtyNow} aria-live="polite">
+        {#if saveBlocker}{saveBlocker}{:else if isDirtyNow}Unsaved changes{:else if form.replaces !== null}Saved{/if}
+      </span>
       {#if form.replaces !== null}
-        <button onclick={() => attempt(() => audition(form.replaces.note))}>
+        <button class:playing={isPlaying(form.replaces.note)} title="⌘↩" onclick={() => attempt(() => audition(form.replaces.note))}>
           {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
         </button>
         <button onclick={() => attempt(() => duplicateScene(form.replaces.note))}>Duplicate</button>
-        <button onclick={() => attempt(() => deleteScene(form.replaces.note))}>Delete</button>
+        <button class="danger" onclick={() => attempt(() => deleteScene(form.replaces.note))}>Delete</button>
+      {/if}
+      <button class="primary" title="⌘S" disabled={!!saveBlocker} onclick={() => attempt(save)}>Save</button>
+    </div>
+    <div class="row">
+      <label>Name <input bind:value={form.cue.name} /></label>
+      <label>
+        Number
+        <input type="number" min="0" max={HIGHEST_NUMBER} title="A new number moves the scene there on save" aria-invalid={!!numberTakenBy || undefined} bind:value={form.number} />
+        {#if numberTakenBy}<span class="error" role="status">Taken by {numberTakenBy}</span>{/if}
+      </label>
+      {#if isPixel}
+        <label>Fade in <input bind:value={form.cue.fade_in} placeholder="0s" title="ms, s, beats or bars" /></label>
+      {/if}
+      <label>Release <input bind:value={form.cue.release} placeholder="0s" title="ms, s, beats or bars" /></label>
+      {#if form.replaces === null}
+        <span class="hint">
+          {#if isPixel}
+            To drive other scenes instead, make a
+            <button class="link" onclick={() => changeType('swell')}>swell scene</button> or a
+            <button class="link" onclick={() => changeType('pattern')}>pattern scene</button>.
+          {:else}
+            <button class="link" onclick={() => changeType('pixel')}>Make a look instead</button>
+          {/if}
+        </span>
       {/if}
     </div>
+    {#if form.sceneKept}
+      <p class="hint" role="status">
+        This fixed look stays as it is, read-only on the stage: {form.sceneKept}. It plays as before; you can still rename, renumber, audition,
+        duplicate or delete it.
+      </p>
+    {:else if form.cue.type === 'scene'}
+      <p class="hint">The fixed look opens on the stage once the engine sends the rig.</p>
+    {:else if form.replaces?.cue.type === 'scene'}
+      <p class="hint">Saving makes this fixed look a look on the stage.</p>
+    {/if}
   </fieldset>
+
+  <dialog class="leave" bind:this={leavePrompt} aria-labelledby="leave-question">
+    <p id="leave-question">{LEAVE_QUESTION}</p>
+    <div class="row">
+      <button class="primary" disabled={!canSave} onclick={() => attempt(saveAndLeave)}>Save and leave</button>
+      <button class="danger" onclick={leaveWithoutSaving}>Leave without saving</button>
+      <button class="quiet" onclick={() => leavePrompt.close()}>Stay</button>
+    </div>
+    {#if saveBlocker}<p class="hint">{saveBlocker}</p>{/if}
+  </dialog>
 
   {#if isPixel && song}
     <!-- A scene opened, or a new one, starts with nothing selected. -->
@@ -542,8 +641,8 @@
       <button onclick={() => attempt(setTempo)}>Set tempo</button>
     </fieldset>
     <span class="history">
-      <button disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
-      <button disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
+      <button class="quiet" disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
+      <button class="quiet" disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
     </span>
   </div>
   {#if newSong}
@@ -607,17 +706,91 @@
 
   .history {
     display: flex;
-    gap: 8px;
+    gap: 4px;
     margin-left: auto;
   }
 
   .back {
-    margin: 0 0 12px;
-  }
-
-  .back a {
     color: var(--accent);
     text-decoration: none;
+  }
+
+  .back:hover {
+    text-decoration: underline;
+  }
+
+  .title {
+    font-size: 18px;
+  }
+
+  .kind {
+    color: var(--muted);
+  }
+
+  .status {
+    flex: 1;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  .status.dirty {
+    color: var(--accent);
+  }
+
+  .playing {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .scene {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-bottom: 14px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .scene .bar {
+    margin: 0;
+  }
+
+  .scene .row {
+    gap: 8px 16px;
+  }
+
+  .scene p {
+    margin: 0;
+  }
+
+  .scene label .error {
+    font-size: 13px;
+  }
+
+  input[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  .leave {
+    min-width: 24em;
+    padding: 20px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+  }
+
+  .leave::backdrop {
+    background: rgb(0 0 0 / 0.6);
+  }
+
+  .leave p {
+    margin: 0 0 14px;
+  }
+
+  .leave .hint {
+    margin: 10px 0 0;
   }
 
   .rhythm {
@@ -627,29 +800,19 @@
     align-items: start;
   }
 
-  .scene,
   .new-song {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     padding: 12px;
     margin-bottom: 16px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--radius);
   }
 
-  legend {
+  .new-song legend {
     padding: 0 6px;
     color: var(--muted);
-  }
-
-  .kind {
-    color: var(--muted);
-  }
-
-  .link {
-    padding: 0;
-    color: var(--accent);
-    text-decoration: underline;
-    background: none;
-    border: 0;
   }
 
   input[type='number'] {
