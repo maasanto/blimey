@@ -773,6 +773,12 @@ impl DmxSink for LiveOutput {
     fn log(&mut self, line: &str) {
         eprintln!("blimey: {line}");
     }
+
+    fn skipped(&mut self, at: Duration, frames: u32) {
+        eprintln!(
+            "blimey: fell {frames} frames behind; output picks up at the frame due at {at:?}"
+        );
+    }
 }
 
 /// `run`'s output: the live outputs, plus the event log and the state to resume after a
@@ -806,6 +812,11 @@ impl DmxSink for Recorded {
 
     fn log(&mut self, line: &str) {
         self.output.log(line);
+    }
+
+    fn skipped(&mut self, at: Duration, frames: u32) {
+        self.recorder.skipped(at, frames);
+        self.output.skipped(at, frames);
     }
 }
 

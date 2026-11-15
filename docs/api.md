@@ -343,7 +343,8 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 - `start`: the engine started, with the song and master it resumed.
 - `midi`: every MIDI message taken in, as in the stream's `midi` message, clock ticks and active sensing left out. The resumed song and master follow `start` as `midi` lines at `at_ms` 0.
-- `cue`: a cue started (note-on) or released (note-off, or a retrigger fading out the previous instance). Panic and song select drop cues without a `release` line.
+- `cue`: a cue started (note-on), released (note-off, or a retrigger fading out the previous instance) or, with `"action":"fail"`, dropped for failing (a panic, a bug) until fired again. Panic and song select drop cues without a `release` line.
+- `skipped`: the render loop fell behind and skipped `frames` frames; output picked up at the frame due at `at_ms`.
 - `at_ms` is engine time, as in the stream; `time_ms` is wall-clock time, in milliseconds since 1970. `jq '.time_ms / 1000 | todate'` reads it.
 
 `blimey service install <run arguments>` makes the checks `run` makes at start (an output is given, the show loads), so launchd never keeps restarting an engine that exits at once. It then writes the launch agent `~/Library/LaunchAgents/app.blimey.engine.plist` and starts it. launchd starts the engine at login and restarts it within a second whenever it exits. Relative paths are taken from the folder the command ran in, and the engine's stdout and stderr go to `engine.log` in the state folder. Installing again replaces the agent; `--dry-run` prints the plist instead. `blimey service uninstall` stops and removes it, even if it wasn't running.

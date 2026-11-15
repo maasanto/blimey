@@ -101,12 +101,12 @@ pub trait DmxSink {
     /// Each MIDI event the engine takes in, before it applies it. For the event log.
     fn midi(&mut self, _event: &MidiEvent) {}
 
-    /// Each cue the engine starts or releases. For the event log.
+    /// Each cue the engine starts, releases or drops for failing. For the event log.
     fn cue(&mut self, _event: &CueEvent) {}
 
-    /// How many frames the render loop skipped, after falling too far behind, before the next
-    /// one sent.
-    fn skipped(&mut self, _frames: u32) {}
+    /// How many frames the render loop skipped, after falling too far behind, before the one
+    /// due at `at`, which it sends next. For the event log.
+    fn skipped(&mut self, _at: Duration, _frames: u32) {}
 
     /// A line for the engine's log, such as where the tempo comes from. Sinks without a log
     /// ignore it.
@@ -251,7 +251,7 @@ pub fn run(
             u32::try_from(clock.now().as_nanos() / FRAME_PERIOD.as_nanos()).unwrap_or(u32::MAX);
         if due > index.saturating_add(MAX_LATE_FRAMES) {
             let resumed = due.min(frame_count);
-            sink.skipped(resumed - index);
+            sink.skipped(FRAME_PERIOD * resumed, resumed - index);
             index = resumed;
             if index >= frame_count {
                 break;
@@ -268,6 +268,10 @@ pub fn run(
             }
         }
         let output = playback.render(show, look, deadline);
+        // Cues dropped for failing while drawing.
+        for cue in playback.take_cue_events() {
+            sink.cue(&cue);
+        }
         for line in playback.log_lines(deadline) {
             sink.log(&line);
         }
@@ -408,11 +412,12 @@ mod tests {
         assert_eq!(sent.len(), 60);
     }
 
-    /// Counts the frames sent and skipped.
+    /// Counts the frames sent and skipped, and keeps the cue events.
     #[derive(Default)]
     struct Counted {
         sent: u32,
         skipped: u32,
+        cues: Vec<CueAction>,
     }
 
     impl DmxSink for Counted {
@@ -421,9 +426,40 @@ mod tests {
             Ok(())
         }
 
-        fn skipped(&mut self, frames: u32) {
+        fn skipped(&mut self, _at: Duration, frames: u32) {
             self.skipped += frames;
         }
+
+        fn cue(&mut self, event: &CueEvent) {
+            self.cues.push(event.action);
+        }
+    }
+
+    #[test]
+    fn a_cue_that_fails_while_drawing_reaches_the_event_log() {
+        let mut show = Show::load(Path::new("../tests/fixtures/shows/cues")).unwrap();
+        let song = format!(
+            "program: 1\ncues:\n  37: {{ name: {}-draw, type: pixel }}\n",
+            cue::PANICS_IN_TESTS
+        );
+        show.songs = vec![song::Song::parse("broken", &song, &show).unwrap()];
+        let fire = |message: &[u8]| MidiEvent {
+            at: Duration::ZERO,
+            message: message.to_vec(),
+        };
+        let mut sink = Counted::default();
+
+        run(
+            &mut FakeClock::default(),
+            &mut Burst(vec![fire(&[0x91, 37, 127]), fire(&[0xC1, 1])]),
+            &show,
+            &look::Look::default(),
+            &mut sink,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(sink.cues, [CueAction::Start, CueAction::Fail]);
     }
 
     #[test]

@@ -342,9 +342,10 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
     }
 
     /// Skipped frames count as dropped.
-    fn skipped(&mut self, frames: u32) {
+    fn skipped(&mut self, at: Duration, frames: u32) {
         self.sent += frames;
         self.skipped += frames;
+        self.output.skipped(at, frames);
     }
 }
 
@@ -837,7 +838,7 @@ mod tests {
         let mut sink = Measured::new(&setlist, blimey_engine::FakeDmx::default(), None, 12);
 
         sink.send(Duration::ZERO, &[0; 512]).unwrap();
-        sink.skipped(10);
+        sink.skipped(FRAME_PERIOD * 11, 10);
         sink.send(FRAME_PERIOD * 11, &[0; 512]).unwrap();
         sink.end();
         let (report, passed) = sink.report("real time", Duration::ZERO);
