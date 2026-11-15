@@ -68,6 +68,8 @@
   let isClickSuppressed = false;
   let tick = $state(0);
   const tray = new Thumbnails();
+  /** Each layer's shape, by index, to draw in its area. */
+  const layerShapes = new Thumbnails();
 
   const rig = $derived(engine.rig);
   const edges = $derived(rig ? stageEdges(rig) : { x: [0, 1], y: [0, 1] });
@@ -96,6 +98,19 @@
     const variants = INGREDIENTS.map((ingredient) => [ingredient, newLayer(ingredient, newColour, undefined, barBeats)]);
     const { seed } = cue;
     const timer = setTimeout(() => tray.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  // A layer runs in its area's own 0–1 space, so rendered alone on the whole sample grid it is
+  // its area's picture. Left as `max`, a mask shows where it lets the layers below through.
+  // A string, so moving an area renders nothing again.
+  const shapeRecipes = $derived(JSON.stringify(cue.layers.map(({ area, blend, ...layer }) => layer)));
+
+  $effect(() => {
+    const variants = JSON.parse(shapeRecipes).map((layer, index) => [index, layer]);
+    const { seed } = cue;
+    const shapeSong = song;
+    const timer = setTimeout(() => layerShapes.load(variants, seed, shapeSong), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
@@ -251,6 +266,27 @@
   />
 {/snippet}
 
+{#snippet shapes()}
+  {#each cue.layers as layer, index (layer)}
+    {@const thumbnail = layerShapes.byKey[index]}
+    {#if thumbnail && !hidden[index]}
+      {@const area = areaOf(layer)}
+      {@const cell = { width: (area.width * WIDTH) / thumbnail.columns, height: (area.height * HEIGHT) / thumbnail.rows }}
+      <g class="shape" data-shape={index}>
+        {#each thumbnail.frames[tick % thumbnail.frames.length] as colour, cellIndex (cellIndex)}
+          <rect
+            x={screenX(area.x) + (cellIndex % thumbnail.columns) * cell.width}
+            y={screenY(area.y + area.height) + Math.floor(cellIndex / thumbnail.columns) * cell.height}
+            width={cell.width}
+            height={cell.height}
+            fill={colour}
+          />
+        {/each}
+      </g>
+    {/if}
+  {/each}
+{/snippet}
+
 {#snippet areas()}
   <rect class="hit" width={WIDTH} height={HEIGHT} role="presentation" onpointerdown={pressStage} />
   {#if !cue.layers.length && editable}
@@ -308,8 +344,9 @@
       </span>
     </div>
     {#if tray.error}<p class="error" role="alert">Thumbnails: {tray.error}</p>{/if}
+    {#if layerShapes.error}<p class="error" role="alert">Area shapes: {layerShapes.error}</p>{/if}
 
-    <FrontView bind:this={frontView} overlay={areas} {caught} {crossedOut} />
+    <FrontView bind:this={frontView} overlay={areas} underlay={shapes} {caught} {crossedOut} />
 
     <p class="sentence" class:hint={!cue.layers.length} aria-live="polite">{describeLook(cue.layers)}</p>
     {#if caught && !caught.size}
@@ -464,6 +501,14 @@
 
   .hit {
     fill: transparent;
+  }
+
+  /* Faint, and dark cells let the stage through, so the fixtures still read as the output. */
+  .shape {
+    opacity: 0.4;
+    mix-blend-mode: screen;
+    shape-rendering: crispEdges;
+    pointer-events: none;
   }
 
   .empty {
