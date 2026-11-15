@@ -159,7 +159,7 @@
 
 {#snippet colour(label, key, isOptional)}
   <div class="colour">
-    <span class="name">{label}</span>
+    <span class="name caps">{label}</span>
     <div class="swatches">
       {#if isOptional}
         <button class="swatch none" title="none" aria-label="{label}: none" aria-pressed={!layer.params?.[key]} onclick={() => setParam(key, undefined)}></button>
@@ -176,11 +176,11 @@
   {#if thumbnails.error}<p class="error" role="alert">Thumbnails: {thumbnails.error}</p>{/if}
   {@render colour('Colour', 'color', false)}
   {@render colour('Background', 'background', true)}
-  <span class="name">Shape</span>
+  <span class="name caps">Shape</span>
   {@render picker('Shape', 'shape', SHAPES)}
-  <span class="name">Motion</span>
+  <span class="name caps">Motion</span>
   {@render picker('Motion', 'effect', EFFECTS)}
-  <span class="name">Rhythm</span>
+  <span class="name caps">Rhythm</span>
   <div class="picker" role="group" aria-label="Rhythm">
     {#each rhythmChoices as [name, choice] (name)}
       <button class="choice" aria-label="Rhythm: {name}" aria-pressed={groove === name} onclick={() => pickRhythm(name, choice)}>
@@ -230,13 +230,13 @@
     </label>
   </div>
   <div class="mute" role="group" aria-label="Mute">
-    <span class="name">Mute</span>
+    <span class="name caps">Mute</span>
     {#each mutable as name (name)}
       {@const muted = mutedBy(layer, groups, name)}
       <button
         aria-pressed={!!muted}
         aria-label="Mute {name}"
-        title={muted && muted !== name ? `Muted with ${muted}` : 'Leave this one alone'}
+        title={muted && muted !== name ? `Muted with ${muted}` : muted ? 'Muted: click to light it again' : 'Click to leave this one alone'}
         disabled={!!muted && muted !== name}
         onclick={() => toggleMute(name)}>{name}</button
       >
@@ -269,14 +269,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-
-  .name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
   }
 
   .picker + .name,

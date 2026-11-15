@@ -13,7 +13,7 @@
 </script>
 
 <div class="link">
-  <span class="name">Intensity</span>
+  <span class="caps">Intensity</span>
   {#each linkable.filter(({ cue }) => isLinked(cue)) as { note, cue } (note)}
     <span class="linked">driven by scene {note}, {cue.name} ({cue.type})</span>
   {:else}
@@ -44,14 +44,6 @@
     flex-wrap: wrap;
     gap: 6px 10px;
     align-items: center;
-  }
-
-  .name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
   }
 
   .linked {

@@ -236,12 +236,12 @@
   }
 
   .floor {
-    stroke: #5d6170;
+    stroke: var(--dim);
     stroke-width: 4;
   }
 
   .side {
-    fill: #5d6170;
+    fill: var(--dim);
     font-size: 18px;
     text-anchor: middle;
     letter-spacing: 0.08em;
