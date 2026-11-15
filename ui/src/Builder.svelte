@@ -108,7 +108,17 @@
   );
   /** The look's layers as saved, which an audition plays. */
   const savedLayers = $derived(form.replaces?.cue.type === 'pixel' ? asLayers(form.replaces.cue).layers : []);
-  const isDirtyNow = $derived(isDirty());
+  /**
+   * Whether the scene has unsaved edits, for the status and the title: checked on a timer, as
+   * `isDirty()` serializes the whole scene, which a drag on the stage would do on every pointer move.
+   */
+  let isDirtyNow = $state(false);
+  const DIRTY_CHECK_MS = 500;
+  $effect(() => {
+    if (!opened) return;
+    const timer = setInterval(() => (isDirtyNow = isDirty()), DIRTY_CHECK_MS);
+    return () => clearInterval(timer);
+  });
   /** The name of the scene already on the number typed, when it is another scene's. */
   const numberTakenBy = $derived(form.number !== form.replaces?.note ? (song?.cues?.[form.number]?.name ?? '') : '');
   /** Why the scene can't be saved yet, or an empty string. */
@@ -209,7 +219,12 @@
    * Shows what the URL names, the scenes home or a scene in the editor, unless leaving the
    * editor would lose unsaved edits the user wants to keep: then the URL goes back to the scene.
    */
+  /** Whether this page of the Builder tab has followed a URL yet: its first one is where it opens, not a leave. */
+  let hasFollowed = false;
+
   function followUrl() {
+    const isOpening = !hasFollowed;
+    hasFollowed = true;
     if (!location.hash.startsWith('#builder')) return;
     const next = sceneInUrl();
     if (next?.song === opened?.song && next?.number === opened?.number) return;
@@ -217,11 +232,13 @@
       const destination = location.hash;
       // Replacing fires `hashchange` again, so the Builder tab follows; the check above then finds the scene open.
       location.replace(sceneHash(opened));
-      askToLeave(destination);
+      // A tab opened on another URL while a scene has edits shows that scene again, as any tab switch does.
+      if (!isOpening) askToLeave({ hash: destination, isReplaced: true });
       return;
     }
     opened = next?.number > HIGHEST_NUMBER ? null : next;
     form = newForm();
+    isDirtyNow = false;
     if (next && !opened) {
       error = `There is no scene ${next.number}: scene numbers go from 0 to ${HIGHEST_NUMBER}.`;
       location.replace('#builder');
@@ -238,34 +255,49 @@
   function leaveEditor(event) {
     if (!isDirty()) return;
     event.preventDefault();
-    askToLeave('#builder');
+    askToLeave({ hash: '#builder', isReplaced: false });
   }
 
-  /** The hash to go to once the unsaved edits are saved or dropped, while the leave prompt is up. */
+  /**
+   * Where to go once the unsaved edits are saved or dropped, while the leave prompt is up: the
+   * `hash`, and whether the history entry it was on already holds the scene, so going there
+   * replaces it rather than adding one. Read only by the prompt's buttons, so never cleared.
+   */
   let leaving = null;
   let leavePrompt = $state();
 
-  // Read only by the prompt's buttons, so it needn't be cleared when the prompt closes.
   function askToLeave(destination) {
     leaving = destination;
     if (!leavePrompt.open) leavePrompt.showModal();
+  }
+
+  function goOn({ hash, isReplaced }) {
+    if (isReplaced) location.replace(hash);
+    else location.hash = hash;
   }
 
   function leaveWithoutSaving() {
     form.unchanged = null;
     const destination = leaving;
     leavePrompt.close();
-    location.hash = destination;
+    goOn(destination);
   }
 
   async function saveAndLeave() {
     const destination = leaving;
     try {
-      await saveScene();
+      await save();
     } finally {
       leavePrompt.close();
     }
-    location.hash = destination;
+    goOn(destination);
+  }
+
+  /** The save under way, so a second request while it runs joins it rather than racing it. */
+  let saving = null;
+  function save() {
+    saving ??= saveScene().finally(() => (saving = null));
+    return saving;
   }
 
   /**
@@ -344,6 +376,7 @@
     await reloadAfterSave();
     form.replaces = { note: number, cue: $state.snapshot(song.cues[number]) };
     form.unchanged = unchangedOf(form);
+    isDirtyNow = false;
     if (number !== opened.number) {
       opened = { song: songName, number };
       location.replace(sceneHash(opened));
@@ -451,10 +484,10 @@
 
   /** ⌘S / Ctrl+S saves the open scene, ⌘↩ / Ctrl+↩ auditions or releases it. */
   function shortcut(event) {
-    if (!opened || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+    if (!opened || !(event.metaKey || event.ctrlKey) || event.altKey || event.repeat || leavePrompt?.open) return;
     if (event.key === 's') {
       event.preventDefault();
-      if (canSave) attempt(saveScene);
+      if (canSave) attempt(save);
     } else if (event.key === 'Enter' && editable && form.replaces !== null) {
       event.preventDefault();
       attempt(() => audition(form.replaces.note));
@@ -490,7 +523,7 @@
         <button onclick={() => attempt(() => duplicateScene(form.replaces.note))}>Duplicate</button>
         <button class="danger" onclick={() => attempt(() => deleteScene(form.replaces.note))}>Delete</button>
       {/if}
-      <button class="primary" title="⌘S" disabled={!!saveBlocker} onclick={() => attempt(saveScene)}>Save</button>
+      <button class="primary" title="⌘S" disabled={!!saveBlocker} onclick={() => attempt(save)}>Save</button>
     </div>
     <div class="row">
       <label>Name <input bind:value={form.cue.name} /></label>

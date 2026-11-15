@@ -160,6 +160,41 @@ test('a refused leave keeps history and the Builder tab on the scene', async ({ 
   await expect(pad(page, 40)).toBeVisible();
 });
 
+test('leaving without saving after Back keeps history as it was: Back again reaches the page before', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#monitor`);
+
+  await page.getByRole('link', { name: 'Builder' }).click();
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('changed');
+  await page.goBack();
+  await leavePrompt(page).getByRole('button', { name: 'Leave without saving' }).click();
+  await expect(page).toHaveURL(/#builder$/);
+  await expect(pad(page, 40)).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#monitor$/);
+});
+
+test('the Builder tab opened on another URL with unsaved edits shows them again rather than failing', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('changed');
+  await page.getByRole('link', { name: 'Monitor' }).click();
+  await page.evaluate(() => (location.hash = '#builder'));
+
+  await expect(page).toHaveURL(/#builder\/demo\/40$/);
+  await expect(page.getByLabel('Name')).toHaveValue('changed');
+  await expect(leavePrompt(page)).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
 test('unsaved edits are guarded with the engine gone and when the page unloads', async ({ page, show, startEngine }) => {
   addSong(show);
   const engine = await startEngine();
