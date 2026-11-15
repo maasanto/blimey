@@ -217,6 +217,12 @@ impl DmxSink for FakeDmx {
         self.artnet = universes.clone();
         Ok(())
     }
+
+    /// On stderr, for `blimey replay`: offline, where std's `eprintln!`, which tests capture,
+    /// may panic on a stderr that can't be written.
+    fn log(&mut self, line: &str) {
+        eprintln!("blimey: {line}");
+    }
 }
 
 /// Frames more than this late are skipped rather than sent in a burst: after a stall, output
