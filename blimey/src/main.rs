@@ -227,15 +227,11 @@ impl Outputs {
         show_dir: &Path,
         last_good: Option<LastGoodShow>,
     ) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
-        let show = match Show::load(show_dir) {
-            Ok(show) => {
-                if let Some(last_good) = &last_good {
-                    last_good.save(show_dir);
-                }
-                show
-            }
+        let (stamps, loaded) = hot_reload::load_keeping(show_dir, last_good.as_ref());
+        let show = match loaded {
+            Ok(show) => show,
             Err(error) => {
-                let Some(show) = last_good.as_ref().and_then(LastGoodShow::load) else {
+                let Some(show) = last_good.as_ref().and_then(|last| last.load(show_dir)) else {
                     return Err(error.into());
                 };
                 eprintln!(
@@ -247,7 +243,7 @@ impl Outputs {
             }
         };
         Ok(match self.mode() {
-            Mode::Edit => Box::new(HotReload::new(show_dir, show, last_good)),
+            Mode::Edit => Box::new(HotReload::new(show_dir, stamps, show, last_good)),
             Mode::Show => Box::new(show),
         })
     }
@@ -883,6 +879,10 @@ mod tests {
         fs::write(&song, good.replace("green-fade", "fixed-fade")).unwrap();
         let after_the_fix = cue_names(&mut edited);
         let without_a_copy = show_mode.live_shows(&scratch.join("missing"), None);
+        let other_show = scratch.join("other-show");
+        fs::create_dir_all(&other_show).unwrap();
+        fs::write(other_show.join("rig.yaml"), "fixtures: [\n").unwrap();
+        let another_shows_copy = show_mode.live_shows(&other_show, last_good());
 
         assert_eq!(in_show_mode, ["green-fade"]);
         assert_eq!(before_the_fix, ["green-fade"]);
@@ -892,6 +892,10 @@ mod tests {
             "the show folder, not the copy, reloads"
         );
         assert!(without_a_copy.is_err());
+        assert!(
+            another_shows_copy.is_err_and(|error| error.to_string().contains("rig.yaml")),
+            "a copy only stands in for its own show, and the show's own error stands"
+        );
         fs::remove_dir_all(scratch).unwrap();
     }
 

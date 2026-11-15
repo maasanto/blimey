@@ -18,25 +18,30 @@ pub struct HotReload {
     last_good: Option<LastGoodShow>,
 }
 
-type FileStamp = (PathBuf, Option<SystemTime>, u64);
+pub type FileStamp = (PathBuf, Option<SystemTime>, u64);
 
 impl HotReload {
     pub fn load(dir: &Path) -> io::Result<HotReload> {
-        let stamps = stamps(dir);
+        let (stamps, show) = load_keeping(dir, None);
         Ok(HotReload {
             dir: dir.to_path_buf(),
             stamps,
-            show: Show::load(dir)?,
+            show: show?,
             last_good: None,
         })
     }
 
-    /// Plays `show`, loaded from `dir` or standing in for it, until `dir` changes, then
-    /// reloads from `dir`, keeping each show that loads in `last_good`.
-    pub fn new(dir: &Path, show: Show, last_good: Option<LastGoodShow>) -> HotReload {
+    /// Plays `show`, loaded from `dir` or standing in for it, until `dir` changes from
+    /// `stamps`, then reloads from `dir`, keeping each show that loads in `last_good`.
+    pub fn new(
+        dir: &Path,
+        stamps: Vec<FileStamp>,
+        show: Show,
+        last_good: Option<LastGoodShow>,
+    ) -> HotReload {
         HotReload {
             dir: dir.to_path_buf(),
-            stamps: stamps(dir),
+            stamps,
             show,
             last_good,
         }
@@ -46,22 +51,37 @@ impl HotReload {
 impl ShowSource for HotReload {
     /// Checks the folder on every frame: a few `stat`s, far below the frame budget.
     fn current(&mut self) -> &Show {
-        let stamps = stamps(&self.dir);
-        if stamps != self.stamps {
+        if stamps(&self.dir) != self.stamps {
+            let (stamps, loaded) = load_keeping(&self.dir, self.last_good.as_ref());
             self.stamps = stamps;
-            match Show::load(&self.dir) {
+            match loaded {
                 Ok(show) => {
                     self.show = show;
                     eprintln!("blimey: reloaded {}", self.dir.display());
-                    if let Some(last_good) = &self.last_good {
-                        last_good.save(&self.dir);
-                    }
                 }
                 Err(error) => eprintln!("blimey: {error}; still running the previous show"),
             }
         }
         &self.show
     }
+}
+
+/// Loads the show in `dir`, and the stamps of its files from before, so a change during the
+/// load is seen as one. A show that loads is kept in `last_good`, as read just before, unless
+/// the folder changed meanwhile: the copy is always a show that loaded.
+pub fn load_keeping(
+    dir: &Path,
+    last_good: Option<&LastGoodShow>,
+) -> (Vec<FileStamp>, io::Result<Show>) {
+    let before = stamps(dir);
+    let files = last_good.and_then(|last_good| last_good.read(dir));
+    let show = Show::load(dir);
+    if let (Ok(_), Some(last_good), Some(files)) = (&show, last_good, files)
+        && stamps(dir) == before
+    {
+        last_good.save(&files);
+    }
+    (before, show)
 }
 
 /// Path, modification time and size of every file under `dir`, sorted.
