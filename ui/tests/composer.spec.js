@@ -280,6 +280,7 @@ test.describe('on three rows of washes', () => {
   test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {
     const engine = await startEngine({ look: DARK });
     await openChorusBuild(page, engine.url);
+    await expect(page.getByText('Warm-white wash on the left, amber chase on the right')).toBeVisible();
     await engine.stop();
     await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
 
