@@ -2,7 +2,8 @@
 //! active cues, the master dimmer and the live parameters. Renders it in layer order: legacy,
 //! then cues, then the master dimmer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -42,6 +43,8 @@ pub(crate) struct Playback {
     live_parameters: [f32; LIVE_PARAMETERS],
     /// Cues started or released since the last `take_cue_events`.
     cue_events: Vec<CueEvent>,
+    /// Cues dropped for failing to draw since the last `log_lines`, as lines for the log.
+    failures: Vec<String>,
 }
 
 /// A cue starting or being released, for the event log.
@@ -60,6 +63,8 @@ pub struct CueEvent {
 pub enum CueAction {
     Start,
     Release,
+    /// The cue panicked, a bug, and was dropped until it is fired again.
+    Fail,
 }
 
 struct ActiveCue {
@@ -115,6 +120,7 @@ impl Default for Playback {
             master: 1.0,
             live_parameters: [0.0; LIVE_PARAMETERS],
             cue_events: Vec::new(),
+            failures: Vec::new(),
         }
     }
 }
@@ -143,9 +149,15 @@ impl Playback {
         match *event.message.as_slice() {
             [CUE_PROGRAM_CHANGE, program] => self.select_song(show, program, event.at),
             [CUE_NOTE_ON, note, velocity] if velocity > 0 => {
-                self.start(show, note, velocity, event.at)
+                self.on_cue(show, note, event.at, |playback| {
+                    playback.start(show, note, velocity, event.at)
+                })
             }
-            [CUE_NOTE_ON | CUE_NOTE_OFF, note, _] => self.release(show, note, event.at),
+            [CUE_NOTE_ON | CUE_NOTE_OFF, note, _] => {
+                self.on_cue(show, note, event.at, |playback| {
+                    playback.release(show, note, event.at)
+                })
+            }
             [CUE_CONTROL_CHANGE, MASTER_CONTROLLER, value] => {
                 self.master = f32::from(value) / MIDI_DATA_MAX
             }
@@ -218,6 +230,13 @@ impl Playback {
         }
     }
 
+    /// Runs `work` on the cue on `note`; if it panics, the cue is dropped (see `drop_failed`).
+    fn on_cue(&mut self, show: &Show, note: u8, at: Duration, work: impl FnOnce(&mut Self)) {
+        let mut failed = BTreeSet::new();
+        isolated(&mut failed, note, || work(self));
+        self.drop_failed(show, &failed, at);
+    }
+
     fn record_cue_event(&mut self, show: &Show, action: CueAction, note: u8, at: Duration) {
         let Some(song) = self.song(show) else {
             return;
@@ -227,7 +246,7 @@ impl Playback {
             action,
             song: song.name.clone(),
             note,
-            name: song.cues[&note].name().into(),
+            name: song.cues.get(&note).map_or("", Cue::name).into(),
         });
     }
 
@@ -236,13 +255,15 @@ impl Playback {
         std::mem::take(&mut self.cue_events)
     }
 
-    /// A line for the log when the selected song's tempo source changes (see `ClockFollower`).
-    pub fn log_line(&mut self, at: Duration) -> Option<String> {
-        let line = self.clock.as_mut()?.log_line(at)?;
-        Some(format!(
-            "{}: {line}",
-            self.song.as_deref().unwrap_or_default()
-        ))
+    /// Lines for the log: cues dropped since the last call, and a line when the selected song's
+    /// tempo source changes (see `ClockFollower`).
+    pub fn log_lines(&mut self, at: Duration) -> Vec<String> {
+        let mut lines = std::mem::take(&mut self.failures);
+        let song = self.song.as_deref().unwrap_or_default();
+        if let Some(line) = self.clock.as_mut().and_then(|clock| clock.log_line(at)) {
+            lines.push(format!("{song}: {line}"));
+        }
+        lines
     }
 
     /// Panic: clears legacy levels and cues and puts up the song's safe look.
@@ -273,15 +294,18 @@ impl Playback {
         if self.safe_look {
             look::render(&show.rig, &song.safe_look, &mut output.enttec, &mut dimmers);
         }
+        // A bug in one cue costs that cue, not the frame: each cue's work is isolated, and a
+        // cue that panics is dropped, its half-drawn copy with it.
+        let mut failed = BTreeSet::new();
         let faded_out =
             |cue: &Cue, release: &Release| clock.progress(cue.release(), release.at, at) as f32;
         self.cues.retain(|active| {
-            song.cues.get(&active.note).is_some_and(|cue| {
-                active
-                    .released
-                    .as_ref()
-                    .is_none_or(|release| faded_out(cue, release) < 1.0)
-            })
+            let Some(cue) = song.cues.get(&active.note) else {
+                return false;
+            };
+            let is_showing =
+                || (active.released.as_ref()).is_none_or(|release| faded_out(cue, release) < 1.0);
+            isolated(&mut failed, active.note, is_showing).unwrap_or(true)
         });
         let opacity = |active: &ActiveCue, cue: &Cue| match &active.released {
             None => cue.opacity(clock, active.started, at),
@@ -291,42 +315,52 @@ impl Playback {
         // its fixtures, and draw nothing themselves. Several on one pixel cue multiply.
         let mut intensity_scales: BTreeMap<u8, f32> = BTreeMap::new();
         for active in &self.cues {
-            let cue = &song.cues[&active.note];
-            for note in cue.intensity_targets().into_iter().flatten() {
-                let darkened = opacity(active, cue) * active.intensity;
-                *intensity_scales.entry(*note).or_insert(1.0) *= 1.0 - darkened;
+            if failed.contains(&active.note) {
+                continue;
             }
+            let cue = &song.cues[&active.note];
+            isolated(&mut failed, active.note, || {
+                for note in cue.intensity_targets().into_iter().flatten() {
+                    let darkened = opacity(active, cue) * active.intensity;
+                    *intensity_scales.entry(*note).or_insert(1.0) *= 1.0 - darkened;
+                }
+            });
         }
         for active in self.layered(song) {
             let cue = &song.cues[&active.note];
-            if cue.intensity_targets().is_some() {
+            if cue.intensity_targets().is_some() || failed.contains(&active.note) {
                 continue;
             }
-            let opacity = opacity(active, cue);
             let intensity = active.intensity * intensity_scales.get(&active.note).unwrap_or(&1.0);
-            // Only pixel cues draw on Art-Net: the others get no copy of it to blend back.
-            let mut lit = Universes {
-                enttec: output.enttec,
-                artnet: match cue {
-                    Cue::Pixel(_) => output.artnet.clone(),
-                    _ => ArtNetFrames::new(),
-                },
+            let drawn = isolated(&mut failed, active.note, || {
+                // Only pixel cues draw on Art-Net: the others get no copy of it to blend back.
+                let mut lit = Universes {
+                    enttec: output.enttec,
+                    artnet: match cue {
+                        Cue::Pixel(_) => output.artnet.clone(),
+                        _ => ArtNetFrames::new(),
+                    },
+                };
+                let mut lit_dimmers = dimmers.clone();
+                let timing = CueTiming {
+                    started: active.started,
+                    bar_line: active.bar_line,
+                    released: active.released.as_ref().map(|release| release.at),
+                };
+                cue.draw(
+                    &show.rig,
+                    clock,
+                    timing,
+                    at,
+                    intensity,
+                    &mut lit,
+                    &mut lit_dimmers,
+                );
+                (opacity(active, cue), lit, lit_dimmers)
+            });
+            let Some((opacity, lit, lit_dimmers)) = drawn else {
+                continue;
             };
-            let mut lit_dimmers = dimmers.clone();
-            let timing = CueTiming {
-                started: active.started,
-                bar_line: active.bar_line,
-                released: active.released.as_ref().map(|release| release.at),
-            };
-            cue.draw(
-                &show.rig,
-                clock,
-                timing,
-                at,
-                intensity,
-                &mut lit,
-                &mut lit_dimmers,
-            );
             dimmers.crossfade(&lit_dimmers, opacity);
             // ponytail: channels crossfade one by one, so a fixture with a dimmer channel fading
             // up from black multiplies two ramps (an ease-in). Fade in look space if that shows.
@@ -335,8 +369,26 @@ impl Playback {
                 crossfade(output.frame_mut(Universe::ArtNet(*universe)), lit, opacity);
             }
         }
+        self.drop_failed(show, &failed, at);
         apply_master(&show.rig, self.master, &mut output);
         output
+    }
+
+    /// Drops the cues on `notes`, which panicked, until they are fired again: logged, and a
+    /// `Fail` event each.
+    fn drop_failed(&mut self, show: &Show, notes: &BTreeSet<u8>, at: Duration) {
+        for &note in notes {
+            self.cues.retain(|active| active.note != note);
+            let song = self.song(show);
+            let name = song
+                .and_then(|song| song.cues.get(&note))
+                .map_or("", Cue::name);
+            self.failures.push(format!(
+                "{}: cue {note} {name:?} FAILED and is dropped until it is fired again; the other cues play on",
+                song.map_or("", |song| song.name.as_str()),
+            ));
+            self.record_cue_event(show, CueAction::Fail, note, at);
+        }
     }
 
     /// The state behind the frame due at `at`.
@@ -373,6 +425,15 @@ impl Playback {
         cues.sort_by_key(|active| matches!(song.cues.get(&active.note), Some(Cue::Pixel(_))));
         cues
     }
+}
+
+/// Runs one cue's `work`. If it panics, which is a bug, adds the cue's `note` to `failed`.
+fn isolated<T>(failed: &mut BTreeSet<u8>, note: u8, work: impl FnOnce() -> T) -> Option<T> {
+    let done = panic::catch_unwind(AssertUnwindSafe(work)).ok();
+    if done.is_none() {
+        failed.insert(note);
+    }
+    done
 }
 
 /// Moves each channel of `below` towards `above` by `opacity` (0–1).
@@ -413,6 +474,7 @@ fn apply_master(rig: &Rig, master: f32, output: &mut Universes) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue::PANICS_IN_TESTS;
     use crate::{FRAME_PERIOD, MidiFile, MidiSource};
     use std::path::Path;
 
@@ -555,6 +617,89 @@ mod tests {
             .map(|cue| (cue.note, cue.beats, cue.loop_beats))
             .collect();
         assert_eq!(beats, [(40, 3.0, Some(1.0)), (41, 3.0, None)]);
+    }
+
+    #[test]
+    fn a_cue_that_panics_is_dropped_once_and_the_rest_of_the_frame_renders() {
+        // Fired twice, a cue plays twice, the first fading out under the second; a start
+        // that panics leaves nothing to fire twice.
+        for (step, firings) in [("start", 1), ("opacity", 2), ("draw", 2)] {
+            let name = format!("{PANICS_IN_TESTS}-{step}");
+            let mut show = cues_show();
+            let song = format!(
+                "program: 1\ncues:\n  36: {{ name: red, type: scene, values: {{ rgb-par: {{ color: \"#ff0000\" }} }} }}\n  37: {{ name: {name}, type: pixel, release: 1s }}\n"
+            );
+            show.songs = vec![Song::parse("broken", &song, &show).unwrap()];
+            let mut playback = Playback::default();
+            let fire_37 = [CUE_NOTE_ON, 37, 127];
+            let messages = [[CUE_PROGRAM_CHANGE, 1].as_slice(), &[CUE_NOTE_ON, 36, 127]]
+                .into_iter()
+                .chain(std::iter::repeat_n(fire_37.as_slice(), firings));
+            for message in messages {
+                let event = MidiEvent {
+                    at: Duration::ZERO,
+                    message: message.to_vec(),
+                };
+                playback.apply(&show, &event);
+            }
+
+            let first = playback.render(&show, &Look::default(), Duration::ZERO);
+            let logged = playback.log_lines(Duration::ZERO);
+            let events = playback.take_cue_events();
+            let next = playback.render(&show, &Look::default(), FRAME_PERIOD);
+
+            assert_eq!(
+                first.enttec[4..7],
+                [255, 0, 0],
+                "{step}: rgb-par red, cue 36"
+            );
+            assert_eq!(next.enttec, first.enttec, "{step}");
+            let notes: Vec<u8> = (playback.status(&show, FRAME_PERIOD).cues.iter())
+                .map(|cue| cue.note)
+                .collect();
+            assert_eq!(notes, [36], "{step}: cue 37 is dropped");
+            let failures: Vec<&String> = (logged.iter())
+                .filter(|line| line.contains(&format!("broken: cue 37 \"{name}\"")))
+                .collect();
+            assert_eq!(failures.len(), 1, "{step}: {logged:?}");
+            let failed: Vec<u8> = (events.iter())
+                .filter(|event| event.action == CueAction::Fail)
+                .map(|event| event.note)
+                .collect();
+            assert_eq!(failed, [37], "{step}: {events:?}");
+        }
+    }
+
+    /// A pixel cue fired without a pattern layer has no bar line; saving one onto it while it
+    /// plays must not take the output down.
+    #[test]
+    fn a_pattern_layer_saved_onto_a_playing_pixel_cue_shows_the_layer_until_it_fires_again() {
+        let with_layer = |extra: &str| {
+            let song = format!(
+                "program: 1\ncues:\n  40:\n    name: red\n    type: pixel\n    layers:\n      - {{ shape: fill, params: {{ color: \"#ff0000\" }}{extra} }}\n"
+            );
+            let mut show = cues_show();
+            show.songs = vec![Song::parse("edited", &song, &show).unwrap()];
+            show
+        };
+        let (before, after) = (
+            with_layer(""),
+            with_layer(
+                ", pattern: { length: 1 bar, hits: [{ at: 2, shape: hold, length: 1 beat, level: 100% }] }",
+            ),
+        );
+        let mut playback = Playback::default();
+        for message in [[CUE_PROGRAM_CHANGE, 1].as_slice(), &[CUE_NOTE_ON, 40, 127]] {
+            let event = MidiEvent {
+                at: Duration::ZERO,
+                message: message.to_vec(),
+            };
+            playback.apply(&before, &event);
+        }
+
+        let output = playback.render(&after, &Look::default(), Duration::from_millis(100));
+
+        assert_eq!(output.enttec[4], 255, "rgb-par red, as it was");
     }
 
     /// The builder's playhead follows a pattern that drives a pixel cue's intensity, though

@@ -1,3 +1,19 @@
+/// Shadows std's `eprintln!` for every module below: std's panics when stderr can't be written,
+/// as under launchd once the disk is full, and a log line must never stop the light. Unit tests
+/// keep std's, which the test harness captures.
+// Warning: keep it above the `mod` lines, or modules after it get std's again.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        #[cfg(test)]
+        std::eprintln!($($arg)*);
+        #[cfg(not(test))]
+        {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), $($arg)*);
+        }
+    }};
+}
+
 mod api;
 mod artnet;
 mod enttec;
@@ -16,8 +32,10 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 use std::time::Duration;
 
 use blimey_engine::look::{Look, LookSettings};
@@ -38,7 +56,7 @@ use crate::hot_reload::HotReload;
 use crate::midi_input::MidiInput;
 use crate::recorder::Recorder;
 use crate::soak::{Setlist, Soak};
-use crate::state::Resumed;
+use crate::state::{LastGoodShow, Resumed};
 use crate::stream::{StreamSink, StreamedMidi, StreamedShow};
 
 #[derive(Parser)]
@@ -172,7 +190,7 @@ struct Outputs {
     #[arg(long)]
     dmx_port: Option<String>,
     /// Serve the web UI and the WebSocket stream at http://<LISTEN>/ (see docs/api.md).
-    /// Port 0 picks a free port.
+    /// Port 0 picks a free port. If it can't be bound, the engine says so and runs without them.
     #[arg(long)]
     listen: Option<SocketAddr>,
     /// Edit mode: reload the show whenever one of its files changes, and let the web UI save
@@ -201,14 +219,61 @@ impl Outputs {
         })
     }
 
+    /// As `shows`, keeping the show in `last_good` each time it loads. A show that fails to
+    /// load at start is reported, and the last one that loaded stands in; in edit mode the show
+    /// folder, where saves still go, reloads over it once fixed. Without one, the error stands.
+    fn live_shows(
+        &self,
+        show_dir: &Path,
+        last_good: Option<LastGoodShow>,
+    ) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+        let (stamps, loaded) = hot_reload::load_keeping(show_dir, last_good.as_ref());
+        let show = match loaded {
+            Ok(show) => show,
+            Err(error) => {
+                let Some(show) = last_good.as_ref().and_then(|last| last.load(show_dir)) else {
+                    return Err(error.into());
+                };
+                eprintln!(
+                    "blimey: {error}\nblimey: PLAYING THE LAST SHOW THAT LOADED, kept in the state folder, until {} loads again: fix it, then restart{}",
+                    show_dir.display(),
+                    if self.edit { " or save the fix" } else { "" }
+                );
+                show
+            }
+        };
+        Ok(match self.mode() {
+            Mode::Edit => Box::new(HotReload::new(show_dir, stamps, show, last_good)),
+            Mode::Show => Box::new(show),
+        })
+    }
+
     fn start(&self, show_dir: &Path, rig: &Rig) -> io::Result<LiveOutput> {
         let mode = self.mode();
+        let has_light = self.dmx_port.is_some() || self.artnet.artnet.is_some();
+        let started = self
+            .listen
+            .map(|address| (address, StreamSink::start(address, show_dir, rig, mode)));
+        let stream = match started {
+            None => None,
+            Some((_, Ok(stream))) => Some(stream),
+            // The UI never keeps the light from starting; with no light, it has to work.
+            Some((address, Err(error))) if has_light => {
+                eprintln!(
+                    "stream: NO UI: cannot serve on {address}: {error}; DMX and MIDI run without it. Free the port, or pick another with --listen, then restart"
+                );
+                None
+            }
+            Some((address, Err(error))) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("cannot serve on {address}, the only output: {error}"),
+                ));
+            }
+        };
         Ok(LiveOutput {
             dmx: self.dmx_port.clone().map(EnttecPro::new),
-            stream: self
-                .listen
-                .map(|address| StreamSink::start(address, show_dir, rig, mode))
-                .transpose()?,
+            stream,
             artnet: self.artnet.start(rig)?,
             artnet_frames: ArtNetFrames::new(),
             artnet_error: None,
@@ -282,6 +347,7 @@ enum FixtureCommand {
 }
 
 fn main() -> ExitCode {
+    exit_on_background_panic();
     let result = match Command::parse() {
         Command::Replay {
             show_dir,
@@ -347,6 +413,37 @@ fn main() -> ExitCode {
     })
 }
 
+/// A panic on a thread the light depends on (see `light_thread`), such as the MIDI watcher,
+/// would leave the engine half alive with MIDI silently gone: it exits instead, after the usual
+/// panic message, so launchd restarts it. Elsewhere a panic takes its usual course: the render
+/// loop drops a failing cue itself, tokio confines a request's panic to it, the Enttec writer's
+/// death fails the next frame, and a diagnostics thread such as the recorder dies alone.
+fn exit_on_background_panic() {
+    let report = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        report(info);
+        let name = thread::current().name().map(str::to_owned);
+        if name.is_some_and(|name| name.starts_with(LIGHT_THREAD)) {
+            eprintln!(
+                "blimey: a thread the light depends on panicked; exiting so the engine restarts"
+            );
+            std::process::exit(101);
+        }
+    }));
+}
+
+/// Names the threads the light depends on, whose panic exits the engine.
+const LIGHT_THREAD: &str = "light-";
+
+/// Spawns `work` on a thread the light depends on, named `light-<name>`: if it panics, the
+/// engine exits for launchd to restart it.
+fn light_thread(name: &str, work: impl FnOnce() + Send + 'static) -> io::Result<()> {
+    thread::Builder::new()
+        .name(format!("{LIGHT_THREAD}{name}"))
+        .spawn(work)
+        .map(drop)
+}
+
 fn replay(
     show_dir: &Path,
     midi: &Path,
@@ -393,12 +490,14 @@ fn run(
     outputs: &Outputs,
     state_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    let mut shows = check_run(show_dir, outputs)?;
+    check_outputs(outputs)?;
     let state_dir = state_dir.or_else(|| {
         state::default_dir()
             .map_err(|error| eprintln!("state: {error}; running without saved state or event log"))
             .ok()
     });
+    let last_good = state_dir.as_deref().map(LastGoodShow::new);
+    let mut shows = outputs.live_shows(show_dir, last_good)?;
     let recorder = Recorder::start(state_dir.as_deref(), show_dir, outputs.mode().name());
     let resume = recorder.saved().resume_events(shows.current());
     let mut clock = MonotonicClock::default();
@@ -488,13 +587,20 @@ fn soak(
     })
 }
 
-/// What `run` refuses to start without: somewhere to send frames, and a show that loads.
-/// Returns the show to play.
-fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
+/// What a new install needs: somewhere to send frames, and a show that loads, which `run` can
+/// do without only once it has a last good show to start from.
+fn check_run(show_dir: &Path, outputs: &Outputs) -> Result<(), Box<dyn Error>> {
+    check_outputs(outputs)?;
+    Show::load(show_dir)?;
+    Ok(())
+}
+
+/// What `run` refuses to start without: somewhere to send frames.
+fn check_outputs(outputs: &Outputs) -> Result<(), Box<dyn Error>> {
     if !outputs.any() {
         return Err("run needs somewhere to send frames: --dmx-port, --listen or --artnet".into());
     }
-    Ok(outputs.shows(show_dir)?)
+    Ok(())
 }
 
 /// Checks `run_args` as `blimey run` would at start, so launchd never restarts an engine that
@@ -663,6 +769,16 @@ impl DmxSink for LiveOutput {
             stream.status(status);
         }
     }
+
+    fn log(&mut self, line: &str) {
+        eprintln!("blimey: {line}");
+    }
+
+    fn skipped(&mut self, at: Duration, frames: u32) {
+        eprintln!(
+            "blimey: fell {frames} frames behind; output picks up at the frame due at {at:?}"
+        );
+    }
 }
 
 /// `run`'s output: the live outputs, plus the event log and the state to resume after a
@@ -693,6 +809,15 @@ impl DmxSink for Recorded {
     fn cue(&mut self, event: &CueEvent) {
         self.recorder.cue(event);
     }
+
+    fn log(&mut self, line: &str) {
+        self.output.log(line);
+    }
+
+    fn skipped(&mut self, at: Duration, frames: u32) {
+        self.recorder.skipped(at, frames);
+        self.output.skipped(at, frames);
+    }
 }
 
 fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<dyn Error>> {
@@ -717,6 +842,111 @@ fn import_fixture(ofl_json: &Path, out: Option<&Path>) -> Result<ExitCode, Box<d
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// The outputs of `blimey run <show> --artnet <extra>`.
+    fn run_outputs(extra: &[&str]) -> Outputs {
+        let args = ["blimey", "run", "show", "--artnet"].iter().chain(extra);
+        match Command::parse_from(args) {
+            Command::Run { outputs, .. } => outputs,
+            _ => unreachable!("parsed as `run`"),
+        }
+    }
+
+    /// The songs' first cue names, to tell shows apart.
+    fn cue_names(shows: &mut Box<dyn ShowSource>) -> Vec<String> {
+        let songs = &shows.current().songs;
+        songs
+            .iter()
+            .map(|song| song.cues[&36].name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_show_broken_before_a_start_plays_as_it_last_loaded_until_fixed() {
+        let scratch = std::env::temp_dir().join(format!("blimey-last-good-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let (show_dir, state_dir) = (scratch.join("show"), scratch.join("state"));
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/shows/cues");
+        for file in [
+            "rig.yaml",
+            "palettes.yaml",
+            "fixtures/dimmer-par.yaml",
+            "fixtures/rgb-par.yaml",
+            "songs/second.yaml",
+        ] {
+            fs::create_dir_all(show_dir.join(file).parent().unwrap()).unwrap();
+            fs::copy(source.join(file), show_dir.join(file)).unwrap();
+        }
+        let song = show_dir.join("songs/second.yaml");
+        let good = fs::read_to_string(&song).unwrap();
+        let last_good = || Some(LastGoodShow::new(&state_dir));
+        let (show_mode, edit_mode) = (run_outputs(&[]), run_outputs(&["--edit"]));
+
+        show_mode.live_shows(&show_dir, last_good()).unwrap();
+        fs::write(&song, good.replace("green", "not-a-colour")).unwrap();
+        let in_show_mode = cue_names(&mut show_mode.live_shows(&show_dir, last_good()).unwrap());
+        let mut edited = edit_mode.live_shows(&show_dir, last_good()).unwrap();
+        let before_the_fix = cue_names(&mut edited);
+        let loads_before_the_fix = edited.current_with_loads().1;
+        fs::write(&song, good.replace("green-fade", "fixed-fade")).unwrap();
+        let after_the_fix = cue_names(&mut edited);
+        let loads_after_the_fix = edited.current_with_loads().1;
+        let without_a_copy = show_mode.live_shows(&scratch.join("missing"), None);
+        let other_show = scratch.join("other-show");
+        fs::create_dir_all(&other_show).unwrap();
+        fs::write(other_show.join("rig.yaml"), "fixtures: [\n").unwrap();
+        let another_shows_copy = show_mode.live_shows(&other_show, last_good());
+
+        assert_eq!(in_show_mode, ["green-fade"]);
+        assert_eq!(before_the_fix, ["green-fade"]);
+        assert_eq!(
+            after_the_fix,
+            ["fixed-fade"],
+            "the show folder, not the copy, reloads"
+        );
+        assert_eq!(
+            loads_after_the_fix,
+            loads_before_the_fix + 1,
+            "a load for the stream to send the fixed rig"
+        );
+        assert!(without_a_copy.is_err());
+        assert!(
+            another_shows_copy.is_err_and(|error| error.to_string().contains("rig.yaml")),
+            "a copy only stands in for its own show, and the show's own error stands"
+        );
+        fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// Set in the copy of the test binary that `a_panic_on_a_light_thread_exits` runs.
+    const PANICKING_COPY: &str = "BLIMEY_TEST_PANICKING_COPY";
+
+    #[test]
+    fn a_panic_on_a_light_thread_exits_and_on_a_diagnostics_thread_does_not() {
+        if std::env::var_os(PANICKING_COPY).is_some() {
+            exit_on_background_panic();
+            let _ = std::thread::spawn(|| panic!("the event log writer broke")).join();
+            light_thread("midi-watcher", || panic!("the MIDI watcher broke")).unwrap();
+            std::thread::sleep(Duration::from_secs(10));
+            return;
+        }
+        let started = std::time::Instant::now();
+
+        let copy = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::a_panic_on_a_light_thread_exits_and_on_a_diagnostics_thread_does_not",
+            ])
+            .arg("--nocapture")
+            .env(PANICKING_COPY, "1")
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&copy.stderr);
+        assert_eq!(copy.status.code(), Some(101), "{stderr}");
+        assert!(stderr.contains("the event log writer broke"), "{stderr}");
+        assert!(stderr.contains("the MIDI watcher broke"), "{stderr}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn record_takes_art_net_universes_up_to_15_bits_like_run() {

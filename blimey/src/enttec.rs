@@ -5,6 +5,8 @@
 pub mod emulator;
 
 use std::io::{self, Write};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use blimey_engine::{DmxSink, Frame};
@@ -42,67 +44,141 @@ pub fn send_dmx_packet(frame: &Frame) -> Vec<u8> {
 // measures it. If it goes dark instead, the fallback is plan §9's keeper: a tiny process that owns
 // this port and repeats the last frame it got from the engine over a local socket.
 pub struct EnttecPro {
-    path: String,
-    port: Option<Box<dyn SerialPort>>,
-    is_missing_reported: bool,
+    /// The frame for the thread that writes the port, so a box that stops draining never holds
+    /// up the render loop. Latest wins: a box that drains again gets the current look.
+    latest: Arc<Latest>,
+    writer: JoinHandle<()>,
 }
 
 impl EnttecPro {
     /// Opens nothing yet: the first frame opens the port, and every later frame retries while it is missing.
     pub fn new(path: String) -> Self {
-        Self {
+        let latest = Arc::new(Latest::default());
+        let mut port = Port {
             path,
             port: None,
-            is_missing_reported: false,
-        }
+            is_working: None,
+        };
+        let writer = thread::spawn({
+            let latest = latest.clone();
+            move || {
+                while let Some(frame) = latest.take() {
+                    if let Some(change) = port.write(&frame) {
+                        eprintln!("{change}");
+                    }
+                }
+            }
+        });
+        Self { latest, writer }
+    }
+}
+
+impl Drop for EnttecPro {
+    /// Lets the writer finish the frame waiting, if any, then stop.
+    fn drop(&mut self) {
+        self.latest.slot().is_closed = true;
+        self.latest.ready.notify_one();
+    }
+}
+
+/// A one-frame slot between the render loop and the writer.
+#[derive(Default)]
+struct Latest {
+    slot: Mutex<Slot>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct Slot {
+    frame: Option<Frame>,
+    is_closed: bool,
+}
+
+impl Latest {
+    fn slot(&self) -> MutexGuard<'_, Slot> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn connected_port(&mut self) -> Option<&mut Box<dyn SerialPort>> {
-        if self.port.is_none() {
-            match serialport::new(&self.path, BAUD_RATE)
-                .timeout(WRITE_TIMEOUT)
-                .open()
-            {
-                Ok(port) => {
-                    eprintln!("enttec: connected to {}", self.path);
-                    self.port = Some(port);
-                    self.is_missing_reported = false;
-                }
-                Err(error) if !self.is_missing_reported => {
-                    eprintln!(
-                        "enttec: cannot open {}: {error}; retrying every frame (check the USB cable, or run `blimey devices`)",
-                        self.path
-                    );
-                    self.is_missing_reported = true;
-                }
-                Err(_) => {}
-            }
+    /// Replaces the frame waiting, if any.
+    fn put(&self, frame: Frame) {
+        self.slot().frame = Some(frame);
+        self.ready.notify_one();
+    }
+
+    /// Waits for a frame; `None` once closed with none left.
+    fn take(&self) -> Option<Frame> {
+        let waiting = |slot: &mut Slot| slot.frame.is_none() && !slot.is_closed;
+        self.ready
+            .wait_while(self.slot(), waiting)
+            .unwrap_or_else(PoisonError::into_inner)
+            .frame
+            .take()
+    }
+}
+
+struct Port {
+    path: String,
+    port: Option<Box<dyn SerialPort>>,
+    /// Whether the last frame reached the box; `None` before the first.
+    is_working: Option<bool>,
+}
+
+impl Port {
+    /// Writes `frame`, reconnecting first if the box was lost. Returns a line for the log when
+    /// the box starts or stops taking frames, so a box that hangs every frame logs once.
+    fn write(&mut self, frame: &Frame) -> Option<String> {
+        let written = self
+            .connected_port()
+            .and_then(|port| port.write_all(&send_dmx_packet(frame)));
+        let is_working = written.is_ok();
+        if written.is_err() {
+            self.port = None;
         }
-        self.port.as_mut()
+        if self.is_working.replace(is_working) == Some(is_working) {
+            return None;
+        }
+        Some(match written {
+            Ok(()) => format!("enttec: sending to {}", self.path),
+            Err(error) => format!(
+                "enttec: {}: {error}; retrying every frame (check the USB cable, or run `blimey devices`)",
+                self.path
+            ),
+        })
+    }
+
+    fn connected_port(&mut self) -> io::Result<&mut Box<dyn SerialPort>> {
+        let port = match self.port.take() {
+            Some(port) => port,
+            None => serialport::new(&self.path, BAUD_RATE)
+                .timeout(WRITE_TIMEOUT)
+                .open()?,
+        };
+        Ok(self.port.insert(port))
     }
 }
 
 impl DmxSink for EnttecPro {
-    /// Never fails: losing the box is reported on stderr and the render loop keeps going.
+    /// Never blocks. Fails only if the writer thread died, so the engine exits and launchd
+    /// restarts it rather than the light freezing unnoticed.
     fn send(&mut self, _at: Duration, frame: &Frame) -> io::Result<()> {
-        let Some(port) = self.connected_port() else {
-            return Ok(());
-        };
-        if let Err(error) = port.write_all(&send_dmx_packet(frame)) {
-            eprintln!("enttec: lost {}: {error}; reconnecting", self.path);
-            self.port = None;
+        if self.writer.is_finished() {
+            return Err(io::Error::other(
+                "enttec: the thread writing the box stopped",
+            ));
         }
+        self.latest.put(*frame);
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use std::path::Path;
 
-    use blimey_engine::{DMX_CHANNELS, FakeClock, MidiFile, Show, replay, run};
+    use blimey_engine::{DMX_CHANNELS, MidiFile, Show, replay};
 
-    use super::emulator::{EmulatedEnttec, take_frames};
+    use super::emulator::{EmulatedEnttec, pty_pair, take_frames};
     use super::*;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
@@ -148,26 +224,113 @@ mod tests {
     #[test]
     fn driver_delivers_the_same_frames_as_fake_dmx() {
         let show = Show::load(&Path::new(FIXTURES).join("shows/legacy")).unwrap();
-        let midi = || MidiFile::open(&Path::new(FIXTURES).join("midi/legacy-song.mid")).unwrap();
-        let expected: Vec<Frame> = replay(&show, midi())
+        let midi = MidiFile::open(&Path::new(FIXTURES).join("midi/legacy-song.mid")).unwrap();
+        let expected: Vec<Frame> = replay(&show, midi)
             .iter()
             .map(|frame| frame.values)
             .collect();
         let device = EmulatedEnttec::plug_in().unwrap();
         let mut driver = EnttecPro::new(device.path());
 
-        let frame_count = u32::try_from(expected.len()).unwrap();
-        run(
-            &mut FakeClock::default(),
-            &mut midi(),
-            &show,
-            &Default::default(),
-            &mut driver,
-            frame_count,
-        )
-        .unwrap();
+        // At the pace of a box, not of a fake clock: the driver drops frames a box can't take.
+        for (sent, frame) in (1..).zip(&expected) {
+            driver.send(Duration::ZERO, frame).unwrap();
+            device.wait_for_frames(sent, PATIENCE);
+        }
 
-        assert_eq!(device.wait_for_frames(expected.len(), PATIENCE), expected);
+        assert_eq!(device.frames(), expected);
+    }
+
+    /// A box still plugged in that stops reading, as a hung widget: the render loop, and the
+    /// Art-Net and MIDI it handles, must not wait on it.
+    #[test]
+    fn a_box_that_stops_draining_never_holds_up_the_render_loop() {
+        let (_never_read, port) = pty_pair().unwrap();
+        let link = std::env::temp_dir().join(format!("blimey-enttec-hung-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(port.name().unwrap(), &link).unwrap();
+        let mut driver = EnttecPro::new(link.to_string_lossy().into_owned());
+
+        let started = std::time::Instant::now();
+        for _ in 0..40 {
+            driver.send(Duration::ZERO, &[0; DMX_CHANNELS]).unwrap();
+        }
+
+        // The writer thread outlives the test: it must not open the pty's name once another
+        // test reuses it.
+        std::fs::remove_file(&link).unwrap();
+        assert!(
+            started.elapsed() < WRITE_TIMEOUT,
+            "a second of frames took {:?} to hand over",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_box_that_drains_again_gets_the_latest_frame_not_a_stale_one() {
+        let (mut box_end, port) = pty_pair().unwrap();
+        box_end.set_timeout(Duration::from_millis(10)).unwrap();
+        let link = std::env::temp_dir().join(format!("blimey-enttec-slow-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(port.name().unwrap(), &link).unwrap();
+        let mut driver = EnttecPro::new(link.to_string_lossy().into_owned());
+
+        // Unread, the pty fills within a few frames and the writer waits on it.
+        for value in 1..=20 {
+            driver.send(Duration::ZERO, &frame_with(1, value)).unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for value in [101, 102, 103] {
+            driver.send(Duration::ZERO, &frame_with(1, value)).unwrap();
+        }
+        let mut received = Vec::new();
+        let draining = std::time::Instant::now();
+        while draining.elapsed() < Duration::from_millis(500) {
+            let mut chunk = [0; 4096];
+            if let Ok(count) = box_end.read(&mut chunk) {
+                received.extend_from_slice(&chunk[..count]);
+            }
+        }
+        std::fs::remove_file(&link).unwrap();
+
+        let frames = take_frames(&mut received);
+        assert_eq!(
+            frames.last(),
+            Some(&frame_with(1, 103)),
+            "{} frames",
+            frames.len()
+        );
+    }
+
+    #[test]
+    fn a_box_is_logged_when_it_hangs_or_comes_back_not_every_frame() {
+        let port_on = |path: String| Port {
+            path,
+            port: None,
+            is_working: None,
+        };
+        let logged = |port: &mut Port, frames: usize| -> Vec<String> {
+            (0..frames)
+                .filter_map(|_| port.write(&[0; DMX_CHANNELS]))
+                .collect()
+        };
+        let (_never_read, hung) = pty_pair().unwrap();
+        let mut device = EmulatedEnttec::plug_in().unwrap();
+        let mut replugged = port_on(device.path());
+
+        let hanging = logged(&mut port_on(hung.name().unwrap()), 8);
+        logged(&mut replugged, 2);
+        device.unplug();
+        logged(&mut replugged, 2);
+        device.plug_back_in().unwrap();
+        let back = logged(&mut replugged, 3);
+
+        assert!(hanging.len() <= 2, "{hanging:#?}");
+        assert!(
+            hanging.last().unwrap().contains("timed out"),
+            "{hanging:#?}"
+        );
+        assert_eq!(back, [format!("enttec: sending to {}", device.path())]);
     }
 
     #[test]

@@ -28,6 +28,21 @@ fn empty_show_matches_the_all_zero_reference() {
 }
 
 #[test]
+fn replay_says_where_the_tempo_comes_from_on_stderr() {
+    let output = Command::new(env!("CARGO_BIN_EXE_blimey"))
+        .arg("replay")
+        .arg(format!("{FIXTURES}/shows/cues"))
+        .arg("--midi")
+        .arg(format!("{FIXTURES}/midi/pattern-92.mid"))
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("blimey: first: "), "{stderr}");
+}
+
+#[test]
 fn out_writes_the_reference_byte_for_byte() {
     let out = format!("{}/empty-show.dump", env!("CARGO_TARGET_TMPDIR"));
 

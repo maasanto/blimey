@@ -257,7 +257,9 @@ struct Measured<'a, S> {
     setlist: &'a Setlist,
     output: S,
     device: Option<&'a EmulatedEnttec>,
+    /// The index of the next frame: frames sent, and frames the render loop skipped.
     sent: u32,
+    skipped: u32,
     /// Frames the emulated box received.
     received: usize,
     lateness: Lateness,
@@ -283,6 +285,7 @@ impl<'a, S> Measured<'a, S> {
             output,
             device,
             sent: 0,
+            skipped: 0,
             received: 0,
             lateness: Lateness::default(),
             artnet: 0,
@@ -333,6 +336,17 @@ impl<S: DmxSink> DmxSink for Measured<'_, S> {
     fn status(&mut self, status: &Status) {
         self.output.status(status);
     }
+
+    fn log(&mut self, line: &str) {
+        self.output.log(line);
+    }
+
+    /// Skipped frames count as dropped.
+    fn skipped(&mut self, at: Duration, frames: u32) {
+        self.sent += frames;
+        self.skipped += frames;
+        self.output.skipped(at, frames);
+    }
 }
 
 impl<S> Measured<'_, S> {
@@ -347,7 +361,7 @@ impl<S> Measured<'_, S> {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             self.received += device.take_received().len();
-            if self.received >= self.sent as usize || Instant::now() > deadline {
+            if self.received >= (self.sent - self.skipped) as usize || Instant::now() > deadline {
                 return;
             }
             thread::sleep(Duration::from_millis(10));
@@ -358,10 +372,11 @@ impl<S> Measured<'_, S> {
         let setlist = self.setlist;
         let late = self.lateness.at_least(FRAME_PERIOD);
         let device_failure = self.device.and_then(EmulatedEnttec::failure);
+        let rendered = self.sent - self.skipped;
         let missed = self
             .device
-            .map_or(0, |_| (self.sent as usize).saturating_sub(self.received));
-        let dropped = late + missed as u64 + self.artnet_failures;
+            .map_or(0, |_| (rendered as usize).saturating_sub(self.received));
+        let dropped = late + missed as u64 + self.artnet_failures + u64::from(self.skipped);
         let mut device_note = match (self.device, &device_failure) {
             (Some(_), Some(error)) => format!(
                 "; the emulated Enttec received {} of them, then stopped reading: {error}",
@@ -392,8 +407,7 @@ impl<S> Measured<'_, S> {
                 "frames",
                 dropped == 0 && device_failure.is_none(),
                 format!(
-                    "{} rendered, {dropped} dropped (sent a frame period or more late, never received, or failed on Art-Net){device_note}",
-                    self.sent
+                    "{rendered} rendered, {dropped} dropped (sent a frame period or more late, skipped after a stall, never received, or failed on Art-Net){device_note}",
                 ),
                 "none dropped".to_string(),
             ),
@@ -816,6 +830,21 @@ mod tests {
             report.contains("12 dropped") && report.contains("no route to host"),
             "{report}"
         );
+    }
+
+    #[test]
+    fn frames_skipped_after_a_stall_are_dropped_and_later_frames_keep_their_slot() {
+        let setlist = setlist(&[0], 4);
+        let mut sink = Measured::new(&setlist, blimey_engine::FakeDmx::default(), None, 12);
+
+        sink.send(Duration::ZERO, &[0; 512]).unwrap();
+        sink.skipped(FRAME_PERIOD * 11, 10);
+        sink.send(FRAME_PERIOD * 11, &[0; 512]).unwrap();
+        sink.end();
+        let (report, passed) = sink.report("real time", Duration::ZERO);
+
+        assert!(!passed, "{report}");
+        assert!(report.contains("2 rendered, 10 dropped"), "{report}");
     }
 
     #[test]

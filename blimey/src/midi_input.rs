@@ -40,12 +40,12 @@ impl MidiInput {
         };
         // Before the first frame, so MIDI sent as soon as the engine is up is not lost.
         watcher.check();
-        thread::spawn(move || {
+        crate::light_thread("midi-watcher", move || {
             loop {
                 thread::sleep(PORT_CHECK_INTERVAL);
                 watcher.check();
             }
-        });
+        })?;
         Ok(Self {
             events,
             early: None,
@@ -147,7 +147,7 @@ impl PortWatcher {
 #[cfg(target_os = "macos")]
 fn follow_port_changes() -> Result<(), Box<dyn Error>> {
     let (ready, created) = mpsc::channel();
-    thread::spawn(move || {
+    crate::light_thread("midi-ports", move || {
         let client = midir::MidiInput::new(CLIENT_NAME);
         let _ = ready.send(client.as_ref().map(|_| ()).map_err(ToString::to_string));
         while client.is_ok() {
@@ -155,7 +155,7 @@ fn follow_port_changes() -> Result<(), Box<dyn Error>> {
             // Only reached if the loop has nothing to wait on.
             thread::sleep(PORT_CHECK_INTERVAL);
         }
-    });
+    })?;
     created.recv()?.map_err(Into::into)
 }
 

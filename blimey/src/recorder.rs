@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use blimey_engine::{CueEvent, MidiEvent, Status};
 
@@ -17,6 +18,7 @@ use crate::stream::is_ticking;
 enum Record {
     Midi(MidiEvent),
     Cue(CueEvent),
+    Skipped { at: Duration, frames: u32 },
     State(SavedState),
 }
 
@@ -68,6 +70,7 @@ impl Recorder {
                 match (record, &mut state_file, &mut log) {
                     (Record::Midi(event), _, Some(log)) => log.midi(&event),
                     (Record::Cue(event), _, Some(log)) => log.cue(&event),
+                    (Record::Skipped { at, frames }, _, Some(log)) => log.skipped(at, frames),
                     (Record::State(state), Some(file), _) => file.save(&state),
                     _ => {}
                 }
@@ -104,6 +107,10 @@ impl Recorder {
         self.send(Record::Cue(event.clone()));
     }
 
+    pub fn skipped(&self, at: Duration, frames: u32) {
+        self.send(Record::Skipped { at, frames });
+    }
+
     fn send(&self, record: Record) {
         if let Some(records) = &self.records {
             // Fails only if the writer panicked, which it reports itself.
@@ -127,7 +134,7 @@ mod tests {
     use super::*;
     use std::io;
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use blimey_engine::look::Look;
     use blimey_engine::{DmxSink, FRAME_PERIOD, FakeClock, Frame, MidiSource, Show, run};
@@ -225,6 +232,41 @@ mod tests {
         assert_eq!(before_restart[0..4], [129, 0, 0, 255], "dimmer at 64/127");
         assert_eq!(after_restart[0..4], [0, 0, 0, 0], "no cue resumed");
         assert_eq!(next_cue, before_restart, "song and master resumed");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn skipped_frames_and_failed_cues_are_logged() {
+        let dir = scratch_dir("skipped");
+        let recorder = Recorder::start(Some(&dir), Path::new(SHOW), "show");
+
+        recorder.skipped(Duration::from_millis(1250), 40);
+        recorder.cue(&CueEvent {
+            at: Duration::from_millis(1275),
+            action: blimey_engine::CueAction::Fail,
+            song: "first".into(),
+            note: 37,
+            name: "blue-snap".into(),
+        });
+        drop(recorder);
+
+        let lines: Vec<Value> = fs::read_to_string(dir.join("events.log"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            (
+                lines[1]["type"].as_str(),
+                lines[1]["frames"].as_u64(),
+                lines[1]["at_ms"].as_u64()
+            ),
+            (Some("skipped"), Some(40), Some(1250))
+        );
+        assert_eq!(
+            (lines[2]["action"].as_str(), lines[2]["note"].as_u64()),
+            (Some("fail"), Some(37))
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

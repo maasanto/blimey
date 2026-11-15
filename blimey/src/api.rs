@@ -28,7 +28,7 @@ use blimey_engine::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, SemaphorePermit, watch};
 
 use crate::stream;
 
@@ -151,9 +151,23 @@ pub fn routes(api: Api) -> Router {
         .with_state(api)
 }
 
+/// How many requests may load the show and render from it at once, so a flood of them, as
+/// from a misbehaving client, can't take the CPU from the render loop. The rest wait.
+// ponytail: waiters queue without limit, each holding its request; answer 503 past a queue
+// length if a flood ever grows memory.
+static SHOW_LOADS: Semaphore = Semaphore::const_new(2);
+
+async fn show_load_turn() -> SemaphorePermit<'static> {
+    SHOW_LOADS
+        .acquire()
+        .await
+        .expect("SHOW_LOADS is never closed")
+}
+
 // ponytail: handlers load the show from disk per request; mirror it from the render loop if
 // preview edits ever feel slow.
 async fn show_summary(State(api): State<Api>) -> Response {
+    let _turn = show_load_turn().await;
     match Show::load(&api.show_dir) {
         Ok(show) => Json(json!({
             "palettes": show.palettes.iter().map(|(name, colour)| (name.clone(), json!(colour.to_hex()))).collect::<serde_json::Map<_, _>>(),
@@ -313,6 +327,7 @@ async fn set_pixel_preview(State(api): State<Api>, content: JsonBody) -> Respons
     if let Some(refused) = refused_in_show_mode(api.mode) {
         return refused;
     }
+    let _turn = show_load_turn().await;
     let preview = json_body(content)
         .and_then(|content| body::<PixelPreview>(content, "send { song, cue }, cue a pixel cue"))
         .and_then(|preview| {
@@ -358,6 +373,7 @@ async fn render_thumbnail(
     Query(query): Query<ThumbnailQuery>,
     content: JsonBody,
 ) -> Response {
+    let _turn = show_load_turn().await;
     let frames = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
         let time_signature = match &query.song {
@@ -387,6 +403,7 @@ const CUE_THUMBNAIL_LEVELS: usize = 129;
 /// Works in show mode too: it renders the saved cues aside from the output and changes nothing.
 async fn song_thumbnails(State(api): State<Api>, Path(song): Path<String>) -> Response {
     // One load and render for the whole song, as blocking work off the async runtime.
+    let _turn = show_load_turn().await;
     let thumbnails = tokio::task::spawn_blocking(move || {
         Show::load(&api.show_dir).and_then(|show| saved_cue_thumbnails(&show, &song))
     })
@@ -723,9 +740,9 @@ mod tests {
         thumbnail_in(None, cue)
     }
 
-    /// As `thumbnail`, with `?song=` when `song` is given.
-    fn thumbnail_in(song: Option<&str>, cue: Value) -> (StatusCode, Value) {
-        let api = Api {
+    /// The API of an engine playing the cues show in show mode.
+    fn cues_show_api() -> Api {
+        Api {
             show_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/shows/cues").into(),
             mode: Mode::Show,
             rig: Arc::new(watch::Sender::new(Rig::default())),
@@ -733,7 +750,33 @@ mod tests {
             preview: TimedLook::new(PREVIEW_LIFETIME),
             midi: std::sync::mpsc::channel().0,
             history: Arc::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn show_loads_past_the_limit_wait_their_turn() {
+        let cue = json!({ "name": "t", "type": "pixel" });
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let every_turn = SHOW_LOADS.acquire_many(2).await.unwrap();
+            let query = Query(ThumbnailQuery { song: None });
+            let request = render_thumbnail(State(cues_show_api()), query, Ok(Json(cue)));
+            tokio::pin!(request);
+
+            let ran = tokio::select! {
+                biased;
+                _ = &mut request => true,
+                () = tokio::task::yield_now() => false,
+            };
+            drop(every_turn);
+
+            assert!(!ran, "rendered while two others held every turn");
+            assert_eq!(request.await.status(), StatusCode::OK);
+        });
+    }
+
+    /// As `thumbnail`, with `?song=` when `song` is given.
+    fn thumbnail_in(song: Option<&str>, cue: Value) -> (StatusCode, Value) {
+        let api = cues_show_api();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let query = ThumbnailQuery {
                 song: song.map(str::to_owned),

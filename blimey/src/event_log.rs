@@ -71,6 +71,15 @@ impl EventLog {
         }));
     }
 
+    /// The render loop fell behind and skipped `frames` before the one due at `at`.
+    pub fn skipped(&mut self, at: Duration, frames: u32) {
+        self.write(json!({
+            "type": "skipped",
+            "at_ms": at.as_millis() as u64,
+            "frames": frames,
+        }));
+    }
+
     /// Never fails: an error is reported once until the next successful write, and the engine
     /// keeps going. A failed rotation keeps logging to the current file.
     fn write(&mut self, mut line: Value) {

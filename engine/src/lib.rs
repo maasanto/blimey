@@ -101,8 +101,16 @@ pub trait DmxSink {
     /// Each MIDI event the engine takes in, before it applies it. For the event log.
     fn midi(&mut self, _event: &MidiEvent) {}
 
-    /// Each cue the engine starts or releases. For the event log.
+    /// Each cue the engine starts, releases or drops for failing. For the event log.
     fn cue(&mut self, _event: &CueEvent) {}
+
+    /// How many frames the render loop skipped, after falling too far behind, before the one
+    /// due at `at`, which it sends next. For the event log.
+    fn skipped(&mut self, _at: Duration, _frames: u32) {}
+
+    /// A line for the engine's log, such as where the tempo comes from. Sinks without a log
+    /// ignore it.
+    fn log(&mut self, _line: &str) {}
 }
 
 /// Where the render loop gets the show for each frame.
@@ -219,13 +227,24 @@ impl DmxSink for FakeDmx {
         self.artnet = universes.clone();
         Ok(())
     }
+
+    /// On stderr, for `blimey replay`: offline, where std's `eprintln!`, which tests capture,
+    /// may panic on a stderr that can't be written.
+    fn log(&mut self, line: &str) {
+        eprintln!("blimey: {line}");
+    }
 }
 
-/// Renders `frame_count` frames, frame N due at N × `FRAME_PERIOD` on `clock`.
+/// Frames more than this late are skipped rather than sent in a burst: after a stall, output
+/// picks up at the frame due now.
+const MAX_LATE_FRAMES: u32 = 4;
+
+/// Renders frames 0 to `frame_count` - 1, frame N due at N × `FRAME_PERIOD` on `clock`.
 ///
 /// Layers, lowest first (plan §5): legacy notes, `look` on the fixtures it sets, cues, pixel
 /// cues, then the master dimmer. Each frame renders at its deadline, so fades depend only on
-/// event timestamps. Deadlines are absolute, so a late frame never shifts the ones after it.
+/// event timestamps. Deadlines are absolute, so a late frame never shifts the ones after it;
+/// frames more than `MAX_LATE_FRAMES` late are skipped (see `DmxSink::skipped`).
 pub fn run(
     clock: &mut impl Clock,
     midi: &mut impl MidiSource,
@@ -235,9 +254,21 @@ pub fn run(
     frame_count: u32,
 ) -> io::Result<()> {
     let mut playback = playback::Playback::default();
-    for index in 0..frame_count {
+    let mut index = 0;
+    while index < frame_count {
+        clock.sleep_until(FRAME_PERIOD * index);
+        let due =
+            u32::try_from(clock.now().as_nanos() / FRAME_PERIOD.as_nanos()).unwrap_or(u32::MAX);
+        if due > index.saturating_add(MAX_LATE_FRAMES) {
+            let resumed = due.min(frame_count);
+            sink.skipped(FRAME_PERIOD * resumed, resumed - index);
+            index = resumed;
+            if index >= frame_count {
+                break;
+            }
+        }
         let deadline = FRAME_PERIOD * index;
-        clock.sleep_until(deadline);
+        index += 1;
         let show = shows.current();
         while let Some(event) = midi.poll(deadline) {
             sink.midi(&event);
@@ -247,8 +278,12 @@ pub fn run(
             }
         }
         let output = playback.render(show, look, deadline);
-        if let Some(line) = playback.log_line(deadline) {
-            eprintln!("blimey: {line}");
+        // Cues dropped for failing while drawing.
+        for cue in playback.take_cue_events() {
+            sink.cue(&cue);
+        }
+        for line in playback.log_lines(deadline) {
+            sink.log(&line);
         }
         sink.status(&playback.status(show, deadline));
         // Reported by the driver; see `DmxSink::send_artnet`.
@@ -334,6 +369,128 @@ mod tests {
             frame[16], 200,
             "wash-2 is not in the look: legacy shows through"
         );
+    }
+
+    /// Lands on each deadline, except once: it wakes from `deadline` a second late, as after
+    /// a stall.
+    struct StallingClock {
+        now: Duration,
+        deadline: Duration,
+    }
+
+    impl Clock for StallingClock {
+        fn now(&self) -> Duration {
+            self.now
+        }
+
+        fn sleep_until(&mut self, deadline: Duration) {
+            self.now = self.now.max(deadline);
+            if deadline == self.deadline {
+                self.now += Duration::from_secs(1);
+            }
+        }
+    }
+
+    #[test]
+    fn after_a_stall_frames_resume_on_time_rather_than_in_a_burst() {
+        let mut clock = StallingClock {
+            now: Duration::ZERO,
+            deadline: FRAME_PERIOD * 10,
+        };
+        let mut sink = FakeDmx::default();
+
+        run(
+            &mut clock,
+            &mut Burst(Vec::new()),
+            &Show::default(),
+            &look::Look::default(),
+            &mut sink,
+            100,
+        )
+        .unwrap();
+
+        let sent: Vec<Duration> = sink.frames.iter().map(|frame| frame.at).collect();
+        assert_eq!(
+            sent[..10],
+            (0..10).map(|n| FRAME_PERIOD * n).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            sent[10..12],
+            [FRAME_PERIOD * 50, FRAME_PERIOD * 51],
+            "the frame due when it woke, then on time: the 40 frames it slept through are skipped"
+        );
+        assert_eq!(sent.len(), 60);
+    }
+
+    /// Counts the frames sent and skipped, and keeps the cue events.
+    #[derive(Default)]
+    struct Counted {
+        sent: u32,
+        skipped: u32,
+        cues: Vec<CueAction>,
+    }
+
+    impl DmxSink for Counted {
+        fn send(&mut self, _at: Duration, _frame: &Frame) -> io::Result<()> {
+            self.sent += 1;
+            Ok(())
+        }
+
+        fn skipped(&mut self, _at: Duration, frames: u32) {
+            self.skipped += frames;
+        }
+
+        fn cue(&mut self, event: &CueEvent) {
+            self.cues.push(event.action);
+        }
+    }
+
+    #[test]
+    fn a_cue_that_fails_while_drawing_reaches_the_event_log() {
+        let mut show = Show::load(Path::new("../tests/fixtures/shows/cues")).unwrap();
+        let song = format!(
+            "program: 1\ncues:\n  37: {{ name: {}-draw, type: pixel }}\n",
+            cue::PANICS_IN_TESTS
+        );
+        show.songs = vec![song::Song::parse("broken", &song, &show).unwrap()];
+        let fire = |message: &[u8]| MidiEvent {
+            at: Duration::ZERO,
+            message: message.to_vec(),
+        };
+        let mut sink = Counted::default();
+
+        run(
+            &mut FakeClock::default(),
+            &mut Burst(vec![fire(&[0x91, 37, 127]), fire(&[0xC1, 1])]),
+            &show,
+            &look::Look::default(),
+            &mut sink,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(sink.cues, [CueAction::Start, CueAction::Fail]);
+    }
+
+    #[test]
+    fn a_stall_past_the_last_frame_skips_only_the_frames_left() {
+        let mut clock = StallingClock {
+            now: Duration::ZERO,
+            deadline: FRAME_PERIOD * 10,
+        };
+        let mut sink = Counted::default();
+
+        run(
+            &mut clock,
+            &mut Burst(Vec::new()),
+            &Show::default(),
+            &look::Look::default(),
+            &mut sink,
+            20,
+        )
+        .unwrap();
+
+        assert_eq!((sink.sent, sink.skipped), (10, 10), "frames 10 to 19");
     }
 
     #[test]

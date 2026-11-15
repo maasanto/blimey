@@ -8,7 +8,7 @@ use std::io::{self, ErrorKind, Read};
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{fs, process};
@@ -94,7 +94,7 @@ impl EmulatedEnttec {
                 "cannot open a pty for the emulated Enttec: {error}"
             ))
         };
-        let (mut master, slave) = TTYPort::pair().map_err(in_pty)?;
+        let (mut master, slave) = pty_pair().map_err(in_pty)?;
         master
             .set_timeout(Duration::from_millis(10))
             .map_err(in_pty)?;
@@ -126,6 +126,14 @@ impl Drop for EmulatedEnttec {
     fn drop(&mut self) {
         self.unplug();
     }
+}
+
+/// A pty pair, master first. On macOS serialport names the slave with `ptsname`, which isn't
+/// thread-safe: pairs made on several threads at once can get each other's names.
+pub fn pty_pair() -> serialport::Result<(TTYPort, TTYPort)> {
+    static MAKING: Mutex<()> = Mutex::new(());
+    let _making = MAKING.lock().unwrap_or_else(PoisonError::into_inner);
+    TTYPort::pair()
 }
 
 fn record_frames(

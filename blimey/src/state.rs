@@ -1,12 +1,15 @@
 //! What `blimey run` resumes with after a restart (plan §9): the last selected song and the
-//! master level, saved in `state.json` in the state folder whenever they change.
+//! master level, saved in `state.json` in the state folder whenever they change; and the last
+//! show that loaded, for a show that no longer does.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use blimey_engine::{MidiEvent, MidiSource, Show, Status, resume_messages};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const FILE_NAME: &str = "state.json";
@@ -121,6 +124,145 @@ fn parse(text: &str) -> Option<SavedState> {
         song: state["song"].as_str().map(String::from),
         master: state["master"].as_f64()? as f32,
     })
+}
+
+/// The files of the last show that loaded, kept in the state folder, so a show broken before a
+/// gig starts as it last worked rather than not at all.
+pub struct LastGoodShow {
+    state_dir: PathBuf,
+}
+
+/// The kept show: its folder, and its YAML files by path in it.
+const LAST_GOOD_SHOW: &str = "last-good-show.json";
+/// Where `load` unpacks the kept files to load them.
+const LAST_GOOD_SHOW_DIR: &str = "last-good-show";
+
+impl LastGoodShow {
+    pub fn new(state_dir: &Path) -> Self {
+        LastGoodShow {
+            state_dir: state_dir.to_path_buf(),
+        }
+    }
+
+    /// The YAML files of `show_dir` as they are now, to `save` once they have loaded; `None` if
+    /// they can't be read, reported.
+    pub fn read(&self, show_dir: &Path) -> Option<ShowFiles> {
+        let mut files = BTreeMap::new();
+        fs::canonicalize(show_dir)
+            .and_then(|show| {
+                yaml_files(show_dir, Path::new(""), &mut files)?;
+                Ok(ShowFiles { show, files })
+            })
+            .map_err(|error| self.report_unkept(&error))
+            .ok()
+    }
+
+    /// Keeps `files`, read just before their show loaded, replacing the previous copy at once.
+    /// Never fails: an error is reported, and the previous copy stays.
+    pub fn save(&self, files: &ShowFiles) {
+        let saved = fs::create_dir_all(&self.state_dir)
+            .and_then(|()| write_atomically(&self.path(), serde_json::to_string(files)?));
+        if let Err(error) = saved {
+            self.report_unkept(&error);
+        }
+    }
+
+    fn report_unkept(&self, error: &io::Error) {
+        eprintln!(
+            "state: cannot keep a copy of the show in {}: {error}",
+            self.path().display()
+        );
+    }
+
+    /// The last show that loaded from `show_dir`, or `None` if there is none, the copy is of
+    /// another show folder, or it doesn't load, reported.
+    pub fn load(&self, show_dir: &Path) -> Option<Show> {
+        let path = self.path();
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                eprintln!("state: cannot read {}: {error}", path.display());
+                return None;
+            }
+        };
+        let kept: ShowFiles = serde_json::from_str(&text)
+            .map_err(|error| eprintln!("state: cannot read {}: {error}", path.display()))
+            .ok()?;
+        let show = fs::canonicalize(show_dir).or_else(|_| std::path::absolute(show_dir));
+        if show.ok().as_ref() != Some(&kept.show) {
+            eprintln!(
+                "state: the copy kept in {} is of {}, not {}: not playing it",
+                path.display(),
+                kept.show.display(),
+                show_dir.display()
+            );
+            return None;
+        }
+        let unpacked = self.state_dir.join(LAST_GOOD_SHOW_DIR);
+        unpack(kept.files, &unpacked)
+            .and_then(|()| Show::load(&unpacked))
+            .map_err(|error| {
+                eprintln!(
+                    "state: cannot load the copy of the show kept in {}: {error}",
+                    path.display()
+                )
+            })
+            .ok()
+    }
+
+    fn path(&self) -> PathBuf {
+        self.state_dir.join(LAST_GOOD_SHOW)
+    }
+}
+
+/// A show folder's YAML files, read at one moment, as `LastGoodShow` keeps them.
+#[derive(Serialize, Deserialize)]
+pub struct ShowFiles {
+    /// The show folder, canonical: a copy only ever stands in for its own show.
+    show: PathBuf,
+    /// By path in the show folder.
+    files: BTreeMap<PathBuf, String>,
+}
+
+/// Adds the `.yaml` and `.yml` files under `dir`, at `folder` in the show, to `files`.
+fn yaml_files(dir: &Path, folder: &Path, files: &mut BTreeMap<PathBuf, String>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let (path, name) = (entry.path(), folder.join(entry.file_name()));
+        if entry.file_type()?.is_dir() {
+            yaml_files(&path, &name, files)?;
+        } else if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("yaml" | "yml")
+        ) {
+            files.insert(name, fs::read_to_string(&path)?);
+        }
+    }
+    Ok(())
+}
+
+/// Writes the files of a kept show to `dir`, emptied first.
+fn unpack(files: BTreeMap<PathBuf, String>, dir: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(dir) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    for (name, contents) in files {
+        if !name
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a path inside the show", name.display()),
+            ));
+        }
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap_or(dir))?;
+        fs::write(path, contents)?;
+    }
+    Ok(())
 }
 
 /// A crash mid-write leaves the old state or the new one.
