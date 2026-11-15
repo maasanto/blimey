@@ -12,6 +12,7 @@ pub struct HotReload {
     dir: PathBuf,
     show: Show,
     stamps: Vec<FileStamp>,
+    reloads: u64,
 }
 
 type FileStamp = (PathBuf, Option<SystemTime>, u64);
@@ -22,25 +23,31 @@ impl HotReload {
             dir: dir.to_path_buf(),
             stamps: stamps(dir),
             show: Show::load(dir)?,
+            reloads: 0,
         })
     }
 }
 
 impl ShowSource for HotReload {
-    /// Checks the folder on every frame: a few `stat`s, far below the frame budget.
     fn current(&mut self) -> &Show {
+        self.current_with_loads().0
+    }
+
+    /// Checks the folder on every frame: a few `stat`s, far below the frame budget.
+    fn current_with_loads(&mut self) -> (&Show, u64) {
         let stamps = stamps(&self.dir);
         if stamps != self.stamps {
             self.stamps = stamps;
             match Show::load(&self.dir) {
                 Ok(show) => {
                     self.show = show;
+                    self.reloads += 1;
                     eprintln!("blimey: reloaded {}", self.dir.display());
                 }
                 Err(error) => eprintln!("blimey: {error}; still running the previous show"),
             }
         }
-        &self.show
+        (&self.show, self.reloads)
     }
 }
 

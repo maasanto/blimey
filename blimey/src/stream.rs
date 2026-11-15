@@ -11,14 +11,17 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
+use blimey_engine::colour::Rgb;
 use blimey_engine::pixel;
 use blimey_engine::rig::Rig;
 use blimey_engine::{
     ArtNetFrames, DmxSink, Frame, MidiEvent, MidiSource, Show, ShowSource, Status, Universes,
 };
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -39,14 +42,15 @@ const MIDI_ACTIVE_SENSING: u8 = 0xFE;
 
 /// A `DmxSink` that publishes each frame, with its pixel preview colours, to the stream.
 pub struct StreamSink {
-    /// The rig the render loop draws with, kept current by `StreamedShow`.
-    rig: Arc<watch::Sender<Rig>>,
+    rig: StreamedRig,
     /// The engine state behind the next frame.
     status: Status,
     /// The Art-Net universes of the next frame, for the grids' preview colours.
     artnet: ArtNetFrames,
-    frames: watch::Sender<Arc<str>>,
-    midi: broadcast::Sender<Arc<str>>,
+    frames: watch::Sender<Utf8Bytes>,
+    midi: broadcast::Sender<Utf8Bytes>,
+    #[cfg(test)]
+    address: SocketAddr,
     injected_midi: InjectedMidi,
     preview: TimedLook,
     test_flash: TimedLook,
@@ -74,16 +78,15 @@ impl StreamSink {
         let _ = writeln!(stdout, "streaming on ws://{bound}/ws");
         let _ = writeln!(stdout, "UI on http://{bound}/ in {} mode", mode.name());
         drop(stdout);
-        let rig = Arc::new(watch::Sender::new(rig.clone()));
-        let (frames, receiver) = watch::channel(Arc::from(""));
+        let rig = StreamedRig::new(rig, mode);
+        let frames = watch::Sender::new(Utf8Bytes::default());
         let (midi, _) = broadcast::channel(MIDI_BACKLOG);
         let test_flash = TimedLook::new(TEST_FLASH_LENGTH);
         let preview = TimedLook::new(PREVIEW_LIFETIME);
         let (inject_midi, injected_midi) = mpsc::channel();
         let stream = Stream {
-            rig: rig.clone(),
-            mode,
-            frames: receiver,
+            rig_messages: rig.message.clone(),
+            frames: frames.clone(),
             midi: midi.clone(),
         };
         let app = Router::new()
@@ -92,7 +95,7 @@ impl StreamSink {
             .merge(api::routes(Api {
                 show_dir: show_dir.to_path_buf(),
                 mode,
-                rig: rig.clone(),
+                rig: rig.rig.clone(),
                 test_flash: test_flash.clone(),
                 preview: preview.clone(),
                 midi: inject_midi,
@@ -110,6 +113,8 @@ impl StreamSink {
             artnet: ArtNetFrames::new(),
             frames,
             midi,
+            #[cfg(test)]
+            address: bound,
             injected_midi: Arc::new(Mutex::new(injected_midi)),
             preview,
             test_flash,
@@ -117,36 +122,82 @@ impl StreamSink {
         })
     }
 
-    /// The latest `frame` message published.
+    /// The `frame` messages published from now on, as a client sees them.
     #[cfg(test)]
-    pub fn latest_frame(&self) -> Value {
-        serde_json::from_str(&self.frames.borrow()).unwrap()
+    pub fn frames(&self) -> watch::Receiver<Utf8Bytes> {
+        self.frames.subscribe()
     }
 
     /// Draws what the UI puts above every layer over `out`: the builder's look or pixel scene,
     /// then a fixture test if one is running.
     pub fn apply_overlays(&self, at: Duration, out: &mut Universes) {
-        let rig = self.rig.borrow();
+        let rig = self.rig.rig.borrow();
         self.preview.apply(&rig, at, out);
         self.test_flash.apply(&rig, at, out);
+    }
+
+    /// Whether a client is connected: without one, frame messages would go nowhere.
+    fn is_watched(&self) -> bool {
+        self.frames.receiver_count() > 0
     }
 }
 
 impl DmxSink for StreamSink {
     fn send(&mut self, at: Duration, frame: &Frame) -> io::Result<()> {
-        let rig = self.rig.borrow();
+        if !self.is_watched() {
+            return Ok(());
+        }
+        let rig = self.rig.rig.borrow();
         let message = frame_message(&rig, at, frame, &self.artnet, &self.status);
-        self.frames.send_replace(message.to_string().into());
+        self.frames.send_replace(message.into());
         Ok(())
     }
 
     fn send_artnet(&mut self, universes: &ArtNetFrames) -> io::Result<()> {
-        self.artnet = universes.clone();
+        if self.is_watched() {
+            self.artnet.clone_from(universes);
+        }
         Ok(())
     }
 
     fn status(&mut self, status: &Status) {
-        self.status = status.clone();
+        if self.is_watched() {
+            self.status.clone_from(status);
+        }
+    }
+}
+
+/// The rig the render loop draws with, for the API and the frames' preview colours, and its
+/// `rig` message, built once for every client.
+#[derive(Clone)]
+struct StreamedRig {
+    rig: Arc<watch::Sender<Rig>>,
+    message: watch::Sender<Utf8Bytes>,
+    mode: Mode,
+}
+
+impl StreamedRig {
+    fn new(rig: &Rig, mode: Mode) -> Self {
+        StreamedRig {
+            rig: Arc::new(watch::Sender::new(rig.clone())),
+            message: watch::Sender::new(rig_message(rig, mode).to_string().into()),
+            mode,
+        }
+    }
+
+    /// Streams `rig` if it differs from the one streamed.
+    fn publish(&self, rig: &Rig) {
+        let is_changed = self.rig.send_if_modified(|streamed| {
+            let is_changed = streamed != rig;
+            if is_changed {
+                streamed.clone_from(rig);
+            }
+            is_changed
+        });
+        if is_changed {
+            let message = rig_message(rig, self.mode).to_string();
+            self.message.send_replace(message.into());
+        }
     }
 }
 
@@ -154,7 +205,9 @@ impl DmxSink for StreamSink {
 /// the UI, and preview colours use the rig each frame was drawn with.
 pub struct StreamedShow<S> {
     shows: S,
-    rig: Option<Arc<watch::Sender<Rig>>>,
+    rig: Option<StreamedRig>,
+    /// The source's load count when its rig was last streamed.
+    streamed_load: Option<u64>,
 }
 
 impl<S> StreamedShow<S> {
@@ -162,23 +215,26 @@ impl<S> StreamedShow<S> {
         StreamedShow {
             shows,
             rig: stream.map(|stream| stream.rig.clone()),
+            streamed_load: None,
         }
     }
 }
 
 impl<S: ShowSource> ShowSource for StreamedShow<S> {
     fn current(&mut self) -> &Show {
-        let show = self.shows.current();
-        if let Some(rig) = &self.rig {
-            rig.send_if_modified(|streamed| {
-                let changed = *streamed != show.rig;
-                if changed {
-                    *streamed = show.rig.clone();
-                }
-                changed
-            });
+        self.current_with_loads().0
+    }
+
+    /// Streams the rig of each show the source loads, once.
+    fn current_with_loads(&mut self) -> (&Show, u64) {
+        let (show, loads) = self.shows.current_with_loads();
+        if let Some(rig) = &self.rig
+            && self.streamed_load != Some(loads)
+        {
+            rig.publish(&show.rig);
+            self.streamed_load = Some(loads);
         }
-        show
+        (show, loads)
     }
 }
 
@@ -186,7 +242,7 @@ impl<S: ShowSource> ShowSource for StreamedShow<S> {
 /// the stream as a `midi` message.
 pub struct StreamedMidi<M> {
     midi: M,
-    log: Option<broadcast::Sender<Arc<str>>>,
+    log: Option<broadcast::Sender<Utf8Bytes>>,
     injected: Option<InjectedMidi>,
 }
 
@@ -215,8 +271,9 @@ impl<M: MidiSource> MidiSource for StreamedMidi<M> {
     /// Input events come first, so events stay in time order.
     fn poll(&mut self, until: Duration) -> Option<MidiEvent> {
         let event = self.midi.poll(until).or_else(|| self.injected(until))?;
-        if let Some(log) = self.log.as_ref().filter(|_| !is_ticking(&event.message)) {
-            // Fails only when no client is connected.
+        let log = self.log.as_ref().filter(|log| log.receiver_count() > 0);
+        if let Some(log) = log.filter(|_| !is_ticking(&event.message)) {
+            // Fails only when the last client left since the check.
             let _ = log.send(midi_message(&event).to_string().into());
         }
         Some(event)
@@ -233,31 +290,33 @@ pub fn is_ticking(message: &[u8]) -> bool {
 
 #[derive(Clone)]
 struct Stream {
-    rig: Arc<watch::Sender<Rig>>,
-    mode: Mode,
-    frames: watch::Receiver<Arc<str>>,
-    midi: broadcast::Sender<Arc<str>>,
+    rig_messages: watch::Sender<Utf8Bytes>,
+    /// Subscribed to by each client, so the render loop knows when nobody is watching.
+    frames: watch::Sender<Utf8Bytes>,
+    midi: broadcast::Sender<Utf8Bytes>,
 }
 
 async fn upgrade(socket: WebSocketUpgrade, State(stream): State<Stream>) -> Response {
     socket.on_upgrade(|socket| send_stream(socket, stream))
 }
 
-async fn send_stream(mut socket: WebSocket, mut stream: Stream) {
-    let mut rig = stream.rig.subscribe();
+/// Messages are shared between clients: sending one to a client copies no text.
+async fn send_stream(mut socket: WebSocket, stream: Stream) {
+    let mut rig = stream.rig_messages.subscribe();
     rig.mark_changed();
     let mut midi = stream.midi.subscribe();
+    let mut frames = stream.frames.subscribe();
     loop {
         // Biased, so a client gets the rig before any frame drawn with it, and MIDI events
         // are never starved by frames. A client that lags on MIDI skips the events it missed.
         let message = tokio::select! {
             biased;
-            Ok(()) = rig.changed() => rig_message(&rig.borrow_and_update(), stream.mode).to_string(),
-            Ok(event) = midi.recv() => event.to_string(),
-            Ok(()) = stream.frames.changed() => stream.frames.borrow_and_update().to_string(),
+            Ok(()) = rig.changed() => rig.borrow_and_update().clone(),
+            Ok(event) = midi.recv() => event,
+            Ok(()) = frames.changed() => frames.borrow_and_update().clone(),
             else => return,
         };
-        if socket.send(Message::Text(message.into())).await.is_err() {
+        if socket.send(Message::Text(message)).await.is_err() {
             return;
         }
     }
@@ -301,15 +360,51 @@ fn rig_message(rig: &Rig, mode: Mode) -> Value {
 
 /// `{ "<fixture or grid>": ["#rrggbb", …] }`: the colour each pixel shows, in rig order.
 pub fn pixel_colours(rig: &Rig, frame: &Frame, artnet: &ArtNetFrames) -> Value {
-    let pixels: serde_json::Map<String, Value> = rig
-        .pixel_colours(frame, artnet)
-        .into_iter()
-        .map(|(name, colours)| {
-            let hex: Vec<String> = colours.into_iter().map(|colour| colour.to_hex()).collect();
-            (name.to_string(), json!(hex))
-        })
-        .collect();
-    Value::Object(pixels)
+    serde_json::to_value(PixelColours { rig, frame, artnet }).expect("pixel colours serialize")
+}
+
+/// Serialized straight to text, without a `Value` per pixel: it goes out every frame.
+#[derive(Serialize)]
+#[serde(tag = "type", rename = "frame")]
+struct FrameMessage<'frame> {
+    at_ms: u64,
+    dmx: &'frame [u8],
+    pixels: PixelColours<'frame>,
+    #[serde(flatten)]
+    status: &'frame Status,
+}
+
+/// `{ "<fixture or grid>": ["#rrggbb", …] }`, written without allocating per pixel.
+struct PixelColours<'frame> {
+    rig: &'frame Rig,
+    frame: &'frame Frame,
+    artnet: &'frame ArtNetFrames,
+}
+
+impl Serialize for PixelColours<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let Self { rig, frame, artnet } = *self;
+        let mut map = serializer.serialize_map(Some(rig.fixtures.len() + rig.grids.len()))?;
+        for fixture in &rig.fixtures {
+            map.serialize_entry(&fixture.name, &HexColours(fixture.pixel_colours(frame)))?;
+        }
+        for grid in &rig.grids {
+            map.serialize_entry(&grid.name, &HexColours(grid.pixel_colours(frame, artnet)))?;
+        }
+        map.end()
+    }
+}
+
+struct HexColours<Colours>(Colours);
+
+impl<Colours: ExactSizeIterator<Item = Rgb> + Clone> Serialize for HexColours<Colours> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for colour in self.0.clone() {
+            seq.serialize_element(colour.hex().as_str())?;
+        }
+        seq.end()
+    }
 }
 
 fn frame_message(
@@ -318,17 +413,14 @@ fn frame_message(
     frame: &Frame,
     artnet: &ArtNetFrames,
     status: &Status,
-) -> Value {
-    json!({
-        "type": "frame",
-        "at_ms": at.as_millis() as u64,
-        "dmx": frame.as_slice(),
-        "pixels": pixel_colours(rig, frame, artnet),
-        "song": status.song,
-        "cues": status.cues,
-        "master": status.master,
-        "live_parameters": status.live_parameters,
-    })
+) -> String {
+    let message = FrameMessage {
+        at_ms: at.as_millis() as u64,
+        dmx: frame,
+        pixels: PixelColours { rig, frame, artnet },
+        status,
+    };
+    serde_json::to_string(&message).expect("a frame message serializes")
 }
 
 fn midi_message(event: &MidiEvent) -> Value {
@@ -343,12 +435,57 @@ fn midi_message(event: &MidiEvent) -> Value {
 mod tests {
     use super::*;
     use std::fs;
+    use std::net::Ipv4Addr;
     use std::path::PathBuf;
 
     use blimey_engine::look::{Look, LookSettings};
     use blimey_engine::{CueStatus, FakeClock, FakeDmx, show_file};
+    use futures_util::StreamExt;
+    use tokio_tungstenite::connect_async;
 
     use crate::hot_reload::HotReload;
+
+    #[test]
+    fn frames_are_built_only_while_a_websocket_client_is_connected() {
+        let rig = Show::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/fixtures/shows/four-washes"
+        )))
+        .unwrap()
+        .rig;
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let mut sink = StreamSink::start(address, &std::env::temp_dir(), &rig, Mode::Show).unwrap();
+
+        sink.send(Duration::ZERO, &[0; 512]).unwrap();
+        assert_eq!(
+            sink.frames.borrow().as_str(),
+            "",
+            "no client: no frame is built"
+        );
+
+        let client = Runtime::new().unwrap();
+        let url = format!("ws://{}/ws", sink.address);
+        let (mut socket, _) = client.block_on(connect_async(url)).unwrap();
+        let mut next = || -> Value {
+            let message = client.block_on(socket.next()).unwrap().unwrap();
+            serde_json::from_str(message.to_text().unwrap()).unwrap()
+        };
+        assert_eq!(
+            next()["fixtures"][3]["name"],
+            "wash-4",
+            "the rig comes first"
+        );
+        assert!(
+            sink.is_watched(),
+            "a connected client holds a frame receiver"
+        );
+        sink.send(Duration::from_millis(25), &[7; 512]).unwrap();
+        let frame = next();
+        assert_eq!(
+            (&frame["type"], &frame["at_ms"], &frame["dmx"][0]),
+            (&json!("frame"), &json!(25), &json!(7))
+        );
+    }
 
     /// Delivers its events in order, all due at once.
     struct Events(Vec<MidiEvent>);
@@ -445,10 +582,11 @@ mod tests {
             .unwrap();
         let mut rig = show_file::read(&show_dir, "rig.yaml").unwrap();
         rig["fixtures"][3]["address"] = 201.into();
-        let streamed_rig = Arc::new(watch::Sender::new(Rig::default()));
+        let streamed_rig = StreamedRig::new(&Rig::default(), Mode::Edit);
         let shows = StreamedShow {
             shows: HotReload::load(&show_dir).unwrap(),
             rig: Some(streamed_rig.clone()),
+            streamed_load: None,
         };
         let mut midi = SaveWhilePlaying {
             at: Duration::from_millis(50),
@@ -478,9 +616,11 @@ mod tests {
             "DMX 101 before the save at 50 ms, DMX 201 from the next frame"
         );
         assert_eq!(
-            streamed_rig.borrow().fixture("wash-4").unwrap().address,
+            streamed_rig.rig.borrow().fixture("wash-4").unwrap().address,
             201
         );
+        let message: Value = serde_json::from_str(&streamed_rig.message.borrow()).unwrap();
+        assert_eq!(message["fixtures"][3]["address"], 201);
         fs::remove_dir_all(show_dir).unwrap();
     }
 
@@ -512,13 +652,14 @@ mod tests {
             live_parameters,
         };
 
-        let message = frame_message(
+        let message: Value = serde_json::from_str(&frame_message(
             &Rig::default(),
             Duration::ZERO,
             &[0; 512],
             &ArtNetFrames::new(),
             &status,
-        );
+        ))
+        .unwrap();
 
         assert_eq!(message["song"], "tell-me");
         assert_eq!(
@@ -543,13 +684,14 @@ mod tests {
         universe[4] = 255; // GRB: the second pixel's red
 
         let rig_message = rig_message(&rig, Mode::Show);
-        let frame = frame_message(
+        let frame: Value = serde_json::from_str(&frame_message(
             &rig,
             Duration::ZERO,
             &[0; 512],
             &ArtNetFrames::from([(3, universe)]),
             &Status::default(),
-        );
+        ))
+        .unwrap();
 
         assert_eq!(rig_message["fixtures"], json!([]));
         assert_eq!(

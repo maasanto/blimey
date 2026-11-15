@@ -409,33 +409,9 @@ impl Rig {
             .map(|universe| (*universe, [0; DMX_CHANNELS]))
             .collect()
     }
-
-    /// The colour each pixel of each fixture, then each grid, shows for a frame on the Enttec
-    /// universe (`frame`) and the Art-Net ones (`artnet`, dark where missing), white and dimmer
-    /// folded in, for previews.
-    pub fn pixel_colours<'rig>(
-        &'rig self,
-        frame: &Frame,
-        artnet: &ArtNetFrames,
-    ) -> Vec<(&'rig str, Vec<Rgb>)> {
-        let dark = [0; DMX_CHANNELS];
-        let grid_colours = |grid: &'rig PixelGrid| {
-            let colours = grid.pixels.iter().map(|pixel| {
-                let universe = match pixel.universe {
-                    Universe::Enttec => frame,
-                    Universe::ArtNet(port_address) => artnet.get(&port_address).unwrap_or(&dark),
-                };
-                emitted(pixel.channels, 1.0, |channel| universe[channel])
-            });
-            (grid.name.as_str(), colours.collect())
-        };
-        self.fixtures
-            .iter()
-            .map(|fixture| (fixture.name.as_str(), fixture.pixel_colours(frame)))
-            .chain(self.grids.iter().map(grid_colours))
-            .collect()
-    }
 }
+
+const DARK: Frame = [0; DMX_CHANNELS];
 
 /// What a pixel shows: its white added to red, green and blue, scaled by `dimmer`, clipped at
 /// full. `value` reads a channel.
@@ -493,15 +469,19 @@ impl Fixture {
         (sum(|pixel| pixel.x), sum(|pixel| pixel.y))
     }
 
-    fn pixel_colours(&self, frame: &Frame) -> Vec<Rgb> {
-        let value = |offset: usize| frame[self.address - 1 + offset];
+    /// The colour each pixel shows for a frame on the Enttec universe, white and dimmer folded
+    /// in, for previews.
+    pub fn pixel_colours<'fixture>(
+        &'fixture self,
+        frame: &'fixture Frame,
+    ) -> impl ExactSizeIterator<Item = Rgb> + Clone + 'fixture {
+        let value = move |offset: usize| frame[self.address - 1 + offset];
         let dimmer = self
             .dimmer
             .map_or(1.0, |offset| f32::from(value(offset)) / 255.0);
         self.pixels
             .iter()
-            .map(|pixel| emitted(pixel.channels, dimmer, value))
-            .collect()
+            .map(move |pixel| emitted(pixel.channels, dimmer, value))
     }
 }
 
@@ -527,6 +507,22 @@ impl fmt::Display for Span<'_> {
 }
 
 impl PixelGrid {
+    /// The colour each pixel shows for a frame on the Enttec universe (`frame`) and the
+    /// Art-Net ones (`artnet`, dark where missing), white folded in, for previews.
+    pub fn pixel_colours<'grid>(
+        &'grid self,
+        frame: &'grid Frame,
+        artnet: &'grid ArtNetFrames,
+    ) -> impl ExactSizeIterator<Item = Rgb> + Clone + 'grid {
+        self.pixels.iter().map(move |pixel| {
+            let universe = match pixel.universe {
+                Universe::Enttec => frame,
+                Universe::ArtNet(port_address) => artnet.get(&port_address).unwrap_or(&DARK),
+            };
+            emitted(pixel.channels, 1.0, |channel| universe[channel])
+        })
+    }
+
     /// Lays the pixels out along the wiring, starting a new universe where the next pixel
     /// doesn't fit: 170 RGB or 128 RGBW pixels per universe.
     fn new(entry: &GridEntry) -> Result<PixelGrid, String> {
