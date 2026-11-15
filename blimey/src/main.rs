@@ -417,23 +417,35 @@ fn main() -> ExitCode {
     })
 }
 
-/// A panic on a background thread, such as the MIDI watcher, the Enttec writer or the recorder,
-/// would leave the engine half alive with MIDI or DMX silently gone: it exits instead, after
-/// the usual panic message, so launchd restarts it. Panics on the render loop's thread, which
-/// drops a failing cue itself, and in a request, which tokio confines to it, take their usual
-/// course.
+/// A panic on a thread the light depends on (see `light_thread`), such as the MIDI watcher,
+/// would leave the engine half alive with MIDI silently gone: it exits instead, after the usual
+/// panic message, so launchd restarts it. Elsewhere a panic takes its usual course: the render
+/// loop drops a failing cue itself, tokio confines a request's panic to it, the Enttec writer's
+/// death fails the next frame, and a diagnostics thread such as the recorder dies alone.
 fn exit_on_background_panic() {
     let report = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         report(info);
-        if !matches!(
-            thread::current().name(),
-            Some("main" | "tokio-runtime-worker")
-        ) {
-            eprintln!("blimey: a background thread panicked; exiting so the engine restarts");
+        let name = thread::current().name().map(str::to_owned);
+        if name.is_some_and(|name| name.starts_with(LIGHT_THREAD)) {
+            eprintln!(
+                "blimey: a thread the light depends on panicked; exiting so the engine restarts"
+            );
             std::process::exit(101);
         }
     }));
+}
+
+/// Names the threads the light depends on, whose panic exits the engine.
+const LIGHT_THREAD: &str = "light-";
+
+/// Spawns `work` on a thread the light depends on, named `light-<name>`: if it panics, the
+/// engine exits for launchd to restart it.
+fn light_thread(name: &str, work: impl FnOnce() + Send + 'static) -> io::Result<()> {
+    thread::Builder::new()
+        .name(format!("{LIGHT_THREAD}{name}"))
+        .spawn(work)
+        .map(drop)
 }
 
 fn replay(
@@ -883,21 +895,25 @@ mod tests {
         fs::remove_dir_all(scratch).unwrap();
     }
 
-    /// Set in the copy of the test binary that `a_panic_on_a_background_thread_exits` runs.
+    /// Set in the copy of the test binary that `a_panic_on_a_light_thread_exits` runs.
     const PANICKING_COPY: &str = "BLIMEY_TEST_PANICKING_COPY";
 
     #[test]
-    fn a_panic_on_a_background_thread_exits() {
+    fn a_panic_on_a_light_thread_exits_and_on_a_diagnostics_thread_does_not() {
         if std::env::var_os(PANICKING_COPY).is_some() {
             exit_on_background_panic();
-            std::thread::spawn(|| panic!("the MIDI watcher broke"));
+            let _ = std::thread::spawn(|| panic!("the event log writer broke")).join();
+            light_thread("midi-watcher", || panic!("the MIDI watcher broke")).unwrap();
             std::thread::sleep(Duration::from_secs(10));
             return;
         }
         let started = std::time::Instant::now();
 
         let copy = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tests::a_panic_on_a_background_thread_exits"])
+            .args([
+                "--exact",
+                "tests::a_panic_on_a_light_thread_exits_and_on_a_diagnostics_thread_does_not",
+            ])
             .arg("--nocapture")
             .env(PANICKING_COPY, "1")
             .output()
@@ -905,6 +921,7 @@ mod tests {
 
         let stderr = String::from_utf8_lossy(&copy.stderr);
         assert_eq!(copy.status.code(), Some(101), "{stderr}");
+        assert!(stderr.contains("the event log writer broke"), "{stderr}");
         assert!(stderr.contains("the MIDI watcher broke"), "{stderr}");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
