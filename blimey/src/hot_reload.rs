@@ -16,6 +16,7 @@ pub struct HotReload {
     stamps: Vec<FileStamp>,
     /// Where each show that reloads is kept, if anywhere.
     last_good: Option<LastGoodShow>,
+    reloads: u64,
 }
 
 pub type FileStamp = (PathBuf, Option<SystemTime>, u64);
@@ -28,6 +29,7 @@ impl HotReload {
             stamps,
             show: show?,
             last_good: None,
+            reloads: 0,
         })
     }
 
@@ -44,25 +46,31 @@ impl HotReload {
             stamps,
             show,
             last_good,
+            reloads: 0,
         }
     }
 }
 
 impl ShowSource for HotReload {
-    /// Checks the folder on every frame: a few `stat`s, far below the frame budget.
     fn current(&mut self) -> &Show {
+        self.current_with_loads().0
+    }
+
+    /// Checks the folder on every frame: a few `stat`s, far below the frame budget.
+    fn current_with_loads(&mut self) -> (&Show, u64) {
         if stamps(&self.dir) != self.stamps {
             let (stamps, loaded) = load_keeping(&self.dir, self.last_good.as_ref());
             self.stamps = stamps;
             match loaded {
                 Ok(show) => {
                     self.show = show;
+                    self.reloads += 1;
                     eprintln!("blimey: reloaded {}", self.dir.display());
                 }
                 Err(error) => eprintln!("blimey: {error}; still running the previous show"),
             }
         }
-        &self.show
+        (&self.show, self.reloads)
     }
 }
 

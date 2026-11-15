@@ -116,6 +116,12 @@ pub trait DmxSink {
 /// Where the render loop gets the show for each frame.
 pub trait ShowSource {
     fn current(&mut self) -> &Show;
+
+    /// `current`, and how many times the source has loaded a new show since it started, so a
+    /// caller can tell a new show from the same one without comparing them.
+    fn current_with_loads(&mut self) -> (&Show, u64) {
+        (self.current(), 0)
+    }
 }
 
 /// A show that never changes.
@@ -135,6 +141,10 @@ impl ShowSource for Show {
 impl<S: ShowSource + ?Sized> ShowSource for Box<S> {
     fn current(&mut self) -> &Show {
         (**self).current()
+    }
+
+    fn current_with_loads(&mut self) -> (&Show, u64) {
+        (**self).current_with_loads()
     }
 }
 

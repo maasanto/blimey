@@ -643,10 +643,9 @@ pub fn thumbnail(
         Path::new("."),
     )
     .expect("the sample grid fits the Enttec universe");
-    let frames = cycle(&scene, &rig, time_signature)?.into_iter().map(|out| {
-        let (_, colours) = rig.pixel_colours(&out.enttec, &out.artnet).remove(0);
-        colours
-    });
+    let frames = cycle(&scene, &rig, time_signature)?
+        .into_iter()
+        .map(|out| (rig.grids[0].pixel_colours(&out.enttec, &out.artnet)).collect());
     Ok(frames.collect())
 }
 

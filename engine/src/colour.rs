@@ -31,12 +31,28 @@ impl Rgb {
     }
 
     pub fn to_hex(self) -> String {
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            to_dmx(self.red),
-            to_dmx(self.green),
-            to_dmx(self.blue)
-        )
+        self.hex().as_str().to_owned()
+    }
+
+    /// `#rrggbb` on the stack: the stream writes one per pixel per frame.
+    pub fn hex(self) -> Hex {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut hex = [b'#'; 7];
+        let components = [self.red, self.green, self.blue].map(to_dmx);
+        for (digits, value) in hex[1..].chunks_exact_mut(2).zip(components) {
+            digits[0] = DIGITS[usize::from(value >> 4)];
+            digits[1] = DIGITS[usize::from(value & 0xf)];
+        }
+        Hex(hex)
+    }
+}
+
+/// `#rrggbb`, from `Rgb::hex`.
+pub struct Hex([u8; 7]);
+
+impl Hex {
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("hex digits are ASCII")
     }
 }
 
@@ -170,6 +186,10 @@ mod tests {
     #[test]
     fn hex_round_trips_and_rejects_garbage() {
         assert_eq!(Rgb::from_hex("#0a1bff").unwrap().to_hex(), "#0a1bff");
+        for value in 0..=255 {
+            let hex = format!("#{value:02x}{value:02x}{value:02x}");
+            assert_eq!(Rgb::from_hex(&hex).unwrap().to_hex(), hex);
+        }
         assert_eq!(
             Rgb::from_hex("blue").unwrap_err(),
             "\"blue\" is not a colour, expected #rrggbb"

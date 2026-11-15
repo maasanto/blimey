@@ -973,6 +973,7 @@ mod tests {
         let rig = Rig::parse(WALL_ON_ART_NET_3, Path::new(".")).unwrap();
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let stream = StreamSink::start(address, &std::env::temp_dir(), &rig, Mode::Show).unwrap();
+        let frames = stream.frames();
         let mut output = LiveOutput {
             dmx: None,
             stream: Some(stream),
@@ -988,7 +989,7 @@ mod tests {
             .unwrap();
         output.send(Duration::ZERO, &[0; 512]).unwrap();
 
-        let frame = output.stream.unwrap().latest_frame();
+        let frame: serde_json::Value = serde_json::from_str(&frames.borrow()).unwrap();
         assert_eq!(frame["pixels"]["wall"], serde_json::json!(["#ff0000"]));
     }
 
