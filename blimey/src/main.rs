@@ -887,8 +887,10 @@ mod tests {
         let in_show_mode = cue_names(&mut show_mode.live_shows(&show_dir, last_good()).unwrap());
         let mut edited = edit_mode.live_shows(&show_dir, last_good()).unwrap();
         let before_the_fix = cue_names(&mut edited);
+        let loads_before_the_fix = edited.current_with_loads().1;
         fs::write(&song, good.replace("green-fade", "fixed-fade")).unwrap();
         let after_the_fix = cue_names(&mut edited);
+        let loads_after_the_fix = edited.current_with_loads().1;
         let without_a_copy = show_mode.live_shows(&scratch.join("missing"), None);
         let other_show = scratch.join("other-show");
         fs::create_dir_all(&other_show).unwrap();
@@ -901,6 +903,11 @@ mod tests {
             after_the_fix,
             ["fixed-fade"],
             "the show folder, not the copy, reloads"
+        );
+        assert_eq!(
+            loads_after_the_fix,
+            loads_before_the_fix + 1,
+            "a load for the stream to send the fixed rig"
         );
         assert!(without_a_copy.is_err());
         assert!(
