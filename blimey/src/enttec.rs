@@ -178,7 +178,7 @@ mod tests {
 
     use blimey_engine::{DMX_CHANNELS, MidiFile, Show, replay};
 
-    use super::emulator::{EmulatedEnttec, take_frames};
+    use super::emulator::{EmulatedEnttec, pty_pair, take_frames};
     use super::*;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
@@ -245,7 +245,7 @@ mod tests {
     /// Art-Net and MIDI it handles, must not wait on it.
     #[test]
     fn a_box_that_stops_draining_never_holds_up_the_render_loop() {
-        let (_never_read, port) = serialport::TTYPort::pair().unwrap();
+        let (_never_read, port) = pty_pair().unwrap();
         let link = std::env::temp_dir().join(format!("blimey-enttec-hung-{}", std::process::id()));
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(port.name().unwrap(), &link).unwrap();
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_box_that_drains_again_gets_the_latest_frame_not_a_stale_one() {
-        let (mut box_end, port) = serialport::TTYPort::pair().unwrap();
+        let (mut box_end, port) = pty_pair().unwrap();
         box_end.set_timeout(Duration::from_millis(10)).unwrap();
         let link = std::env::temp_dir().join(format!("blimey-enttec-slow-{}", std::process::id()));
         let _ = std::fs::remove_file(&link);
@@ -314,7 +314,7 @@ mod tests {
                 .filter_map(|_| port.write(&[0; DMX_CHANNELS]))
                 .collect()
         };
-        let (_never_read, hung) = serialport::TTYPort::pair().unwrap();
+        let (_never_read, hung) = pty_pair().unwrap();
         let mut device = EmulatedEnttec::plug_in().unwrap();
         let mut replugged = port_on(device.path());
 
