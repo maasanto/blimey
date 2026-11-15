@@ -113,7 +113,8 @@ pub enum SwellTarget {
 
 pub(crate) const INSTANT: Length = Length::Time(Duration::ZERO);
 
-/// In tests, a cue of this name panics when drawn, to test what a bug in a cue does.
+/// In tests, a cue named `panics-in-tests-<step>` panics in that step, `start`, `opacity` or
+/// `draw`, to test what a bug in a cue does.
 #[cfg(test)]
 pub(crate) const PANICS_IN_TESTS: &str = "panics-in-tests";
 
@@ -217,6 +218,13 @@ pub(crate) fn resolve_intensity(
 }
 
 impl Cue {
+    /// See `PANICS_IN_TESTS`.
+    #[cfg(test)]
+    fn panic_in_tests(&self, step: &str) {
+        let name = format!("{PANICS_IN_TESTS}-{step}");
+        assert_ne!(self.name(), name, "a test made this cue panic");
+    }
+
     pub fn name(&self) -> &str {
         match self {
             Cue::Scene(scene) => &scene.name,
@@ -229,6 +237,8 @@ impl Cue {
     /// The moment the cue counts from for its note-on at `at`: the note, or for a pattern the
     /// bar line its loop starts on.
     pub fn start(&self, clock: &ClockFollower, at: Duration) -> Moment {
+        #[cfg(test)]
+        self.panic_in_tests("start");
         match self {
             Cue::Pattern(_) => Pattern::start(clock, at),
             _ => clock.moment(at),
@@ -247,6 +257,8 @@ impl Cue {
     /// How much of the cue shows over the layers below, 0–1, at `at` after it started at
     /// `started` (see `start`).
     pub fn opacity(&self, clock: &ClockFollower, started: Moment, at: Duration) -> f32 {
+        #[cfg(test)]
+        self.panic_in_tests("opacity");
         let opacity = match self {
             Cue::Scene(scene) => clock.progress(scene.fade_in, started, at),
             Cue::Pixel(scene) => clock.progress(scene.fade_in, started, at),
@@ -314,7 +326,7 @@ impl Cue {
         dimmers: &mut VirtualDimmers,
     ) {
         #[cfg(test)]
-        assert_ne!(self.name(), PANICS_IN_TESTS, "a test made this cue panic");
+        self.panic_in_tests("draw");
         let frame = &mut out.enttec;
         let mut look = match self {
             // Pixel cues draw above every other cue, so no look reads virtual dimmers after them.
