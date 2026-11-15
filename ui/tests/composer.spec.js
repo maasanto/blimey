@@ -330,6 +330,24 @@ test.describe('on three rows of washes', () => {
     await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     expect(readFileSync(songFile, 'utf8')).toBe(saved);
   });
+
+  test("each area shows its layer's shape moving between the fixtures, and a hidden one shows none", async ({ page, startEngine }) => {
+    const { url } = await startEngine({ look: DARK });
+    await openChorusBuild(page, url);
+    const chaseCells = page.locator('[data-shape="1"] rect');
+    await expect(chaseCells).toHaveCount(144);
+    /** The columns of the 12 × 12 picture the amber bar lights, as "4,5,6". */
+    const litColumns = () =>
+      chaseCells.evaluateAll((cells) => [...new Set(cells.flatMap((cell, index) => (cell.getAttribute('fill') === '#000000' ? [] : [index % 12])))].join());
+
+    await expect.poll(litColumns, 'a bar a quarter of the area wide, not a fill').toMatch(/^\d+(,\d+){1,3}$/);
+    const before = await litColumns();
+    await expect.poll(litColumns, 'the chase steps it along').not.toBe(before);
+
+    await page.getByRole('button', { name: 'Hide while editing: amber chase on the right' }).click();
+    await expect(chaseCells).toHaveCount(0);
+    await expect(page.locator('[data-shape]')).toHaveCount(2);
+  });
 });
 
 test('an old-form pixel cue opened and saved untouched saves as layers and plays the same', async ({ page, show, startEngine }) => {
