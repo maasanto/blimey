@@ -238,14 +238,31 @@ test.describe('on three rows of washes', () => {
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
 
+    // Selected from the list, the focus is on its button: the keys are the button's, not the area's.
     await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('[data-area]')).toHaveCount(3);
+
+    const chase = await stagePoint(page, [0.75, 0.3]);
+    await page.mouse.click(chase.x, chase.y);
+    await page.keyboard.press('Alt+ArrowLeft');
     await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('Shift+ArrowUp');
     await page.getByText('Position and phase').click();
-    await expect(page.getByLabel('Area left')).toHaveValue('0.475');
+    await expect(page.getByLabel('Area left'), 'one plain arrow, the browser shortcut left alone').toHaveValue('0.475');
     await expect(page.getByLabel('Area bottom'), 'a full-height area has nowhere to go').toHaveValue('0');
     await expect(page.locator('.status')).toHaveText('Unsaved changes');
 
+    // Behind the leave prompt the keys are the prompt's: Escape closes it, nothing is deleted.
+    await page.getByRole('link', { name: '← Scenes' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toBeHidden();
+    await expect(page.locator('[data-area]')).toHaveCount(3);
+
+    await page.mouse.click(chase.x, chase.y);
     await page.keyboard.press('Control+s');
     await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     await expect(page.getByText('Saved', { exact: true })).toBeVisible();

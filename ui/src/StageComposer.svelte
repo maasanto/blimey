@@ -61,6 +61,8 @@
 
   let selected = $state(null);
   let frontView;
+  /** The composer's element, which takes the focus on a press on the stage, so the keyboard then works the area. */
+  let composer;
   /** A gesture under way: an ingredient carried to the stage, or an area moved or resized. */
   let gesture = $state(null);
   let isClickSuppressed = false;
@@ -142,6 +144,7 @@
    */
   function pressStage(event) {
     if (event.button !== 0) return;
+    composer.focus({ preventScroll: true });
     const point = frontView.canvasPoint(event);
     const under = cue.layers.map((_, index) => index).filter((index) => catches(areaOf(cue.layers[index]), point)).reverse();
     const isSelectedUnder = under.includes(selected);
@@ -209,9 +212,15 @@
     return { x: screenX(x) - HANDLE / 2, y: screenY(y) - HANDLE / 2 };
   }
 
-  /** Arrows nudge the selected area a grid step (a tenth with Shift), Delete removes it, Escape drops the selection. */
+  /**
+   * Arrows nudge the selected area a grid step (a tenth with Shift), Delete removes it, Escape
+   * drops the selection: plain keys only, with the focus on the stage or nowhere in particular,
+   * so typing in a field, a button's own keys and the browser's shortcuts are left alone.
+   */
   function keyboard(event) {
-    if (!editable || selected === null || event.target.matches('input, select, textarea')) return;
+    const isFocusElsewhere = event.target !== document.body && event.target !== composer;
+    const isBrowserShortcut = event.altKey || event.ctrlKey || event.metaKey;
+    if (!editable || selected === null || isFocusElsewhere || isBrowserShortcut || document.querySelector('dialog[open]')) return;
     const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[event.key];
     if (direction) {
       const step = event.shiftKey ? 0.1 : NUDGE;
@@ -276,7 +285,7 @@
   {#if gesture?.area}{@render box(gesture.area, 'landing')}{/if}
 {/snippet}
 
-<div class="composer" role="group" aria-label="Look on the stage">
+<div class="composer" role="group" aria-label="Look on the stage" tabindex="-1" bind:this={composer}>
   <div class="column">
     <div class="tray" role="group" aria-label="Ingredients">
       {#each INGREDIENTS as ingredient (ingredient)}
@@ -393,6 +402,7 @@
     gap: 24px;
     align-items: start;
     min-width: 0;
+    outline: none;
   }
 
   .column {
@@ -457,7 +467,7 @@
   }
 
   .empty {
-    fill: #5d6170;
+    fill: var(--dim);
     font-size: 34px;
     text-anchor: middle;
     pointer-events: none;
