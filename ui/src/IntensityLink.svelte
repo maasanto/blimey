@@ -13,7 +13,7 @@
 </script>
 
 <div class="link">
-  <span class="name">Intensity</span>
+  <span class="caps">Intensity</span>
   {#each linkable.filter(({ cue }) => isLinked(cue)) as { note, cue } (note)}
     <span class="linked">driven by scene {note}, {cue.name} ({cue.type})</span>
   {:else}
@@ -34,7 +34,7 @@
   >
 </div>
 <p class="hint">
-  Linking saves that scene with this look's saved name as its target, in place of the target it had.
+  Linking retargets that scene at this look, by its saved name.
   {#if savedName === null}Save this look first.{:else if savedName !== name}Links follow the saved name, {savedName}, until you save.{/if}
 </p>
 
@@ -44,10 +44,6 @@
     flex-wrap: wrap;
     gap: 6px 10px;
     align-items: center;
-  }
-
-  .name {
-    color: var(--muted);
   }
 
   .linked {

@@ -23,6 +23,7 @@ function addSong(show, text = SONG) {
 const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
 const firstLight = (page, number) => pad(page, number).locator('circle').first();
 const backToScenes = (page) => page.getByRole('link', { name: '← Scenes' });
+const leavePrompt = (page) => page.getByRole('dialog');
 
 /** Every MIDI message the engine at `address` takes in from now on, as the stream sends them. */
 function recordMidi(address) {
@@ -85,64 +86,114 @@ test('browser back returns home, and leaving with unsaved edits asks first', asy
   const songFile = addSong(show);
   const { url } = await startEngine();
   await page.goto(`${url}#builder`);
-  const dialogs = [];
-  const answerNext = (accept) =>
-    page.once('dialog', (dialog) => {
-      dialogs.push(dialog.message());
-      return accept ? dialog.accept() : dialog.dismiss();
-    });
 
   await pad(page, 40).click();
   await expect(page.getByLabel('Name')).toHaveValue('chase');
+  await expect(page).toHaveTitle('Blimey');
   await page.goBack();
   await expect(pad(page, 40)).toBeVisible();
-  expect(dialogs, 'nothing to lose').toEqual([]);
+  await expect(leavePrompt(page), 'nothing to lose').toBeHidden();
 
   await pad(page, 40).click();
   await page.getByLabel('Name').fill('changed');
-  answerNext(false);
+  await expect(page).toHaveTitle('• Scene 40 — Blimey');
   await backToScenes(page).click();
+  await expect(leavePrompt(page)).toContainText('This scene has unsaved changes.');
+  await leavePrompt(page).getByRole('button', { name: 'Stay' }).click();
+  await expect(leavePrompt(page)).toBeHidden();
   await expect(page.getByLabel('Name'), 'kept, on the same scene').toHaveValue('changed');
   await expect(page).toHaveURL(/#builder\/demo\/40$/);
-  expect(dialogs).toEqual(['This scene has unsaved changes. Leave the editor and lose them?']);
 
-  answerNext(true);
   await page.goBack();
+  await leavePrompt(page).getByRole('button', { name: 'Leave without saving' }).click();
   await expect(pad(page, 40)).toHaveAccessibleName('Scene 40: chase');
-  expect(dialogs).toHaveLength(2);
+  await expect(page).toHaveTitle('Blimey');
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
+});
+
+test('save and leave writes the scene, then goes where the user was heading', async ({ page, show, startEngine }) => {
+  const songFile = addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  await pad(page, 40).click();
+
+  await page.getByLabel('Name').fill('chase-saved');
+  await page.goBack();
+  await leavePrompt(page).getByRole('button', { name: 'Save and leave' }).click();
+
+  await expect(pad(page, 40)).toHaveAccessibleName('Scene 40: chase-saved');
+  await expect(page).toHaveURL(/#builder$/);
+  expect(readFileSync(songFile, 'utf8')).toContain('    name: chase-saved\n');
+
+  // A scene that can't be saved yet says so in the prompt, with Save and leave off.
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('');
+  await backToScenes(page).click();
+  await expect(leavePrompt(page).getByRole('button', { name: 'Save and leave' })).toBeDisabled();
+  await expect(leavePrompt(page)).toContainText('Name the scene to save it.');
+  await leavePrompt(page).getByRole('button', { name: 'Stay' }).click();
 });
 
 test('a refused leave keeps history and the Builder tab on the scene', async ({ page, show, startEngine }) => {
   addSong(show);
   const { url } = await startEngine();
   await page.goto(`${url}#monitor`);
-  const dialogs = [];
-  const answerNext = (accept) =>
-    page.once('dialog', (dialog) => {
-      dialogs.push(dialog.message());
-      return accept ? dialog.accept() : dialog.dismiss();
-    });
 
   await page.getByRole('link', { name: 'Builder' }).click();
   await pad(page, 40).click();
   await page.getByLabel('Name').fill('changed');
-  answerNext(false);
   await page.goBack();
+  await leavePrompt(page).getByRole('button', { name: 'Stay' }).click();
   await expect(page).toHaveURL(/#builder\/demo\/40$/);
   await expect(page.getByLabel('Name')).toHaveValue('changed');
 
   // Back once more leaves the builder without asking: the edits wait there, as on any tab switch.
   await page.goBack();
   await expect(page).toHaveURL(/#monitor$/);
+  await expect(leavePrompt(page)).toHaveCount(0);
   await page.getByRole('link', { name: 'Builder' }).click();
   await expect(page).toHaveURL(/#builder\/demo\/40$/);
   await expect(page.getByLabel('Name')).toHaveValue('changed');
 
-  answerNext(true);
   await backToScenes(page).click();
+  await leavePrompt(page).getByRole('button', { name: 'Leave without saving' }).click();
   await expect(pad(page, 40)).toBeVisible();
-  expect(dialogs, 'one question per refused or accepted leave').toHaveLength(2);
+});
+
+test('leaving without saving after Back keeps history as it was: Back again reaches the page before', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#monitor`);
+
+  await page.getByRole('link', { name: 'Builder' }).click();
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('changed');
+  await page.goBack();
+  await leavePrompt(page).getByRole('button', { name: 'Leave without saving' }).click();
+  await expect(page).toHaveURL(/#builder$/);
+  await expect(pad(page, 40)).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#monitor$/);
+});
+
+test('the Builder tab opened on another URL with unsaved edits shows them again rather than failing', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByLabel('Name').fill('changed');
+  await page.getByRole('link', { name: 'Monitor' }).click();
+  await expect(page.getByTestId('engine-time')).toBeVisible();
+  await page.evaluate(() => (location.hash = '#builder'));
+
+  await expect(page).toHaveURL(/#builder\/demo\/40$/);
+  await expect(page.getByLabel('Name')).toHaveValue('changed');
+  await expect(leavePrompt(page)).toBeHidden();
+  expect(errors).toEqual([]);
 });
 
 test('unsaved edits are guarded with the engine gone and when the page unloads', async ({ page, show, startEngine }) => {
@@ -154,14 +205,10 @@ test('unsaved edits are guarded with the engine gone and when the page unloads',
   await engine.stop();
   await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
 
-  const dialogs = [];
-  page.once('dialog', (dialog) => {
-    dialogs.push(dialog.type());
-    return dialog.dismiss();
-  });
   await backToScenes(page).click();
+  await expect(leavePrompt(page).getByRole('button', { name: 'Save and leave' }), 'no engine to save to').toBeDisabled();
+  await leavePrompt(page).getByRole('button', { name: 'Stay' }).click();
   await expect(page.getByLabel('Name')).toHaveValue('changed');
-  expect(dialogs).toEqual(['confirm']);
 
   const unloading = page.waitForEvent('dialog');
   await page.close({ runBeforeUnload: true });
@@ -258,9 +305,19 @@ test('renumbering to a taken number is refused, leaving the file untouched; a fr
   await page.keyboard.press('Enter');
   await expect(page.getByText('Scene 40', { exact: true })).toBeVisible();
   await page.getByLabel('Number').fill('36');
+  await expect(page.getByText('Taken by verse', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await expect(page.locator('.status')).toHaveText('Scene 36 is taken by verse.');
   await page.getByRole('button', { name: 'Save', exact: true }).press('Enter');
-  await expect(page.getByRole('alert')).toHaveText('Scene 36 is already verse: pick a free number, or open that scene.');
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
+
+  // A number taken since the song was loaded is refused by the engine.
+  await page.getByLabel('Number').fill('41');
+  await expect(page.getByText('Taken by verse', { exact: true })).toHaveCount(0);
+  writeFileSync(songFile, SONG.replace('  40:\n', '  41:\n    name: taken-by-hand\n    type: scene\n    values:\n      all-wash: { color: deep-blue }\n  40:\n'));
+  await page.getByRole('button', { name: 'Save', exact: true }).press('Enter');
+  await expect(page.getByRole('alert')).toHaveText('Scene 41 is already taken: pick a free number, or open that scene.');
+  writeFileSync(songFile, SONG);
 
   // A scene changed on disk since it was opened is refused as such, whatever the number.
   writeFileSync(songFile, SONG.replace('name: chase', 'name: chase-by-hand'));

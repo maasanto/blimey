@@ -19,9 +19,13 @@
   const WIDTH = 160;
   const HEIGHT = 90;
   const FIXTURE_RADIUS = 6;
-  /** Room above and below the canvas, so pixels and curves on its edges show whole. */
-  const MARGIN = FIXTURE_RADIUS;
-  const PICTURE_RATIO = `${WIDTH} / ${HEIGHT + 2 * MARGIN}`;
+  /** Room around what is drawn, so pixels and curves on the edges show whole. */
+  const MARGIN = 2 * FIXTURE_RADIUS;
+  /** How wide a pad's picture may be for its height: a single row of washes, or a square grid. */
+  const WIDEST = 3;
+  const NARROWEST = 1;
+  /** A pad never zooms in closer than this, so a small rig's pixels and a curve's stroke keep their scale. */
+  const NARROWEST_FRAME = WIDTH / 2;
   /** How much of the space between a grid's pixels each one fills. */
   const GRID_PIXEL_FILL = 0.9;
 
@@ -56,6 +60,36 @@
     const sorted = [...new Set(positions)].sort((a, b) => a - b);
     return Math.min(...sorted.slice(1).map((position, index) => position - sorted[index]));
   }
+
+  /**
+   * The part of the canvas a pad shows, as an SVG viewBox: the rig's lit extent with a margin,
+   * widened or heightened to a sensible ratio, so a single row of washes fills its pad.
+   */
+  const frame = $derived.by(() => {
+    if (!lights.length) return { x: 0, y: -MARGIN, width: WIDTH, height: HEIGHT + 2 * MARGIN };
+    const xs = lights.map((light) => light.x * WIDTH);
+    const ys = lights.map((light) => (1 - light.y) * HEIGHT);
+    let x = Math.min(...xs) - MARGIN;
+    let y = Math.min(...ys) - MARGIN;
+    let width = Math.max(...xs) + MARGIN - x;
+    let height = Math.max(...ys) + MARGIN - y;
+    if (width < NARROWEST_FRAME) {
+      x -= (NARROWEST_FRAME - width) / 2;
+      width = NARROWEST_FRAME;
+    }
+    if (width / height > WIDEST) {
+      const wanted = width / WIDEST;
+      y -= (wanted - height) / 2;
+      height = wanted;
+    } else if (width / height < NARROWEST) {
+      const wanted = height * NARROWEST;
+      x -= (wanted - width) / 2;
+      width = wanted;
+    }
+    return { x, y, width, height };
+  });
+  const viewBox = $derived(`${frame.x} ${frame.y} ${frame.width} ${frame.height}`);
+  const pictureRatio = $derived(`${frame.width} / ${frame.height}`);
 
   /** The numbers of the pads on screen: only those animate, the others hold their first frame. */
   let inView = $state.raw(new Set());
@@ -135,13 +169,13 @@
 <svelte:window onpointerup={letGo} onpointercancel={letGo} />
 
 {#snippet picture(thumbnail, isMoving)}
-  <svg viewBox="0 {-MARGIN} {WIDTH} {HEIGHT + 2 * MARGIN}" class="thumbnail" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">
+  <svg {viewBox} class="thumbnail" style:aspect-ratio={pictureRatio} aria-hidden="true">
     {#if thumbnail?.levels}
-      <polyline class="level" points={curvePoints(thumbnail.levels, { width: WIDTH, height: HEIGHT })} />
+      <polyline class="level" points={curvePoints(thumbnail.levels, { x: frame.x + MARGIN, y: frame.y + MARGIN, width: frame.width - 2 * MARGIN, height: frame.height - 2 * MARGIN })} />
     {:else if thumbnail?.frames}
-      {@const frame = thumbnail.frames[isMoving ? tick % thumbnail.frames.length : 0]}
+      {@const colours = thumbnail.frames[isMoving ? tick % thumbnail.frames.length : 0]}
       {#each lights as light (`${light.name}:${light.index}`)}
-        <circle cx={light.x * WIDTH} cy={(1 - light.y) * HEIGHT} r={light.radius} fill={frame[light.name]?.[light.index] ?? '#000000'} />
+        <circle cx={light.x * WIDTH} cy={(1 - light.y) * HEIGHT} r={light.radius} fill={colours[light.name]?.[light.index] ?? '#000000'} />
       {/each}
     {/if}
   </svg>
@@ -181,14 +215,14 @@
     {/each}
     <li class="slot">
       <button class="pad new" disabled={!editable} onclick={onnew}>
-        <span class="thumbnail add" style:aspect-ratio={PICTURE_RATIO} aria-hidden="true">+</span>
+        <span class="thumbnail add" style:aspect-ratio={pictureRatio} aria-hidden="true">+</span>
         <span class="label"><span class="name">New scene</span></span>
       </button>
     </li>
   </ol>
   <p class="hint">
     {#if editable}
-      Click a scene to edit it; hold it, or use its ▶ button, to audition it.
+      Click a scene to edit it. Hold it, or press its ▶, to audition it on the rig.
     {:else}
       Show mode: scenes open read-only and don't audition.
     {/if}
@@ -218,11 +252,15 @@
     min-width: 0;
     padding: 6px;
     text-align: left;
-    background: #1c1e24;
-    border-radius: 8px;
+    background: var(--panel);
+    border-radius: var(--radius);
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s,
+      transform 0.1s;
   }
 
   .pad.new {
@@ -230,9 +268,18 @@
     border-style: dashed;
   }
 
+  .pad.new:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+
   .pad.playing {
     border-color: var(--accent);
-    box-shadow: 0 0 12px rgb(255 190 80 / 0.45);
+    box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgb(255 190 80 / 0.35);
+  }
+
+  .pad.playing .number {
+    color: var(--accent);
   }
 
   .pad.held {
@@ -243,9 +290,25 @@
     position: absolute;
     top: 10px;
     right: 10px;
-    padding: 0 8px;
-    font-size: 12px;
-    background: rgb(22 23 27 / 0.8);
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    font-size: 11px;
+    line-height: 1;
+    background: var(--bg-veil);
+    opacity: 0.7;
+    transition: opacity 0.15s;
+  }
+
+  .slot:hover .audition,
+  .audition:focus-visible,
+  .playing + .audition {
+    opacity: 1;
+  }
+
+  .playing + .audition {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .thumbnail {

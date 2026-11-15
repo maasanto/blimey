@@ -210,6 +210,7 @@ test.describe('on three rows of washes', () => {
     await openChorusBuild(page, url);
 
     await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.getByText('Position and phase').click();
     await page.getByLabel('Area width').fill('1.5');
     await page.getByLabel('Area width').press('Enter');
     await expect(page.getByLabel('Area width'), 'the rest of the stage from x 0.5').toHaveValue('0.5');
@@ -232,9 +233,54 @@ test.describe('on three rows of washes', () => {
     expect(written).not.toContain('mute:');
   });
 
+  test('from the keyboard, arrows nudge the selected area, Ctrl+S saves and Backspace deletes it', async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/chorus-build.yaml');
+    const { url } = await startEngine({ look: DARK });
+    await openChorusBuild(page, url);
+
+    // Selected from the list, the focus is on its button: the keys are the button's, not the area's.
+    await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('[data-area]')).toHaveCount(3);
+
+    const chase = await stagePoint(page, [0.75, 0.3]);
+    await page.mouse.click(chase.x, chase.y);
+    await page.keyboard.press('Alt+ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('Shift+ArrowUp');
+    await page.getByText('Position and phase').click();
+    await expect(page.getByLabel('Area left'), 'one plain arrow, the browser shortcut left alone').toHaveValue('0.475');
+    await expect(page.getByLabel('Area bottom'), 'a full-height area has nowhere to go').toHaveValue('0');
+    await expect(page.locator('.status')).toHaveText('Unsaved changes');
+
+    // Behind the leave prompt the keys are the prompt's: Escape closes it, nothing is deleted.
+    await page.getByRole('link', { name: '← Scenes' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toBeHidden();
+    await expect(page.locator('[data-area]')).toHaveCount(3);
+
+    await page.mouse.click(chase.x, chase.y);
+    await page.keyboard.press('Control+s');
+    await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+    expect(readFileSync(songFile, 'utf8')).toContain('        area: { x: 0.475, y: 0, width: 0.5, height: 1 }\n');
+
+    await page.keyboard.press('Backspace');
+    await expect(page.locator('[data-area]')).toHaveCount(2);
+    // Typing in a field is left alone.
+    await page.getByLabel('Name').press('End');
+    await page.getByLabel('Name').press('Backspace');
+    await expect(page.locator('[data-area]')).toHaveCount(2);
+    await expect(page.getByLabel('Name')).toHaveValue('chorus-buil');
+  });
+
   test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {
     const engine = await startEngine({ look: DARK });
     await openChorusBuild(page, engine.url);
+    await expect(page.getByText('Warm-white wash on the left, amber chase on the right')).toBeVisible();
     await engine.stop();
     await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
 
