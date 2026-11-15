@@ -14,6 +14,7 @@
    * to tell unsaved edits.
    */
   let form = $state(newForm());
+  let isShowing = false;
 
   function newForm() {
     return { number: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null, unchanged: null };
@@ -219,12 +220,13 @@
    * Shows what the URL names, the scenes home or a scene in the editor, unless leaving the
    * editor would lose unsaved edits the user wants to keep: then the URL goes back to the scene.
    */
-  /** Whether this page of the Builder tab has followed a URL yet: its first one is where it opens, not a leave. */
-  let hasFollowed = false;
+  // Whether the Builder tab is on screen: a URL followed while it opens is where it opens, not a leave.
+  $effect(() => {
+    isShowing = true;
+    return () => (isShowing = false);
+  });
 
   function followUrl() {
-    const isOpening = !hasFollowed;
-    hasFollowed = true;
     if (!location.hash.startsWith('#builder')) return;
     const next = sceneInUrl();
     if (next?.song === opened?.song && next?.number === opened?.number) return;
@@ -233,7 +235,7 @@
       // Replacing fires `hashchange` again, so the Builder tab follows; the check above then finds the scene open.
       location.replace(sceneHash(opened));
       // A tab opened on another URL while a scene has edits shows that scene again, as any tab switch does.
-      if (!isOpening) askToLeave({ hash: destination, isReplaced: true });
+      if (isShowing) askToLeave({ hash: destination, isReplaced: true });
       return;
     }
     opened = next?.number > HIGHEST_NUMBER ? null : next;

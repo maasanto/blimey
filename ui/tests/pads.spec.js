@@ -187,6 +187,7 @@ test('the Builder tab opened on another URL with unsaved edits shows them again 
   await pad(page, 40).click();
   await page.getByLabel('Name').fill('changed');
   await page.getByRole('link', { name: 'Monitor' }).click();
+  await expect(page.getByTestId('engine-time')).toBeVisible();
   await page.evaluate(() => (location.hash = '#builder'));
 
   await expect(page).toHaveURL(/#builder\/demo\/40$/);
