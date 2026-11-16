@@ -163,6 +163,9 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
             }
         }
     }
+    if let Some(audio) = song.get_mut("audio") {
+        *audio = in_order(audio.take(), &schema["properties"]["audio"]["properties"]);
+    }
     in_order(Value::Object(song), &schema["properties"])
 }
 
@@ -479,6 +482,26 @@ pub fn set_arrangement(
                 song.insert(key.into(), value);
             }
         }
+        Ok(())
+    })
+}
+
+/// Sets where bar 1 falls in the audio of `songs/<song>.yaml`, leaving the rest of it as it is.
+/// Refused (`InvalidData`) for a song without `audio`.
+pub fn set_audio_offset(show_dir: &Path, song: &str, offset: String) -> io::Result<Save> {
+    edit_song(show_dir, song, |file, song| {
+        let audio = song
+            .get_mut("audio")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{file}: no audio to set the offset of; name its file under audio: first"
+                    ),
+                )
+            })?;
+        audio.insert("offset".into(), offset.into());
         Ok(())
     })
 }
@@ -1229,6 +1252,36 @@ mod tests {
             changed_lines(&before, &fs::read_to_string(show.join(DEMO_SONG)).unwrap()),
             [("bpm: 92".into(), "bpm: 120.5".into())]
         );
+    }
+
+    #[test]
+    fn the_audio_offset_changes_only_its_line_and_needs_audio() {
+        let show = demo_copy("set-audio-offset");
+        let error = set_audio_offset(&show, "demo-song", "1s".into()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "songs/demo-song.yaml: no audio to set the offset of; name its file under audio: first"
+        );
+
+        let path = show.join(DEMO_SONG);
+        let with_audio = fs::read_to_string(&path).unwrap().replace(
+            "bpm: 92\n",
+            "bpm: 92\naudio: { file: audio/demo-song.wav }\n",
+        );
+        fs::write(&path, &with_audio).unwrap();
+        set_audio_offset(&show, "demo-song", "1.25s".into()).unwrap();
+        assert_eq!(
+            changed_lines(&with_audio, &fs::read_to_string(&path).unwrap()),
+            [(
+                "audio: { file: audio/demo-song.wav }".into(),
+                "audio: { file: audio/demo-song.wav, offset: 1.25s }".into()
+            )]
+        );
+
+        let refused = set_audio_offset(&show, "demo-song", "2 bars".into()).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+        assert!(fs::read_to_string(&path).unwrap().contains("offset: 1.25s"));
     }
 
     #[test]

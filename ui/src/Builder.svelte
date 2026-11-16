@@ -53,7 +53,7 @@
 
 <script>
   import { engine, request } from './engine.svelte.js';
-  import { FULL_VELOCITY } from './audition.js';
+  import { FULL_VELOCITY, NOTE_OFF, NOTE_ON, PROGRAM_CHANGE } from './audition.js';
   import { beatsPerBar, DEFAULT_BPM } from './duration.js';
   import FrontView from './FrontView.svelte';
   import { asLayers, sceneAsPixelCue } from './layers.js';
@@ -63,11 +63,6 @@
   import SwellEditor from './SwellEditor.svelte';
   import Timeline from './Timeline.svelte';
 
-  // Until the MIDI control chunk, song N is channel-2 Program Change N and scene N channel-2
-  // note N (docs/api.md, Scenes and songs in the builder).
-  const NOTE_ON = 0x91;
-  const NOTE_OFF = 0x81;
-  const PROGRAM_CHANGE = 0xc1;
   /** The highest scene or song number the engine takes: the highest MIDI note and program. */
   const HIGHEST_NUMBER = 127;
   /** Well inside the engine's 5 s preview lifetime (docs/api.md), so the look never flickers off. */

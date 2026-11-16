@@ -11,3 +11,6 @@ node_modules/
 # MIDI files exported for the DAW, rewritten on every load in edit mode.
 /shows/*/export/
 /tests/fixtures/shows/*/export/
+# Bounces of the songs for the builder's timeline: large, and not ours to publish.
+/shows/*/audio/
+/tests/fixtures/shows/*/audio/
