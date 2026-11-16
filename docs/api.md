@@ -94,6 +94,7 @@ The song's name is its file name (`songs/tell-me.yaml` is `tell-me`).
 program: 3          # Program Change value on channel 2, 0-127, unique across songs
 bpm: 92             # optional: tempo for beats and bars when no MIDI clock arrives; default 120
 time_signature: 4/4 # optional: beats per bar over the note value; default 4/4
+audio: { file: audio/tell-me.mp3, offset: 1.25s }  # optional: see Audio below
 safe_look:          # optional: what panic shows; without it panic goes dark
   all-wash: { color: warm-white, dimmer: 30% }
 cues:
@@ -272,6 +273,14 @@ A song's running order (plan §17), built in Blimey and played by Reaper from an
 - Refused at load, each naming its line: an unknown section in `arrangement` (`line 40: arrangement: no section "outro" in sections`), a scene not in `cues`, a block outside its bar or section, overlapping blocks of one scene (`line 31: section verse: block 2: overlaps block 1 of scene 36; a scene plays once at a time`), a `length` in `ms` or `s` or under 1/960 beat, `bars` outside 1-9999.
 - **Bar grid.** With an arrangement, bar lines and bar positions follow each placed section's signature from its first beat, and the song's after the arrangement ends: a pattern fired on the first beat of a 3/4 section starts at once, on that section's bar line. Durations inside a cue (`length: 1 bar` on a pattern, `4 bars` on a swell) keep the song's signature. A song without an arrangement behaves as before.
 - **Export.** `<show>/export/<song>.mid`, kept out of git, is written for each song with an arrangement whenever the show loads in edit mode, so every save is exported, and by `blimey export`; edit mode writes only the files whose content changed. The `.mid` files of songs no longer arranged (cleared, renamed or removed) are deleted from `export/` at the same time. Show mode writes nothing. A format 0 file at 960 ticks per beat: the song's tempo (its `bpm`, 120 without), a time signature at bar 1 and wherever a placed section's differs from the one before, a marker naming each placed section, a channel-2 Program Change `program` at bar 1, then a channel-2 note on per block (note = scene, velocity = level) and a note off at its end. At one tick, the order is: time signature, marker, Program Change, note offs, note ons. When one placement ends with a block the next starts with (same scene, same level, end and start on the boundary), the two are one held note, so the scene doesn't restart. In Reaper, insert the file at the song's first bar, and again after a change.
+
+### Audio
+
+A bounce of the song, which the builder's timeline plays along with the lights (plan §17); the engine itself never plays it.
+
+- `file` is relative to the show folder and under `audio/`, which is kept out of git: put the bounce there and name it here. Any format the browser decodes: WAV, MP3, AAC, Ogg or FLAC.
+- `offset` is where bar 1 falls in the file, in `ms` or `s`; default `0s`. The timeline sets it as the waveform is dragged.
+- A missing file is not an error: the song plays silent, with a click. Refused at load: a `file` outside `audio/` (`line 4: audio: file "../a.mp3" must be a path under audio/, e.g. audio/tell-me.mp3`) and an `offset` in beats or bars.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
@@ -499,6 +508,14 @@ What the song's arrangement plays, the same list the MIDI export writes, so the 
 ### Arrangement MIDI file: `GET /api/songs/<song>/arrangement.mid`
 
 The song's [exported MIDI file](#sections-and-arrangement), as `audio/midi`, downloaded as `<song>.mid`. Works in show mode too, writing nothing. `404` for an unknown song or one without an arrangement.
+
+### Song audio: `GET /api/songs/<song>/audio`
+
+The song's [audio](#audio) file, with its type from the extension (`audio/wav`, `audio/mpeg`, …) and `Accept-Ranges: bytes`. A `Range` header of one range (`bytes=0-1023`, `bytes=1024-`, `bytes=-1024`) gets `206` and that part, with `Content-Range`; a range past the end gets `416`; a list of ranges gets the whole file. `404` for an unknown song, a song without `audio`, or a file that isn't there, which the timeline plays as silence. Works in show mode too.
+
+### Audio offset: `PUT /api/songs/<song>/audio/offset`
+
+Sets where bar 1 falls in the song's audio, leaving the rest of the file as it is (`204`). The body is `{ "offset": "1.25s" }`. It goes under the same lock as the cue endpoints, is checked and written like `PUT /api/show/<file>`, and is recorded for undo. Refused with `422`, leaving the file untouched: a song without `audio`, or an offset the loader refuses.
 
 ### New song: `POST /api/songs`
 

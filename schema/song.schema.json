@@ -10,6 +10,16 @@
     "program": { "description": "Program Change value on channel 2, 0-127, unique across songs.", "$ref": "#/$defs/midi" },
     "bpm": { "description": "Tempo for beat and bar durations when no MIDI clock arrives. Defaults to 120.", "type": "number", "exclusiveMinimum": 0 },
     "time_signature": { "description": "Defaults to 4/4.", "$ref": "#/$defs/timeSignature" },
+    "audio": {
+      "description": "A bounce of the song, which the builder's timeline plays along with the lights. A missing file is not an error: the song plays silent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": { "description": "Relative to the show folder, under audio/, which is kept out of git.", "type": "string", "pattern": "^audio/" },
+        "offset": { "description": "Where bar 1 falls in the file, in ms or s. Defaults to 0s.", "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?\\s*(ms|s)$" }
+      }
+    },
     "safe_look": { "description": "What panic (channel 16, note 127) shows. Without it, panic goes dark.", "$ref": "#/$defs/values" },
     "cues": {
       "description": "Channel-2 note number → cue.",

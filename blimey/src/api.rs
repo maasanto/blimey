@@ -1,7 +1,7 @@
 //! HTTP API under `/api`, next to the WebSocket stream. The contract is docs/api.md.
 
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Read, Seek};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -152,6 +152,8 @@ pub fn routes(api: Api) -> Router {
             get(arrangement_events),
         )
         .route("/api/songs/{song}/arrangement.mid", get(arrangement_midi))
+        .route("/api/songs/{song}/audio", get(song_audio))
+        .route("/api/songs/{song}/audio/offset", put(set_audio_offset))
         .route("/api/history", get(history))
         .route("/api/undo", post(undo))
         .route("/api/redo", post(redo))
@@ -321,6 +323,146 @@ async fn arrangement_midi(State(api): State<Api>, Path(song): Path<String>) -> R
             bytes,
         )
             .into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// The song's audio, for the builder's timeline to play, with single-range requests. Works in
+/// show mode too. `404` for a song without `audio`, or whose file isn't there.
+// ponytail: reads the asked range into memory; stream it if bounces ever outgrow a few hundred MB.
+async fn song_audio(
+    State(api): State<Api>,
+    Path(song): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let _turn = show_load_turn().await;
+    let audio = Show::load(&api.show_dir).and_then(|show| {
+        let song = song_named(&show, &song)?;
+        let audio = song.audio.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("song {:?} has no audio", song.name),
+            )
+        })?;
+        let file = std::fs::File::open(api.show_dir.join(&audio.file)).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", audio.file.display()))
+        })?;
+        Ok((file, content_type(&audio.file)))
+    });
+    let (mut file, content_type) = match audio {
+        Ok(audio) => audio,
+        Err(error) => return error_response(&error),
+    };
+    let length = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return error_response(&error),
+    };
+    let asked = headers
+        .get(header::RANGE)
+        .and_then(|range| range.to_str().ok());
+    let range = match asked.map(|range| byte_range(range, length)) {
+        None => None,
+        Some(Ok(range)) => range,
+        Some(Err(())) => {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{length}"))],
+            )
+                .into_response();
+        }
+    };
+    let (first, last) = range.unwrap_or((0, length.saturating_sub(1)));
+    let mut bytes = Vec::new();
+    let read = file
+        .seek(io::SeekFrom::Start(first))
+        .and_then(|_| (&mut file).take(last + 1 - first).read_to_end(&mut bytes));
+    if let Err(error) = read {
+        return error_response(&error);
+    }
+    let headers = [
+        (header::CONTENT_TYPE, content_type.to_owned()),
+        (header::ACCEPT_RANGES, "bytes".to_owned()),
+    ];
+    match range {
+        None => (headers, bytes).into_response(),
+        Some(_) => (
+            StatusCode::PARTIAL_CONTENT,
+            headers,
+            [(
+                header::CONTENT_RANGE,
+                format!("bytes {first}-{last}/{length}"),
+            )],
+            bytes,
+        )
+            .into_response(),
+    }
+}
+
+/// The first and last byte a `Range` header asks of a file of `length` bytes; `Ok(None)` for
+/// the whole file, as for a list of ranges or a header that isn't one, and `Err` when the file
+/// holds none of it.
+fn byte_range(range: &str, length: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some((first, last)) = range
+        .strip_prefix("bytes=")
+        .filter(|ranges| !ranges.contains(','))
+        .and_then(|range| range.trim().split_once('-'))
+    else {
+        return Ok(None);
+    };
+    let (first, last) = match (first.parse::<u64>(), last.parse::<u64>()) {
+        (Ok(first), Ok(last)) => (first, last.min(length.saturating_sub(1))),
+        (Ok(first), Err(_)) if last.is_empty() => (first, length.saturating_sub(1)),
+        (Err(_), Ok(suffix)) if first.is_empty() && suffix > 0 => {
+            (length.saturating_sub(suffix), length.saturating_sub(1))
+        }
+        (Err(_), Ok(_)) if first.is_empty() => return Err(()),
+        _ => return Ok(None),
+    };
+    if first >= length || first > last {
+        return Err(());
+    }
+    Ok(Some((first, last)))
+}
+
+fn content_type(file: &std::path::Path) -> &'static str {
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("ogg" | "oga" | "opus") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("m4a" | "aac" | "mp4") => "audio/mp4",
+        _ => "application/octet-stream",
+    }
+}
+
+#[derive(Deserialize)]
+struct AudioOffset {
+    offset: String,
+}
+
+async fn set_audio_offset(
+    State(api): State<Api>,
+    Path(song): Path<String>,
+    content: JsonBody,
+) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
+    match body::<AudioOffset>(
+        content,
+        "send { offset } with offset in ms or s, as \"1.25s\"",
+    ) {
+        Ok(new) => saved(&api, || {
+            show_file::set_audio_offset(&api.show_dir, &song, new.offset)
+        }),
         Err(error) => error_response(&error),
     }
 }
@@ -861,11 +1003,15 @@ mod tests {
         (status, body.to_vec())
     }
 
-    #[test]
-    fn the_arrangement_saves_round_trip_and_an_invalid_one_leaves_the_file_untouched() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tests/fixtures/shows/arranged");
-        let dir = std::env::temp_dir().join(format!("blimey-arrangement-{}", std::process::id()));
+    const ARRANGED_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/shows/arranged"
+    );
+
+    /// A scratch copy of the arranged fixture's rig, for `test` to put songs in.
+    fn arranged_rig_copy(test: &str) -> PathBuf {
+        let fixture = std::path::Path::new(ARRANGED_FIXTURE);
+        let dir = std::env::temp_dir().join(format!("blimey-{test}-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("fixtures")).unwrap();
         std::fs::create_dir_all(dir.join("songs")).unwrap();
         for file in [
@@ -876,6 +1022,80 @@ mod tests {
         ] {
             std::fs::copy(fixture.join(file), dir.join(file)).unwrap();
         }
+        dir
+    }
+
+    #[test]
+    fn audio_is_served_whole_or_by_range_and_a_missing_file_is_not_found() {
+        let dir = arranged_rig_copy("audio");
+        std::fs::write(
+            dir.join("songs/song.yaml"),
+            "program: 1\naudio: { file: audio/song.wav, offset: 1s }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("songs/silent.yaml"), "program: 2\n").unwrap();
+        let api = Api {
+            show_dir: dir.clone(),
+            ..cues_show_api()
+        };
+        let get = |song: &str, range: Option<&str>| {
+            let mut headers = HeaderMap::new();
+            if let Some(range) = range {
+                headers.insert(header::RANGE, range.parse().unwrap());
+            }
+            song_audio(State(api.clone()), Path(song.into()), headers)
+        };
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            assert_eq!(
+                get("song", None).await.status(),
+                StatusCode::NOT_FOUND,
+                "no file yet"
+            );
+            assert_eq!(
+                get("silent", None).await.status(),
+                StatusCode::NOT_FOUND,
+                "no audio"
+            );
+            std::fs::create_dir(dir.join("audio")).unwrap();
+            std::fs::write(dir.join("audio/song.wav"), b"0123456789").unwrap();
+
+            let whole = get("song", None).await;
+            assert_eq!(whole.headers()[header::ACCEPT_RANGES], "bytes");
+            assert_eq!(whole.headers()[header::CONTENT_TYPE], "audio/wav");
+            assert_eq!(read(whole).await, (StatusCode::OK, b"0123456789".to_vec()));
+
+            for (range, part, content_range) in [
+                ("bytes=2-5", &b"2345"[..], "bytes 2-5/10"),
+                ("bytes=7-", b"789", "bytes 7-9/10"),
+                ("bytes=-3", b"789", "bytes 7-9/10"),
+                ("bytes=8-99", b"89", "bytes 8-9/10"),
+            ] {
+                let response = get("song", Some(range)).await;
+                assert_eq!(response.headers()[header::CONTENT_RANGE], content_range);
+                assert_eq!(
+                    read(response).await,
+                    (StatusCode::PARTIAL_CONTENT, part.to_vec()),
+                    "{range}"
+                );
+            }
+            let beyond = get("song", Some("bytes=10-")).await;
+            assert_eq!(beyond.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            assert_eq!(beyond.headers()[header::CONTENT_RANGE], "bytes */10");
+            let (status, body) = read(get("song", Some("bytes=0-1,4-5")).await).await;
+            assert_eq!(
+                (status, body.len()),
+                (StatusCode::OK, 10),
+                "a list: all of it"
+            );
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_arrangement_saves_round_trip_and_an_invalid_one_leaves_the_file_untouched() {
+        let fixture = std::path::Path::new(ARRANGED_FIXTURE);
+        let dir = arranged_rig_copy("arrangement");
         let song_file = dir.join("songs/arranged.yaml");
         let arranged = std::fs::read_to_string(fixture.join("songs/arranged.yaml")).unwrap();
         let unarranged = &arranged[..arranged.find("sections:").unwrap()];

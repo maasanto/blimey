@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_yaml_ng::Mapping;
@@ -13,7 +14,7 @@ use crate::Show;
 use crate::arrangement::{self, Section, SectionFile};
 use crate::clock_follower::BarGrid;
 use crate::cue::{Cue, CueEntry, PixelCues, resolve_look};
-use crate::duration::TimeSignature;
+use crate::duration::{Length, TimeSignature};
 use crate::look::Look;
 
 const MIDI_DATA_MAX: u8 = 127;
@@ -26,6 +27,7 @@ struct SongFile {
     program: u8,
     bpm: Option<f32>,
     time_signature: Option<String>,
+    audio: Option<AudioFile>,
     #[serde(default)]
     safe_look: Mapping,
     #[serde(default)]
@@ -34,6 +36,46 @@ struct SongFile {
     sections: BTreeMap<String, SectionFile>,
     #[serde(default)]
     arrangement: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AudioFile {
+    file: String,
+    offset: Option<Length>,
+}
+
+/// A bounce of the song, for the builder's timeline to play along with the lights.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Audio {
+    /// Relative to the show folder, under `audio/`.
+    pub file: PathBuf,
+    /// Where bar 1 falls in the file.
+    pub offset: Duration,
+}
+
+impl AudioFile {
+    fn resolve(self) -> Result<Audio, String> {
+        let file = PathBuf::from(&self.file);
+        let parts: Vec<Component> = file.components().collect();
+        let is_under_audio = parts.len() > 1
+            && parts[0] == Component::Normal("audio".as_ref())
+            && parts
+                .iter()
+                .all(|part| matches!(part, Component::Normal(_)));
+        if !is_under_audio {
+            return Err(format!(
+                "audio: file {:?} must be a path under audio/, e.g. audio/tell-me.mp3",
+                self.file
+            ));
+        }
+        let offset = match self.offset {
+            None => Duration::ZERO,
+            Some(Length::Time(offset)) => offset,
+            Some(_) => return Err("audio: offset must be in ms or s, e.g. 1.25s".into()),
+        };
+        Ok(Audio { file, offset })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +88,7 @@ pub struct Song {
     pub bpm: Option<f32>,
     /// How many beats make a bar, for bar durations and bar positions.
     pub time_signature: TimeSignature,
+    pub audio: Option<Audio>,
     /// What panic shows. An empty look leaves everything dark.
     pub safe_look: Look,
     /// Channel-2 note number → the cue it fires.
@@ -84,6 +127,11 @@ impl Song {
             .transpose()
             .map_err(|error| located("time_signature", error))?
             .unwrap_or_default();
+        let audio = file
+            .audio
+            .map(AudioFile::resolve)
+            .transpose()
+            .map_err(|error| located("audio", error))?;
         let safe_look = resolve_look(show, &file.safe_look)
             .map_err(|error| located("safe_look", format!("safe_look: {error}")))?;
         // Swells and patterns may name any pixel cue of the song, before or after them.
@@ -131,6 +179,7 @@ impl Song {
             program: file.program,
             bpm: file.bpm,
             time_signature,
+            audio,
             safe_look,
             cues,
             sections,
@@ -540,11 +589,53 @@ mod tests {
         );
         assert_eq!(
             error("program: 3\ntempo: 92\n"),
-            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `safe_look`, `cues`, `sections`, `arrangement` at line 2 column 1"
+            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `audio`, `safe_look`, `cues`, `sections`, `arrangement` at line 2 column 1"
         );
         assert_eq!(
             error("program: 3\ntime_signature: 4/3\n"),
             "line 2: time signature \"4/3\" must be beats/note value with a power of two up to 32 below, e.g. 4/4 or 6/8"
+        );
+    }
+
+    #[test]
+    fn audio_is_a_file_under_audio_with_bar_one_at_its_offset() {
+        let song = Song::parse(
+            "song",
+            "program: 3\naudio: { file: audio/tell-me.mp3, offset: 1.25s }\n",
+            &show(),
+        )
+        .unwrap();
+        assert_eq!(
+            song.audio,
+            Some(Audio {
+                file: "audio/tell-me.mp3".into(),
+                offset: Duration::from_millis(1250)
+            })
+        );
+        let song = Song::parse(
+            "song",
+            "program: 3\naudio: { file: audio/a.wav }\n",
+            &show(),
+        );
+        assert_eq!(song.unwrap().audio.unwrap().offset, Duration::ZERO);
+
+        for file in [
+            "../secret.mp3",
+            "audio/../rig.yaml",
+            "/etc/passwd",
+            "audio",
+            "a.mp3",
+        ] {
+            assert_eq!(
+                error(&format!("program: 3\naudio: {{ file: {file:?} }}\n")),
+                format!(
+                    "line 2: audio: file {file:?} must be a path under audio/, e.g. audio/tell-me.mp3"
+                )
+            );
+        }
+        assert_eq!(
+            error("program: 3\naudio: { file: audio/a.wav, offset: 1 bar }\n"),
+            "line 2: audio: offset must be in ms or s, e.g. 1.25s"
         );
     }
 
