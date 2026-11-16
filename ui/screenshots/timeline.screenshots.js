@@ -7,8 +7,8 @@ const block = (page, scene) => page.locator(`.section-editor [data-block="${scen
 /** The engine-rendered thumbnail of a scene pad, lit. */
 const lit = (page, number) => expect(pad(page, number).locator('circle').first()).not.toHaveAttribute('fill', '#000000');
 
-// On the config's scratch copy of shows/fossile: tell-me has no arrangement yet.
-test('Fossile: an empty timeline, then a first section', async ({ page, startEngine }) => {
+// On the config's scratch copy of tests/fixtures/shows/demo: demo-song has no arrangement yet.
+test('Demo show: an empty timeline, then a first section', async ({ page, startEngine }) => {
   const { url } = await startEngine({ look: DARK });
   await page.goto(`${url}#builder`);
   await lit(page, 36);

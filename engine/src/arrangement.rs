@@ -1,6 +1,6 @@
 //! A song's running order (plan §17): sections of bars holding blocks, each a scene held from
 //! one point to another, and the arrangement, the order the sections play in. `events` lists
-//! what plays it, for the MIDI file Reaper plays and for the builder alike.
+//! what plays it, for the MIDI file the DAW plays and for the builder alike.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -368,7 +368,7 @@ pub fn events(song: &Song) -> Vec<ArrangementEvent> {
         .collect()
 }
 
-/// The arrangement as a Standard MIDI File for Reaper: the song's tempo, then `events`.
+/// The arrangement as a Standard MIDI File for the DAW: the song's tempo, then `events`.
 pub fn midi_file(song: &Song) -> io::Result<Vec<u8>> {
     MidiFile::encode_arrangement(song.tempo(), &events(song))
 }
@@ -382,7 +382,7 @@ pub fn export(show_dir: &Path, song: &Song) -> io::Result<Option<PathBuf>> {
     write_export(show_dir, &song.name, &midi_file(song)?).map(Some)
 }
 
-/// Writes `bytes` as the exported file of song `name`, atomically, so Reaper never reads half
+/// Writes `bytes` as the exported file of song `name`, atomically, so the DAW never reads half
 /// of one; returns its path.
 pub fn write_export(show_dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     let folder = show_dir.join(EXPORT_DIR);

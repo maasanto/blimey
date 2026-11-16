@@ -32,7 +32,7 @@ impl HotReload {
         Ok(reload)
     }
 
-    /// Writes the current show's MIDI files for Reaper (see `Exports`). Call it for a show
+    /// Writes the current show's MIDI files for the DAW (see `Exports`). Call it for a show
     /// loaded from the folder, not for one standing in for it.
     pub fn export(&mut self) {
         self.exports.update(&self.dir, &self.show);
@@ -99,8 +99,8 @@ pub fn load_keeping(
     (before, show)
 }
 
-/// Edit mode's MIDI files for Reaper: on every load, each song with an arrangement is written
-/// to the export folder, and the files of songs no longer arranged are removed, so Reaper's
+/// Edit mode's MIDI files for the DAW: on every load, each song with an arrangement is written
+/// to the export folder, and the files of songs no longer arranged are removed, so the DAW's
 /// copy follows the saves. Only files whose content changed are written. A file that can't be
 /// written or removed is reported; the show plays on.
 #[derive(Default)]
@@ -131,7 +131,7 @@ impl Exports {
                     written.insert(song.name.clone(), bytes);
                 }
                 Err(error) => eprintln!(
-                    "blimey: {error}; the MIDI file of {} for Reaper is out of date",
+                    "blimey: {error}; the MIDI file of {} for the DAW is out of date",
                     song.name
                 ),
             }
@@ -140,7 +140,7 @@ impl Exports {
         if (is_first || is_arranged_set_changed)
             && let Err(error) = arrangement::remove_stale_exports(dir, show)
         {
-            eprintln!("blimey: {error}; a stale MIDI file for Reaper is left in place");
+            eprintln!("blimey: {error}; a stale MIDI file for the DAW is left in place");
         }
         self.written = Some(written);
     }

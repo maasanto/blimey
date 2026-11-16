@@ -661,7 +661,7 @@
     <a class="back" href="#builder">← Scenes</a>
     <strong class="title">Song {summary?.songs.find((entry) => entry.name === timelineSong)?.program ?? ''} · {timelineSong}: timeline</strong>
     <button disabled={!song?.arrangement?.length || songLoaded !== timelineSong} onclick={() => location.assign(`/api/songs/${encodeURIComponent(timelineSong)}/arrangement.mid`)}
-      >Export for Reaper</button
+      >Export to DAW</button
     >
     {@render history()}
   </div>

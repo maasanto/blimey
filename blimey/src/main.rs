@@ -78,7 +78,7 @@ enum Command {
     /// Check a show folder: every file parses and refers to fixtures, groups and colours that
     /// exist. Errors name the file and line.
     Validate { show_dir: PathBuf },
-    /// Write the MIDI file Reaper plays for a song's arrangement, to <show>/export/<song>.mid:
+    /// Write the MIDI file the DAW plays for a song's arrangement, to <show>/export/<song>.mid:
     /// for `song`, or for every song with an arrangement. Prints each file written.
     Export {
         show_dir: PathBuf,
