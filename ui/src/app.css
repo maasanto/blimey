@@ -9,6 +9,8 @@
   --accent: #ffbe50;
   --accent-ink: #16171b;
   --danger: #ff7b7b;
+  /* The timeline's markers, apart from the accent its scenes are drawn in. */
+  --marker: #7cc4ff;
   /* Text that should barely register: placeholders, the stage's side labels, empty prompts. */
   --dim: #5d6170;
   /* The background laid over content, for a control that floats on a picture. */

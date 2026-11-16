@@ -36,6 +36,41 @@ struct SongFile {
     sections: BTreeMap<String, SectionFile>,
     #[serde(default)]
     arrangement: Vec<String>,
+    #[serde(default)]
+    markers: Vec<MarkerFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarkerFile {
+    name: String,
+    at: Length,
+}
+
+/// A named point in the song's audio, as set in the DAW, for finding one's way on the timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Marker {
+    pub name: String,
+    /// From the start of the audio file, not bar 1, so it stays on the music as the offset moves.
+    pub at: Duration,
+}
+
+impl MarkerFile {
+    fn resolve(self) -> Result<Marker, String> {
+        if self.name.trim().is_empty() {
+            return Err("markers: a marker needs a name".into());
+        }
+        match self.at {
+            Length::Time(at) => Ok(Marker {
+                name: self.name,
+                at,
+            }),
+            _ => Err(format!(
+                "markers: {}: at must be a time in the audio, in ms or s, e.g. 12.5s",
+                self.name
+            )),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -110,6 +145,7 @@ pub struct Song {
     pub sections: BTreeMap<String, Section>,
     /// Section names in playing order; empty for a song without an arrangement.
     pub arrangement: Vec<String>,
+    pub markers: Vec<Marker>,
     /// Bar lines of the arrangement's sections, then of `time_signature`.
     pub bar_grid: BarGrid,
 }
@@ -186,6 +222,12 @@ impl Song {
                 format!("arrangement: no section {unknown:?} in sections"),
             ));
         }
+        let markers = file
+            .markers
+            .into_iter()
+            .map(MarkerFile::resolve)
+            .collect::<Result<_, _>>()
+            .map_err(|error| located("markers", error))?;
         let bar_grid = arrangement::bar_grid(&sections, &file.arrangement, time_signature);
         Ok(Song {
             name: name.into(),
@@ -197,6 +239,7 @@ impl Song {
             cues,
             sections,
             arrangement: file.arrangement,
+            markers,
             bar_grid,
         })
     }
@@ -602,11 +645,42 @@ mod tests {
         );
         assert_eq!(
             error("program: 3\ntempo: 92\n"),
-            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `audio`, `safe_look`, `cues`, `sections`, `arrangement` at line 2 column 1"
+            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `audio`, `safe_look`, `cues`, `sections`, `arrangement`, `markers` at line 2 column 1"
         );
         assert_eq!(
             error("program: 3\ntime_signature: 4/3\n"),
             "line 2: time signature \"4/3\" must be beats/note value with a power of two up to 32 below, e.g. 4/4 or 6/8"
+        );
+    }
+
+    #[test]
+    fn markers_are_named_times_in_the_audio() {
+        let song = Song::parse(
+            "song",
+            "program: 3\nmarkers:\n  - { name: Verse, at: 12.5s }\n  - { name: Outro, at: 200ms }\n",
+            &show(),
+        )
+        .unwrap();
+        assert_eq!(
+            song.markers,
+            [
+                Marker {
+                    name: "Verse".into(),
+                    at: Duration::from_millis(12_500)
+                },
+                Marker {
+                    name: "Outro".into(),
+                    at: Duration::from_millis(200)
+                }
+            ]
+        );
+        assert_eq!(
+            error("program: 3\nmarkers:\n  - { name: \" \", at: 1s }\n"),
+            "line 2: markers: a marker needs a name"
+        );
+        assert_eq!(
+            error("program: 3\nmarkers:\n  - { name: Verse, at: 2 bars }\n"),
+            "line 2: markers: Verse: at must be a time in the audio, in ms or s, e.g. 12.5s"
         );
     }
 

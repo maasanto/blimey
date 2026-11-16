@@ -23,6 +23,7 @@ pub mod rig;
 mod show;
 pub mod show_file;
 pub mod song;
+pub mod wav;
 
 pub use dump::{first_difference, format_dump, parse_dump};
 pub use legacy::LegacyMap;

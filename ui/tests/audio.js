@@ -31,6 +31,38 @@ export function beepsWav(seconds) {
   return wav;
 }
 
+/** A RIFF chunk, with the padding byte an odd-sized one takes. */
+function riffChunk(id, body) {
+  const header = Buffer.alloc(8);
+  header.write(id, 0);
+  header.writeUInt32LE(body.length, 4);
+  return Buffer.concat([header, body, Buffer.alloc(body.length % 2)]);
+}
+
+/** `seconds` of beeps, as `beepsWav`, with a cue point named by a `labl` for each of `markers`, `{ name, at }` in seconds: as the DAW renders markers. */
+export function markedWav(seconds, markers) {
+  const CUE_POINT_BYTES = 24;
+  const cue = Buffer.alloc(4 + markers.length * CUE_POINT_BYTES);
+  cue.writeUInt32LE(markers.length, 0);
+  markers.forEach(({ at }, index) => {
+    const point = 4 + index * CUE_POINT_BYTES;
+    const sample = Math.round(at * SAMPLE_RATE);
+    cue.writeUInt32LE(index + 1, point);
+    cue.writeUInt32LE(sample, point + 4);
+    cue.write('data', point + 8);
+    cue.writeUInt32LE(sample, point + 20);
+  });
+  const labels = markers.map(({ name }, index) => {
+    const label = Buffer.alloc(4 + Buffer.byteLength(name) + 1);
+    label.writeUInt32LE(index + 1, 0);
+    label.write(name, 4);
+    return riffChunk('labl', label);
+  });
+  const wav = Buffer.concat([beepsWav(seconds), riffChunk('cue ', cue), riffChunk('LIST', Buffer.concat([Buffer.from('adtl'), ...labels]))]);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  return wav;
+}
+
 /**
  * Gives the page's audio contexts a clock that runs with `performance.now()` from their creation,
  * heard `outputLatency` seconds late, whatever the host's audio output does: a machine without a

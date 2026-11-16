@@ -1,12 +1,14 @@
 //! HTTP API under `/api`, next to the WebSocket stream. The contract is docs/api.md.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Seek};
+use std::io::{self, Read, Seek, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -24,7 +26,8 @@ use blimey_engine::pattern::Pattern;
 use blimey_engine::pixel::{self, PixelScene, Rhythm};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
-use blimey_engine::song::{Audio, Song};
+use blimey_engine::song::{Audio, Marker, Song};
+use blimey_engine::wav;
 use blimey_engine::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -152,8 +155,10 @@ pub fn routes(api: Api) -> Router {
             get(arrangement_events),
         )
         .route("/api/songs/{song}/arrangement.mid", get(arrangement_midi))
-        .route("/api/songs/{song}/audio", get(song_audio))
+        .route("/api/songs/{song}/audio", get(song_audio).put(upload_audio))
         .route("/api/songs/{song}/audio/offset", put(set_audio_offset))
+        .route("/api/songs/{song}/audio/markers", get(audio_markers))
+        .route("/api/songs/{song}/markers", put(set_markers))
         .route("/api/history", get(history))
         .route("/api/undo", post(undo))
         .route("/api/redo", post(redo))
@@ -469,6 +474,293 @@ async fn set_audio_offset(
     ) {
         Ok(new) => saved(&api, || {
             show_file::set_audio_offset(&api.show_dir, &song, new.offset)
+        }),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// The largest song audio an upload may hold: a song's bounce, even as 96 kHz 24-bit stereo
+/// WAV, takes a fraction of it.
+const MAX_AUDIO_UPLOAD: u64 = 1 << 30;
+/// Enough of a file's start to tell WAV, MP3 and FLAC apart.
+const SNIFFED_BYTES: usize = 12;
+
+/// Takes the song's audio as the request body, stores it as `audio/<song>.<ext>`, names it in
+/// the song file, keeping the offset, and removes the song's previous upload. Answers the
+/// markers found in the file.
+async fn upload_audio(
+    State(api): State<Api>,
+    Path(song): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|length| length.to_str().ok()?.parse::<u64>().ok());
+    if declared.is_some_and(|length| length > MAX_AUDIO_UPLOAD) {
+        return error_response(&too_large());
+    }
+    // Before writing anything: the song must exist under exactly this name, which keeps the name
+    // inside the show and, on a case-insensitive disk, off another spelling's audio file.
+    if let Err(error) = song_named_exactly(&api.show_dir, &song) {
+        return error_response(&error);
+    }
+    let stored = async {
+        let (temporary, file) = TemporaryUpload::create(&api.show_dir.join("audio"), &song)?;
+        let head = receive_upload(body, file).await?;
+        let extension = audio_extension(&head).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the file is not WAV, MP3 or FLAC audio; export the song in one of those",
+            )
+        })?;
+        let markers = match extension {
+            "wav" => wav_markers(std::fs::File::open(&temporary.path)?).await?,
+            _ => Vec::new(),
+        };
+        let file = store_upload(&api, &song, extension, &temporary.path)?;
+        Ok::<_, io::Error>((file, markers))
+    }
+    .await;
+    match stored {
+        Ok((file, markers)) => {
+            Json(json!({ "file": file, "markers": markers_json(&markers) })).into_response()
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+fn too_large() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::FileTooLarge,
+        format!(
+            "audio files are limited to {} MB; bounce the song at a lower rate or as MP3",
+            MAX_AUDIO_UPLOAD >> 20
+        ),
+    )
+}
+
+/// The `audio` of `songs/<song>.yaml`, reading only that file.
+fn song_file_audio(show_dir: &std::path::Path, song: &str) -> io::Result<Option<Audio>> {
+    let content = show_file::read(show_dir, &format!("songs/{song}.yaml"))?;
+    Audio::of_song(&content).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Refused (`NotFound`) unless `songs/<song>.yaml` is there under exactly that name.
+fn song_named_exactly(show_dir: &std::path::Path, song: &str) -> io::Result<()> {
+    // Refuses names that aren't a song's, such as `..`, and songs that aren't there at all.
+    show_file::read(show_dir, &format!("songs/{song}.yaml"))?;
+    let file_name = format!("{song}.yaml");
+    let is_exact = std::fs::read_dir(show_dir.join("songs"))?
+        .flatten()
+        .any(|entry| entry.file_name() == file_name.as_str());
+    if is_exact {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("no song {song:?}: song names are case-sensitive"),
+    ))
+}
+
+/// Counts uploads, so concurrent ones never share a temporary file.
+static UPLOADS: AtomicU64 = AtomicU64::new(0);
+
+/// An upload as it arrives, removed when dropped: a refused upload, or one whose client went
+/// away, leaves nothing behind. Once stored it has been renamed, and there is nothing to remove.
+struct TemporaryUpload {
+    path: PathBuf,
+}
+
+impl TemporaryUpload {
+    fn create(audio_dir: &std::path::Path, song: &str) -> io::Result<(Self, std::fs::File)> {
+        std::fs::create_dir_all(audio_dir)?;
+        let upload = UPLOADS.fetch_add(1, Ordering::Relaxed);
+        let path = audio_dir.join(format!(".{song}.{}.{upload}.upload", std::process::id()));
+        let file = std::fs::File::create_new(&path)?;
+        Ok((Self { path }, file))
+    }
+}
+
+impl Drop for TemporaryUpload {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// How many received chunks may wait for the disk before the upload waits in turn.
+const UPLOAD_QUEUE_CHUNKS: usize = 16;
+
+/// Streams the body into `file`, on a blocking thread and without holding it in memory, and
+/// returns its first bytes.
+async fn receive_upload(mut body: Body, file: std::fs::File) -> io::Result<Vec<u8>> {
+    let (chunks, mut to_write) = tokio::sync::mpsc::channel::<Bytes>(UPLOAD_QUEUE_CHUNKS);
+    let writer = tokio::task::spawn_blocking(move || {
+        let mut file = io::BufWriter::new(file);
+        while let Some(chunk) = to_write.blocking_recv() {
+            file.write_all(&chunk)?;
+        }
+        file.into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .sync_all()
+    });
+    let streamed = stream_body(&mut body, &chunks).await;
+    drop(chunks);
+    // A write error first: it is why the stream stopped, if it did.
+    writer.await.map_err(io::Error::other)??;
+    streamed
+}
+
+async fn stream_body(
+    body: &mut Body,
+    chunks: &tokio::sync::mpsc::Sender<Bytes>,
+) -> io::Result<Vec<u8>> {
+    let mut head = Vec::with_capacity(SNIFFED_BYTES);
+    let mut received = 0;
+    while let Some(frame) =
+        std::future::poll_fn(|context| std::pin::Pin::new(&mut *body).poll_frame(context)).await
+    {
+        let Ok(data) = frame.map_err(io::Error::other)?.into_data() else {
+            continue;
+        };
+        received += data.len() as u64;
+        if received > MAX_AUDIO_UPLOAD {
+            return Err(too_large());
+        }
+        head.extend(data.iter().take(SNIFFED_BYTES - head.len()));
+        chunks
+            .send(data)
+            .await
+            .map_err(|_| io::Error::other("the upload stopped being written"))?;
+    }
+    Ok(head)
+}
+
+/// The markers of a WAV file, read on a blocking thread.
+async fn wav_markers(file: std::fs::File) -> io::Result<Vec<Marker>> {
+    tokio::task::spawn_blocking(move || wav::markers(&mut io::BufReader::new(file)))
+        .await
+        .map_err(io::Error::other)?
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// What the file is, by its content rather than by what the request says.
+fn audio_extension(head: &[u8]) -> Option<&'static str> {
+    match head {
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'A',
+            b'V',
+            b'E',
+            ..,
+        ] => Some("wav"),
+        [b'f', b'L', b'a', b'C', ..] => Some("flac"),
+        [b'I', b'D', b'3', ..] => Some("mp3"),
+        // An MPEG audio frame: 11 sync bits, then a layer, which AAC's ADTS leaves at 0.
+        [0xFF, second, ..] if second & 0xE0 == 0xE0 && second & 0x06 != 0 => Some("mp3"),
+        _ => None,
+    }
+}
+
+/// Names the received file in the song file, then moves it into place, as one step of the
+/// history; the song's previous upload, under another extension, is removed. Returns the file.
+fn store_upload(
+    api: &Api,
+    song: &str,
+    extension: &str,
+    temporary: &std::path::Path,
+) -> io::Result<String> {
+    let file = format!("audio/{song}.{extension}");
+    let mut history = lock(&api.history);
+    // Under the lock, so no other save changes it between this read and the write.
+    let previous = song_file_audio(&api.show_dir, song)?;
+    // The song file first: if it is refused, no audio file has been touched.
+    let save = show_file::set_audio_file(&api.show_dir, song, &file)?;
+    if let Err(error) = std::fs::rename(temporary, api.show_dir.join(&file)) {
+        if let Err(undo) = save.undo(&api.show_dir) {
+            eprintln!("blimey: songs/{song}.yaml names {file}, which couldn't be stored: {undo}");
+        }
+        return Err(error);
+    }
+    history.record(save);
+    if let Some(previous) = previous.filter(|audio| is_other_upload(audio, song, &file)) {
+        // The upload succeeded: a leftover is reported, not a failure.
+        match std::fs::remove_file(api.show_dir.join(&previous.file)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => eprintln!(
+                "blimey: uploaded {file}, but couldn't remove the previous upload {}: {error}; remove it by hand",
+                previous.file.display()
+            ),
+            _ => {}
+        }
+    }
+    Ok(file)
+}
+
+/// Whether `audio` is an upload of `song` other than `file`: named `audio/<song>.<ext>` by an
+/// upload, not by hand, and not `file` in another case, which a case-insensitive disk would
+/// take for the same file.
+fn is_other_upload(audio: &Audio, song: &str, file: &str) -> bool {
+    audio.file.parent() == Some("audio".as_ref())
+        && audio.file.file_stem() == Some(song.as_ref())
+        && !audio.file.to_string_lossy().eq_ignore_ascii_case(file)
+}
+
+fn markers_json(markers: &[Marker]) -> Value {
+    let seconds = |at: Duration| format!("{}s", (at.as_secs_f64() * 1000.0).round() / 1000.0);
+    markers
+        .iter()
+        .map(|marker| json!({ "name": marker.name, "at": seconds(marker.at) }))
+        .collect()
+}
+
+/// The markers in the song's audio file as it is now; none for MP3 or FLAC. Works in show mode
+/// too.
+async fn audio_markers(State(api): State<Api>, Path(song): Path<String>) -> Response {
+    let markers = match open_song_audio(&api.show_dir, &song) {
+        Ok((file, "audio/wav")) => wav_markers(file).await,
+        Ok(_) => Ok(Vec::new()),
+        Err(error) => Err(error),
+    };
+    match markers {
+        Ok(markers) => Json(json!({ "markers": markers_json(&markers) })).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+#[derive(Deserialize)]
+struct Markers {
+    markers: Vec<Value>,
+}
+
+async fn set_markers(
+    State(api): State<Api>,
+    Path(song): Path<String>,
+    content: JsonBody,
+) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
+    match body::<Markers>(
+        content,
+        "send { markers: [{ name, at }] } with at in ms or s",
+    ) {
+        Ok(new) => saved(&api, || {
+            show_file::set_markers(&api.show_dir, &song, new.markers)
         }),
         Err(error) => error_response(&error),
     }
@@ -844,6 +1136,8 @@ fn error_response(error: &io::Error) -> Response {
         io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
         io::ErrorKind::InvalidData => StatusCode::UNPROCESSABLE_ENTITY,
         io::ErrorKind::AlreadyExists | io::ErrorKind::ResourceBusy => StatusCode::CONFLICT,
+        io::ErrorKind::FileTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        io::ErrorKind::Unsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, Json(json!({ "error": error.to_string() }))).into_response()
@@ -1030,6 +1324,151 @@ mod tests {
             std::fs::copy(fixture.join(file), dir.join(file)).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn an_upload_replaces_the_songs_audio_and_lists_its_markers() {
+        let dir = arranged_rig_copy("upload");
+        let song_file = dir.join("songs/song.yaml");
+        let original = "program: 1\naudio: { file: audio/song.mp3, offset: 1s }\n";
+        std::fs::write(&song_file, original).unwrap();
+        std::fs::create_dir(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio/song.mp3"), b"ID3 old bounce").unwrap();
+        let api = Api {
+            show_dir: dir.clone(),
+            mode: Mode::Edit,
+            ..cues_show_api()
+        };
+        let upload = |api: &Api, song: &str, length: Option<u64>, bytes: Vec<u8>| {
+            let mut headers = HeaderMap::new();
+            if let Some(length) = length {
+                headers.insert(header::CONTENT_LENGTH, length.into());
+            }
+            upload_audio(
+                State(api.clone()),
+                Path(song.into()),
+                headers,
+                Body::from(bytes),
+            )
+        };
+        let wav = wav::build::wav(
+            48_000,
+            &[
+                wav::build::cue_points(&[(1, 24_000)]),
+                wav::build::adtl(&[wav::build::label(1, "Verse")]),
+            ],
+        );
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let show_mode = Api {
+                mode: Mode::Show,
+                ..api.clone()
+            };
+            let refused = upload(&show_mode, "song", None, wav.clone()).await;
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+            let refused = upload(&api, "song", Some(MAX_AUDIO_UPLOAD + 1), wav.clone()).await;
+            assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let refused = upload(&api, "song", None, b"not audio at all".to_vec()).await;
+            assert_eq!(refused.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            let refused = upload(&api, "song", None, wav[..wav.len() - 4].to_vec()).await;
+            assert_eq!(
+                refused.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "cut short"
+            );
+            // SONG: on a case-insensitive disk, songs/SONG.yaml is song's, and audio/SONG.wav its audio.
+            for outside in ["..", "../songs/song", "nope", "SONG"] {
+                let refused = upload(&api, outside, None, wav.clone()).await;
+                assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{outside}");
+            }
+            assert_eq!(std::fs::read_to_string(&song_file).unwrap(), original);
+            assert_eq!(
+                std::fs::read_dir(dir.join("audio")).unwrap().count(),
+                1,
+                "only the old bounce"
+            );
+
+            let (status, body) = read(upload(&api, "song", None, wav.clone()).await).await;
+            let listed = json!({ "markers": [{ "name": "Verse", "at": "0.5s" }] });
+            assert_eq!(status, StatusCode::OK);
+            let mut uploaded = listed.clone();
+            uploaded["file"] = "audio/song.wav".into();
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), uploaded);
+            assert_eq!(std::fs::read(dir.join("audio/song.wav")).unwrap(), wav);
+            assert!(
+                !dir.join("audio/song.mp3").exists(),
+                "the old bounce is gone"
+            );
+            assert_eq!(
+                std::fs::read_dir(dir.join("audio")).unwrap().count(),
+                1,
+                "no temporary file left"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&song_file).unwrap(),
+                "program: 1\naudio: { file: audio/song.wav, offset: 1s }\n"
+            );
+            let (status, body) =
+                read(audio_markers(State(api.clone()), Path("song".into())).await).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), listed);
+        });
+
+        lock(&api.history).undo(&dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&song_file).unwrap(),
+            original,
+            "undo restores the song file, not the replaced bounce"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_upload_whose_client_goes_away_leaves_no_temporary_file() {
+        use futures_util::{FutureExt, StreamExt, stream};
+        let dir = arranged_rig_copy("upload-dropped");
+        std::fs::write(dir.join("songs/song.yaml"), "program: 1\n").unwrap();
+        let api = Api {
+            show_dir: dir.clone(),
+            mode: Mode::Edit,
+            ..cues_show_api()
+        };
+        let first_bytes = stream::once(async { Ok::<_, io::Error>(Bytes::from_static(b"RIFF")) });
+        let body = Body::from_stream(first_bytes.chain(stream::pending()));
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let upload = upload_audio(State(api), Path("song".into()), HeaderMap::new(), body);
+            assert!(
+                upload.now_or_never().is_none(),
+                "still receiving when dropped"
+            );
+        });
+        assert_eq!(std::fs::read_dir(dir.join("audio")).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_another_upload_of_the_song_is_removed_as_its_previous_one() {
+        let audio = |file: &str| Audio {
+            file: file.into(),
+            offset: Duration::ZERO,
+        };
+        assert!(is_other_upload(
+            &audio("audio/song.mp3"),
+            "song",
+            "audio/song.wav"
+        ));
+        for kept in [
+            "audio/song.WAV",
+            "audio/song.wav",
+            "audio/song-final.mp3",
+            "audio/live/song.mp3",
+        ] {
+            assert!(
+                !is_other_upload(&audio(kept), "song", "audio/song.wav"),
+                "{kept}"
+            );
+        }
     }
 
     #[test]

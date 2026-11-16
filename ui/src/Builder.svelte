@@ -390,17 +390,24 @@
   /** Saves the scene under its number, which moves it there if it had another. */
   async function saveScene() {
     const { number } = form;
+    const sent = unchangedOf(form);
     try {
       await request('PUT', `/api/songs/${songName}/cues/${number}`, { cue: cueToSave(form), replaces: form.replaces });
     } catch (failure) {
       if (!failure.message.includes('already fires cue')) throw failure;
       throw new Error(`Scene ${number} is already ${song.cues?.[number]?.name ?? 'taken'}: pick a free number, or open that scene.`);
     }
+    // Saved as of now, not once the song reloads: leaving in between is no leave with unsaved edits.
+    form.unchanged = sent;
+    isDirtyNow = unchangedOf(form) !== sent;
     notice = `Saved scene ${number} in ${songName}.`;
+    const saved = form;
     await reloadAfterSave();
+    // Left for the scenes home, or another scene, while the song reloaded.
+    if (form !== saved) return;
+    const isEditedSince = unchangedOf(form) !== form.unchanged;
     form.replaces = { note: number, cue: $state.snapshot(song.cues[number]) };
-    form.unchanged = unchangedOf(form);
-    isDirtyNow = false;
+    if (!isEditedSince) form.unchanged = unchangedOf(form);
     if (number !== opened.number) {
       opened = { song: songName, number };
       location.replace(sceneHash(opened));
