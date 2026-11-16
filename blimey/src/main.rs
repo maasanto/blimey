@@ -38,6 +38,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
+use blimey_engine::arrangement;
 use blimey_engine::look::{Look, LookSettings};
 use blimey_engine::ofl::import_ofl;
 use blimey_engine::rig::Rig;
@@ -77,6 +78,12 @@ enum Command {
     /// Check a show folder: every file parses and refers to fixtures, groups and colours that
     /// exist. Errors name the file and line.
     Validate { show_dir: PathBuf },
+    /// Write the MIDI file Reaper plays for a song's arrangement, to <show>/export/<song>.mid:
+    /// for `song`, or for every song with an arrangement. Prints each file written.
+    Export {
+        show_dir: PathBuf,
+        song: Option<String>,
+    },
     /// Run a show live: MIDI in from a port such as the IAC bus, out to an Enttec DMX USB Pro,
     /// the web UI or Art-Net. It resumes the last selected song and master level, and logs
     /// every MIDI event and cue to the state folder.
@@ -229,7 +236,12 @@ impl Outputs {
     ) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
         let (stamps, loaded) = hot_reload::load_keeping(show_dir, last_good.as_ref());
         let show = match loaded {
-            Ok(show) => show,
+            Ok(show) => {
+                if self.edit {
+                    hot_reload::export_arrangements(show_dir, &show);
+                }
+                show
+            }
             Err(error) => {
                 let Some(show) = last_good.as_ref().and_then(|last| last.load(show_dir)) else {
                     return Err(error.into());
@@ -356,6 +368,7 @@ fn main() -> ExitCode {
             compare,
         } => replay(&show_dir, &midi, out.as_deref(), compare.as_deref()),
         Command::Validate { show_dir } => validate(&show_dir),
+        Command::Export { show_dir, song } => export(&show_dir, song.as_deref()),
         Command::Run {
             show_dir,
             midi_port,
@@ -481,6 +494,28 @@ fn validate(show_dir: &Path) -> Result<ExitCode, Box<dyn Error>> {
         show.rig.fixtures.len(),
         show.songs.len()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn export(show_dir: &Path, song: Option<&str>) -> Result<ExitCode, Box<dyn Error>> {
+    let show = Show::load(show_dir)?;
+    let Some(name) = song else {
+        for song in &show.songs {
+            if let Some(path) = arrangement::export(show_dir, song)? {
+                println!("{}", path.display());
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
+    let song = show
+        .songs
+        .iter()
+        .find(|song| song.name == name)
+        .ok_or_else(|| format!("no song {name:?} in {}", show_dir.display()))?;
+    let path = arrangement::export(show_dir, song)?.ok_or_else(|| {
+        format!("song {name:?} has no arrangement to export; give it sections and an arrangement")
+    })?;
+    println!("{}", path.display());
     Ok(ExitCode::SUCCESS)
 }
 

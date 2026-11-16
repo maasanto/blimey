@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use blimey_engine::arrangement::{self, EXPORT_DIR};
 use blimey_engine::{Show, ShowSource};
 
 use crate::state::LastGoodShow;
@@ -24,10 +25,12 @@ pub type FileStamp = (PathBuf, Option<SystemTime>, u64);
 impl HotReload {
     pub fn load(dir: &Path) -> io::Result<HotReload> {
         let (stamps, show) = load_keeping(dir, None);
+        let show = show?;
+        export_arrangements(dir, &show);
         Ok(HotReload {
             dir: dir.to_path_buf(),
             stamps,
-            show: show?,
+            show,
             last_good: None,
             reloads: 0,
         })
@@ -63,6 +66,7 @@ impl ShowSource for HotReload {
             self.stamps = stamps;
             match loaded {
                 Ok(show) => {
+                    export_arrangements(&self.dir, &show);
                     self.show = show;
                     self.reloads += 1;
                     eprintln!("blimey: reloaded {}", self.dir.display());
@@ -92,7 +96,21 @@ pub fn load_keeping(
     (before, show)
 }
 
-/// Path, modification time and size of every file under `dir`, sorted.
+/// Edit mode writes the MIDI file of each song with an arrangement on every load, so Reaper's
+/// copy follows the saves. A file that can't be written is reported; the show plays on.
+pub fn export_arrangements(dir: &Path, show: &Show) {
+    for song in &show.songs {
+        if let Err(error) = arrangement::export(dir, song) {
+            eprintln!(
+                "blimey: {error}; the MIDI file of {} for Reaper is out of date",
+                song.name
+            );
+        }
+    }
+}
+
+/// Path, modification time and size of every file under `dir`, sorted. Leaves out the export
+/// folders, which loading writes to.
 fn stamps(dir: &Path) -> Vec<FileStamp> {
     let mut stamps = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
@@ -103,7 +121,9 @@ fn stamps(dir: &Path) -> Vec<FileStamp> {
             continue;
         };
         if metadata.is_dir() {
-            stamps.extend(self::stamps(&entry.path()));
+            if entry.file_name() != EXPORT_DIR {
+                stamps.extend(self::stamps(&entry.path()));
+            }
         } else {
             stamps.push((entry.path(), metadata.modified().ok(), metadata.len()));
         }
@@ -213,6 +233,31 @@ mod tests {
             [64, 128, 191, 255],
             "half a beat at 60 BPM, then the other half at 120 BPM from the reload at 500 ms"
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edit_mode_exports_an_arranged_song_on_load_and_on_each_reload_without_reloading_for_it() {
+        let dir = show_copy("hot-reload-export");
+        let song_file = dir.join("songs/arranged.yaml");
+        let arranged =
+            fs::read_to_string(Path::new(SHOW).join("../arranged/songs/arranged.yaml")).unwrap();
+        fs::write(&song_file, &arranged).unwrap();
+        let exported = dir.join(EXPORT_DIR).join("arranged.mid");
+
+        let mut shows = HotReload::load(&dir).unwrap();
+        let at_120_bpm = fs::read(&exported).unwrap();
+        assert_eq!(shows.current_with_loads().1, 0, "the export is no edit");
+
+        fs::write(&song_file, arranged.replace("bpm: 120", "bpm: 60")).unwrap();
+        assert_eq!(shows.current_with_loads().1, 1);
+        let at_60_bpm = fs::read(&exported).unwrap();
+        assert_ne!(at_60_bpm, at_120_bpm, "the save is exported");
+        assert_eq!(
+            at_60_bpm,
+            arrangement::midi_file(&shows.current().songs[0]).unwrap()
+        );
+        assert_eq!(shows.current_with_loads().1, 1);
         fs::remove_dir_all(dir).unwrap();
     }
 

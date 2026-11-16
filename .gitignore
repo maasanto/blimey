@@ -8,3 +8,6 @@ node_modules/
 .lavish/
 /claude-artifacts/
 /soak-*.txt
+# MIDI files exported for Reaper, rewritten on every load in edit mode.
+/shows/*/export/
+/tests/fixtures/shows/*/export/
