@@ -235,13 +235,9 @@ impl Outputs {
         last_good: Option<LastGoodShow>,
     ) -> Result<Box<dyn ShowSource>, Box<dyn Error>> {
         let (stamps, loaded) = hot_reload::load_keeping(show_dir, last_good.as_ref());
+        let is_from_folder = loaded.is_ok();
         let show = match loaded {
-            Ok(show) => {
-                if self.edit {
-                    hot_reload::export_arrangements(show_dir, &show);
-                }
-                show
-            }
+            Ok(show) => show,
             Err(error) => {
                 let Some(show) = last_good.as_ref().and_then(|last| last.load(show_dir)) else {
                     return Err(error.into());
@@ -255,7 +251,13 @@ impl Outputs {
             }
         };
         Ok(match self.mode() {
-            Mode::Edit => Box::new(HotReload::new(show_dir, stamps, show, last_good)),
+            Mode::Edit => {
+                let mut reload = HotReload::new(show_dir, stamps, show, last_good);
+                if is_from_folder {
+                    reload.export();
+                }
+                Box::new(reload)
+            }
             Mode::Show => Box::new(show),
         })
     }
@@ -505,6 +507,7 @@ fn export(show_dir: &Path, song: Option<&str>) -> Result<ExitCode, Box<dyn Error
                 println!("{}", path.display());
             }
         }
+        arrangement::remove_stale_exports(show_dir, &show)?;
         return Ok(ExitCode::SUCCESS);
     };
     let song = show

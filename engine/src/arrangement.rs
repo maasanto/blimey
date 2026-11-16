@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Show;
 use crate::clock_follower::{BarGrid, BarStretch};
 use crate::duration::{Length, TimeSignature};
 use crate::look::Level;
-use crate::Show;
 use crate::midi_file::MidiFile;
 use crate::show_file::write_atomically;
 use crate::song::Song;
