@@ -1,4 +1,4 @@
-//! Musical time from Reaper's MIDI clock (plan §5), or from the song's BPM when there is none.
+//! Musical time from the DAW's MIDI clock (plan §5), or from the song's BPM when there is none.
 //!
 //! Elapsed beats follow a continuous line, re-aimed at every tick so that it converges on the
 //! clock's position within about a beat. A tempo change, a jittery tick, a dropout or a resumed
@@ -43,7 +43,7 @@ pub enum TempoSource {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BarPosition {
-    /// Counted from 1, as Reaper shows it.
+    /// Counted from 1, as DAWs show it.
     pub bar: u32,
     /// From 1 to just under the beats per bar plus one; fractional between beats.
     pub beat: f64,
@@ -180,7 +180,7 @@ impl ClockFollower {
         match self.ticks.back() {
             Some(_) if self.clock_is_live(at) => self.clock_beats += 1.0 / TICKS_PER_BEAT,
             Some(&latest) if self.transport == Transport::Playing => {
-                // Reaper played on through a dropout: count the ticks lost at the last tempo.
+                // The DAW played on through a dropout: count the ticks lost at the last tempo.
                 let elapsed =
                     at.saturating_sub(latest).as_secs_f64() / self.tick_fit.interval_seconds;
                 self.clock_beats += elapsed.round().max(1.0) / TICKS_PER_BEAT;
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn a_bpm_edited_during_a_clock_dropout_still_catches_up_with_the_clock() {
         let mut follower = ClockFollower::new(120.0, TimeSignature::default());
-        // Two beats of clock at 120 BPM, then a dropout from 1 s to 2.5 s while Reaper plays on.
+        // Two beats of clock at 120 BPM, then a dropout from 1 s to 2.5 s while the DAW plays on.
         send_ticks(&mut follower, 120.0, 0, 49);
 
         follower.set_song_bpm(millis(1500.0), 60.0);
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(stopped.bar, 1);
         assert!((stopped.beat - 2.0).abs() < 0.05, "{stopped:?}");
 
-        // 6 s later (288 ticks at 120 BPM), Reaper cues bar 9 (32 beats = 128 sixteenths)
+        // 6 s later (288 ticks at 120 BPM), the DAW cues bar 9 (32 beats = 128 sixteenths)
         // and continues.
         let cue_ms = next_ms + 6000.0;
         follower.apply(millis(cue_ms), &[SONG_POSITION, 0, 1]);
@@ -556,7 +556,7 @@ mod tests {
             }
         };
 
-        // Reaper plays on at 140 BPM, but ticks 48 to 159 (2 s) are lost; the song says 92.
+        // The DAW plays on at 140 BPM, but ticks 48 to 159 (2 s) are lost; the song says 92.
         let last_tick = 160 + 4 * 24 - 1;
         for tick in (0..48).chain(160..=last_tick) {
             let arrival_ms = tick_arrival_ms(140.0, tick);

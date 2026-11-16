@@ -283,7 +283,7 @@ mod tests {
     }
 
     /// 250 messages due by each frame (10 000 a second): cue notes on and off, master moves
-    /// and live parameters, as a busy Reaper session might send.
+    /// and live parameters, as a busy DAW session might send.
     struct Flood {
         per_frame: usize,
         due: Option<Duration>,

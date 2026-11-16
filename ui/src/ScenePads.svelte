@@ -145,7 +145,7 @@
     pressed = { pointer: event.pointerId, number, gesture: 'click', started: null };
     pressed.timer = setTimeout(() => {
       pressed.gesture = 'hold';
-      // A scene already playing, from Reaper or the editor, is left to play.
+      // A scene already playing, from the DAW or the editor, is left to play.
       if (!isPlaying(number)) pressed.started = onhold(number);
     }, HOLD_MS);
   }
