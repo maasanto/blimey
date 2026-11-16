@@ -1256,29 +1256,29 @@ mod tests {
 
     #[test]
     fn the_audio_offset_changes_only_its_line_and_needs_audio() {
-        let show = fossile_copy("set-audio-offset");
-        let error = set_audio_offset(&show, "tell-me", "1s".into()).unwrap_err();
+        let show = demo_copy("set-audio-offset");
+        let error = set_audio_offset(&show, "demo-song", "1s".into()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
             error.to_string(),
-            "songs/tell-me.yaml: no audio to set the offset of; name its file under audio: first"
+            "songs/demo-song.yaml: no audio to set the offset of; name its file under audio: first"
         );
 
-        let path = show.join(TELL_ME);
+        let path = show.join(DEMO_SONG);
         let with_audio = fs::read_to_string(&path)
             .unwrap()
-            .replace("bpm: 92\n", "bpm: 92\naudio: { file: audio/tell-me.wav }\n");
+            .replace("bpm: 92\n", "bpm: 92\naudio: { file: audio/demo-song.wav }\n");
         fs::write(&path, &with_audio).unwrap();
-        set_audio_offset(&show, "tell-me", "1.25s".into()).unwrap();
+        set_audio_offset(&show, "demo-song", "1.25s".into()).unwrap();
         assert_eq!(
             changed_lines(&with_audio, &fs::read_to_string(&path).unwrap()),
             [(
-                "audio: { file: audio/tell-me.wav }".into(),
-                "audio: { file: audio/tell-me.wav, offset: 1.25s }".into()
+                "audio: { file: audio/demo-song.wav }".into(),
+                "audio: { file: audio/demo-song.wav, offset: 1.25s }".into()
             )]
         );
 
-        let refused = set_audio_offset(&show, "tell-me", "2 bars".into()).unwrap_err();
+        let refused = set_audio_offset(&show, "demo-song", "2 bars".into()).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
         assert!(fs::read_to_string(&path).unwrap().contains("offset: 1.25s"));
     }
