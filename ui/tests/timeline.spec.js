@@ -176,12 +176,12 @@ test('holding a block sends note-on at its level and letting go note-off', async
   midi.close();
 });
 
-test('Export for Reaper downloads the file the engine exports', async ({ page, show, startEngine }) => {
+test('Export to DAW downloads the file the engine exports', async ({ page, show, startEngine }) => {
   const { url } = await startEngine({ look: DARK });
   await page.goto(`${url}#builder/arranged/timeline`);
 
   const downloading = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Export for Reaper' }).click();
+  await page.getByRole('button', { name: 'Export to DAW' }).click();
   const download = await downloading;
   expect(download.suggestedFilename()).toBe('arranged.mid');
   expect(readFileSync(await download.path())).toEqual(readFileSync(path.join(show, 'export/arranged.mid')));

@@ -64,7 +64,7 @@ test('a look built in the builder plays the same from scene 36 after a restart',
   const second = await startEngine();
   expect((await nextDmx(second.address)).slice(0, 4), "fire's own look on wash-1").toEqual([255, 0, 0, 0]);
 
-  // 4. Fire scene 36 as Reaper would until it has its own control: song 1's program, then note 36.
+  // 4. Fire scene 36 as the DAW would until it has its own control: song 1's program, then note 36.
   for (const message of [[0xc1, 1], [0x91, 36, 127]]) {
     expect((await page.request.post(`${second.url}api/midi`, { data: { message } })).status()).toBe(204);
   }

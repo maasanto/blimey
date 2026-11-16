@@ -31,9 +31,8 @@ fn check(schema_name: &str, file: &Path) -> bool {
 }
 
 fn show_dirs() -> Vec<PathBuf> {
-    ["shows", "tests/fixtures/shows"]
-        .iter()
-        .flat_map(|parent| fs::read_dir(Path::new(ROOT).join(parent)).unwrap())
+    fs::read_dir(Path::new(ROOT).join("tests/fixtures/shows"))
+        .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.is_dir())
         .collect()
@@ -150,11 +149,11 @@ fn the_song_schema_takes_a_swell_or_a_pattern_on_a_layer_not_both() {
 }
 
 #[test]
-fn the_fossile_show_loads() {
-    let show = Show::load(&Path::new(ROOT).join("shows/fossile")).unwrap();
+fn the_demo_show_loads() {
+    let show = Show::load(&Path::new(ROOT).join("tests/fixtures/shows/demo")).unwrap();
 
     assert_eq!(show.rig.resolve("all-wash").unwrap().len(), 4);
     assert!(show.palettes.contains_key("deep-blue"));
     assert!(show.rig.fixtures.iter().all(|wash| wash.pixels.len() == 4));
-    assert!(show.songs.iter().any(|song| song.name == "tell-me"));
+    assert!(show.songs.iter().any(|song| song.name == "demo-song"));
 }

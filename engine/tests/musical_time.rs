@@ -44,7 +44,7 @@ fn follower(bpm: f64) -> ClockFollower {
     ClockFollower::new(bpm, TimeSignature::default())
 }
 
-/// Exact time in seconds of every tick from Reaper playing from the top at `origin`, the
+/// Exact time in seconds of every tick from the DAW playing from the top at `origin`, the
 /// tempo of each beat given by `bpm_of_beat`.
 fn tick_times(origin: f64, beats: u32, bpm_of_beat: impl Fn(u32) -> f64) -> Vec<f64> {
     let mut at = origin;
@@ -220,8 +220,8 @@ fn a_swell_rises_evenly_between_ticks() {
     }
 }
 
-/// Reaper playing 12 bars, each at a random tempo from 60 to `MAX_BPM` and with a jittery
-/// clock. Some bars lose the clock for 0.3–2 s while Reaper plays on; others start with a
+/// The DAW playing 12 bars, each at a random tempo from 60 to `MAX_BPM` and with a jittery
+/// clock. Some bars lose the clock for 0.3–2 s while the DAW plays on; others start with a
 /// stop of 0.3–3 s, then continue. The swell's note lands on bar 3.
 fn eventful_session(random: &mut Random) -> Vec<(f64, &'static [u8])> {
     let mut at = 0.5;

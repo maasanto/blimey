@@ -1,0 +1,4 @@
+# The set, in order, for `blimey soak tests/fixtures/shows/demo/setlist.yaml` (docs/migration.md).
+show: .
+songs:
+  - recordings/demo-song.synthetic.mid

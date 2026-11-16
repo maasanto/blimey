@@ -1,7 +1,7 @@
 //! Durations and time signatures as written in show files: `500ms`, `2s`, `0.5 beats`,
 //! `4 bars`; `4/4`, `6/8`.
 //!
-//! A beat is a quarter note, the unit of MIDI clock (24 ticks per beat) and of Reaper's BPM,
+//! A beat is a quarter note, the unit of MIDI clock (24 ticks per beat) and of a DAW's BPM,
 //! so a bar of 6/8 is 3 beats. `ClockFollower::progress` measures a `Length` as it runs.
 
 use std::time::Duration;

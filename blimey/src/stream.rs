@@ -629,7 +629,7 @@ mod tests {
         let mut live_parameters = [0.0; 8];
         live_parameters[2] = 0.5;
         let status = Status {
-            song: Some("tell-me".into()),
+            song: Some("demo-song".into()),
             cues: vec![
                 CueStatus {
                     note: 36,
@@ -661,7 +661,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(message["song"], "tell-me");
+        assert_eq!(message["song"], "demo-song");
         assert_eq!(
             message["cues"],
             json!([

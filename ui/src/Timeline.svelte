@@ -124,7 +124,7 @@
     playback.offset = offset;
   });
 
-  // Show mode doesn't play: the stage follows Reaper.
+  // Show mode doesn't play: the stage follows the DAW.
   $effect(() => {
     if (!editable) playback.pause();
   });

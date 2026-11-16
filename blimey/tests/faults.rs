@@ -1,5 +1,5 @@
 //! Fault injection (plan §9, §15) on the real binary, against an emulated Enttec box on a pty
-//! and a virtual CoreMIDI port standing in for Reaper: kill the engine, drop the MIDI port,
+//! and a virtual CoreMIDI port standing in for the DAW: kill the engine, drop the MIDI port,
 //! drop the serial port. macOS only, and ignored by a plain `cargo test`: run
 //! `scripts/fault-injection.sh`.
 #![cfg(target_os = "macos")]
@@ -56,16 +56,16 @@ impl Drop for Engine {
     }
 }
 
-/// Reaper's end of the MIDI link: a virtual source the engine connects to by name.
-fn reaper(port_name: &str) -> MidiOutputConnection {
+/// The DAW's end of the MIDI link: a virtual source the engine connects to by name.
+fn daw(port_name: &str) -> MidiOutputConnection {
     MidiOutput::new("blimey-faults")
         .unwrap()
         .create_virtual(port_name)
         .expect("create a virtual CoreMIDI port")
 }
 
-fn send(reaper: &mut MidiOutputConnection, message: &[u8]) {
-    reaper.send(message).unwrap();
+fn send(daw: &mut MidiOutputConnection, message: &[u8]) {
+    daw.send(message).unwrap();
 }
 
 /// A name and a state folder no other test run shares.
@@ -117,11 +117,11 @@ fn wait_for_saved_state(state_dir: &Path) -> Duration {
 fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
     let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("kill");
-    let mut reaper = reaper(&port_name);
+    let mut daw = daw(&port_name);
     let engine = Engine::start(&device, &port_name, &state_dir);
     wait_for(&device, None);
     for message in [&SELECT_SONG[..], &HALF_MASTER, &BLUE_SNAP] {
-        send(&mut reaper, message);
+        send(&mut daw, message);
     }
     wait_for(&device, Some(BLUE_AT_HALF));
     // A crash before the save loses the change (docs/api.md): kill only once it is saved.
@@ -133,7 +133,7 @@ fn killed_engine_restarts_within_a_second_with_its_song_and_master() {
     wait_for(&device, None);
     let first_frame = restarted.elapsed();
     let dark = device.frames().last().unwrap()[0..4].to_vec();
-    send(&mut reaper, &BLUE_SNAP);
+    send(&mut daw, &BLUE_SNAP);
     let next_cue = wait_for(&device, Some(BLUE_AT_HALF));
 
     eprintln!(
@@ -158,11 +158,11 @@ fn engine_runs_without_its_state_folder() {
     let (port_name, scratch_dir) = scratch("state");
     let not_a_folder = scratch_dir.join("a-file");
     fs::write(&not_a_folder, "").unwrap();
-    let mut reaper = reaper(&port_name);
+    let mut daw = daw(&port_name);
     let _engine = Engine::start(&device, &port_name, &not_a_folder);
     wait_for(&device, None);
-    send(&mut reaper, &SELECT_SONG);
-    send(&mut reaper, &BLUE_SNAP);
+    send(&mut daw, &SELECT_SONG);
+    send(&mut daw, &BLUE_SNAP);
 
     wait_for(&device, Some(BLUE_AT_FULL));
     fs::remove_dir_all(scratch_dir).unwrap();
@@ -173,7 +173,7 @@ fn engine_runs_without_its_state_folder() {
 fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
     let device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("midi");
-    let mut first_port = reaper(&port_name);
+    let mut first_port = daw(&port_name);
     let _engine = Engine::start(&device, &port_name, &state_dir);
     wait_for(&device, None);
     send(&mut first_port, &SELECT_SONG);
@@ -182,7 +182,7 @@ fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
 
     drop(first_port);
     thread::sleep(Duration::from_secs(1));
-    let mut second_port = reaper(&port_name);
+    let mut second_port = daw(&port_name);
     let restored = Instant::now();
     while device.frames().last().unwrap()[0..4] != BLUE_AT_HALF {
         assert!(
@@ -202,11 +202,11 @@ fn engine_follows_the_midi_port_when_it_drops_and_comes_back() {
 fn engine_resumes_output_when_the_serial_port_drops_and_comes_back() {
     let mut device = EmulatedEnttec::plug_in().unwrap();
     let (port_name, state_dir) = scratch("serial");
-    let mut reaper = reaper(&port_name);
+    let mut daw = daw(&port_name);
     let _engine = Engine::start(&device, &port_name, &state_dir);
     wait_for(&device, None);
-    send(&mut reaper, &SELECT_SONG);
-    send(&mut reaper, &BLUE_SNAP);
+    send(&mut daw, &SELECT_SONG);
+    send(&mut daw, &BLUE_SNAP);
     wait_for(&device, Some(BLUE_AT_FULL));
 
     device.unplug();

@@ -414,6 +414,21 @@ test('from the keyboard, a pad auditions and releases its scene, and the editor 
   midi.close();
 });
 
+test('a scene auditioned from the pads shows live on a small front view until it ends', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const auditioned = page.getByRole('complementary', { name: 'Scene on the rig' });
+  await expect(pad(page, 37)).toBeVisible();
+  await expect(auditioned).toBeHidden();
+
+  await page.getByRole('button', { name: 'Audition scene 37' }).click();
+  await expect(auditioned.locator('[data-fixture="wash-1"] circle').first()).toHaveAttribute('fill', '#ffd2a0');
+
+  await page.getByRole('button', { name: 'Release scene 37' }).click();
+  await expect(auditioned).toBeHidden();
+});
+
 test('thumbnails the engine refuses are cleared, saying why', async ({ page, show, startEngine }) => {
   addSong(show);
   const { url } = await startEngine();

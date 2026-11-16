@@ -1,4 +1,4 @@
-//! Live MIDI input from a CoreMIDI port such as the IAC bus Reaper sends to.
+//! Live MIDI input from a CoreMIDI port such as the IAC bus the DAW sends to.
 
 use std::error::Error;
 use std::sync::mpsc::{self, Receiver, Sender};

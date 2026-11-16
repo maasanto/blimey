@@ -110,7 +110,7 @@ fn invalid(message: String) -> io::Error {
 mod tests {
     use super::*;
 
-    const FOSSILE_WASHES: &str = "ranges:\n  - { first_note: 37, last_note: 52, address: 6 }\n";
+    const FOUR_WASHES: &str = "ranges:\n  - { first_note: 37, last_note: 52, address: 6 }\n";
 
     fn levels_after(map: &LegacyMap, messages: &[&[u8]]) -> Frame {
         let mut levels = [0; DMX_CHANNELS];
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn notes_37_to_52_drive_channels_6_to_21_at_twice_the_velocity() {
-        let map = LegacyMap::parse(FOSSILE_WASHES).unwrap();
+        let map = LegacyMap::parse(FOUR_WASHES).unwrap();
 
         let levels = levels_after(&map, &[&[0x90, 37, 100], &[0x90, 52, 1]]);
 
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn velocity_127_is_full_on() {
-        let map = LegacyMap::parse(FOSSILE_WASHES).unwrap();
+        let map = LegacyMap::parse(FOUR_WASHES).unwrap();
 
         assert_eq!(levels_after(&map, &[&[0x90, 40, 127]])[8], 255);
         assert_eq!(levels_after(&map, &[&[0x90, 40, 126]])[8], 252);
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn note_off_and_zero_velocity_note_on_go_dark() {
-        let map = LegacyMap::parse(FOSSILE_WASHES).unwrap();
+        let map = LegacyMap::parse(FOUR_WASHES).unwrap();
 
         assert_eq!(
             levels_after(&map, &[&[0x90, 40, 90], &[0x80, 40, 64]])[8],
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn retriggered_note_takes_the_new_velocity_and_one_note_off_ends_it() {
-        let map = LegacyMap::parse(FOSSILE_WASHES).unwrap();
+        let map = LegacyMap::parse(FOUR_WASHES).unwrap();
 
         let retriggered = levels_after(&map, &[&[0x90, 40, 100], &[0x90, 40, 30]]);
         let released = levels_after(&map, &[&[0x90, 40, 100], &[0x90, 40, 30], &[0x80, 40, 0]]);
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn ignores_other_channels_unmapped_notes_and_other_messages() {
-        let map = LegacyMap::parse(FOSSILE_WASHES).unwrap();
+        let map = LegacyMap::parse(FOUR_WASHES).unwrap();
 
         let levels = levels_after(
             &map,

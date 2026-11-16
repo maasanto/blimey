@@ -1,5 +1,5 @@
-# Example song from the plan (§6). Program and cue notes are placeholders until the Reaper
-# session is reprogrammed: Program Change 3 on channel 2 selects it, channel-2 notes fire cues.
+# Example song from the plan (§6): Program Change 3 on channel 2 selects it, channel-2 notes
+# fire cues.
 program: 3
 bpm: 92
 safe_look:

@@ -13,10 +13,10 @@
 
   /**
    * While a look is composed on the stage: `overlay` draws above the rig and fixtures stay put;
-   * `caught` outlines pixels, fixture or grid name → a set of pixel indices; `crossedOut` names the
-   * fixtures and grids to cross out.
+   * `underlay` draws on the stage beneath the rig; `caught` outlines pixels, fixture or grid name →
+   * a set of pixel indices; `crossedOut` names the fixtures and grids to cross out.
    */
-  let { overlay, caught, crossedOut } = $props();
+  let { overlay, underlay, caught, crossedOut } = $props();
 
   /** Room around the canvas, so fixtures on an edge stay whole. */
   const MARGIN = 70;
@@ -148,6 +148,7 @@
   <text x="0" y={HEIGHT + MARGIN / 2} class="side" text-anchor="start">Stage right</text>
   <text x={WIDTH / 2} y={HEIGHT + MARGIN / 2} class="side">Floor</text>
   <text x={WIDTH} y={HEIGHT + MARGIN / 2} class="side" text-anchor="end">Stage left</text>
+  {@render underlay?.()}
 
   {#each engine.rig?.fixtures ?? [] as fixture (fixture.name)}
     {@const colours = engine.frame?.pixels[fixture.name] ?? []}

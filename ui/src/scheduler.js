@@ -1,5 +1,5 @@
 // Plays a song's arrangement events (docs/api.md, Arrangement events) through `send`, timed on
-// `clock`, the audio clock while the song's audio plays: the browser is the clock, as Reaper is
+// `clock`, the audio clock while the song's audio plays: the browser is the clock, as the DAW is
 // on stage (plan §17, Playback in Blimey). Pure, so tests run it on a fake clock and timers.
 
 import { NOTE_OFF, NOTE_ON, PROGRAM_CHANGE } from './audition.js';
