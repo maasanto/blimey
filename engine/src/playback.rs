@@ -181,8 +181,11 @@ impl Playback {
     fn select_song(&mut self, show: &Show, program: u8, at: Duration) {
         let song = show.songs.iter().find(|song| song.program == program);
         self.song = song.map(|song| song.name.clone());
-        self.clock =
-            song.map(|song| ClockFollower::started_at(at, song.tempo(), song.time_signature));
+        self.clock = song.map(|song| {
+            let mut clock = ClockFollower::started_at(at, song.tempo(), song.time_signature);
+            clock.set_bar_grid(&song.bar_grid);
+            clock
+        });
         self.cues.clear();
         self.safe_look = false;
     }
@@ -283,9 +286,11 @@ impl Playback {
         // Legacy notes are raw DMX: colour at full, at intensity 1.
         let mut dimmers = VirtualDimmers::of(&output.enttec);
         look::render(&show.rig, look, &mut output.enttec, &mut dimmers);
-        // The builder's metronome: an edited `bpm` takes over at once.
+        // The builder's metronome: an edited `bpm` takes over at once, as does an edited
+        // arrangement's bar grid.
         if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
             clock.set_song_bpm(at, song.tempo());
+            clock.set_bar_grid(&song.bar_grid);
         }
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
             apply_master(&show.rig, self.master, &mut output);

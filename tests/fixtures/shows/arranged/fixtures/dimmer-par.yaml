@@ -1,0 +1,12 @@
+name: Test par with a dimmer channel
+modes:
+- name: 4ch
+  channels:
+  - name: Dimmer
+    attribute: dimmer
+  - name: Red
+    attribute: red
+  - name: Green
+    attribute: green
+  - name: Blue
+    attribute: blue

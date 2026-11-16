@@ -4,6 +4,7 @@
 //! against real devices or, in tests, against a MIDI file, a fake clock and
 //! a recording sink.
 
+pub mod arrangement;
 pub mod clock_follower;
 pub mod colour;
 pub mod cue;

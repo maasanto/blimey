@@ -9,21 +9,56 @@
   "properties": {
     "program": { "description": "Program Change value on channel 2, 0-127, unique across songs.", "$ref": "#/$defs/midi" },
     "bpm": { "description": "Tempo for beat and bar durations when no MIDI clock arrives. Defaults to 120.", "type": "number", "exclusiveMinimum": 0 },
-    "time_signature": {
-      "description": "Beats per bar over the note value, e.g. 4/4 or 6/8. A beat is a quarter note, so a bar of 6/8 is 3 beats. Defaults to 4/4.",
-      "type": "string",
-      "pattern": "^\\s*[1-9][0-9]*\\s*/\\s*(1|2|4|8|16|32)\\s*$"
-    },
+    "time_signature": { "description": "Defaults to 4/4.", "$ref": "#/$defs/timeSignature" },
     "safe_look": { "description": "What panic (channel 16, note 127) shows. Without it, panic goes dark.", "$ref": "#/$defs/values" },
     "cues": {
       "description": "Channel-2 note number → cue.",
       "type": "object",
       "propertyNames": { "pattern": "^([0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$" },
       "additionalProperties": { "$ref": "#/$defs/cue" }
+    },
+    "sections": {
+      "description": "Section name → section: the parts of the song the arrangement places, each defined once.",
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/section" }
+    },
+    "arrangement": {
+      "description": "Section names in playing order, each as often as it plays. Without it, the song has no running order and bar lines follow time_signature throughout.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     }
   },
   "$defs": {
     "midi": { "type": "integer", "minimum": 0, "maximum": 127 },
+    "timeSignature": {
+      "description": "Beats per bar over the note value, e.g. 4/4 or 6/8. A beat is a quarter note, so a bar of 6/8 is 3 beats.",
+      "type": "string",
+      "pattern": "^\\s*[1-9][0-9]*\\s*/\\s*(1|2|4|8|16|32)\\s*$"
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bars"],
+      "properties": {
+        "bars": { "description": "The section's length.", "type": "integer", "minimum": 1 },
+        "time_signature": { "description": "For its bar lines and its blocks' bars, when it differs from the song's.", "$ref": "#/$defs/timeSignature" },
+        "blocks": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+      }
+    },
+    "block": {
+      "description": "A scene held, as a channel-2 note, from bar and beat for length. It ends at or before the section's end; two blocks of one scene may not overlap. The engine checks both, and that the scene is in cues.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scene", "bar", "length"],
+      "properties": {
+        "scene": { "description": "The cue's note number, its key in cues.", "$ref": "#/$defs/midi" },
+        "bar": { "description": "Bar of the section, from 1.", "type": "integer", "minimum": 1 },
+        "beat": { "description": "Beat of the bar, from 1, in quarter beats; fractions allowed. Defaults to 1.", "type": "number", "minimum": 1 },
+        "length": { "description": "In beats or bars of the section's time signature.", "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?\\s*(beats?|bars?)$" },
+        "level": { "description": "Scales the scene, as the note's velocity. Defaults to 100%.", "type": "string", "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%$" }
+      }
+    },
     "cue": {
       "oneOf": [{ "$ref": "#/$defs/scene" }, { "$ref": "#/$defs/swell" }, { "$ref": "#/$defs/pattern" }, { "$ref": "#/$defs/pixel" }]
     },

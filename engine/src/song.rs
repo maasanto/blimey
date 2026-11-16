@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_yaml_ng::Mapping;
 
 use crate::Show;
+use crate::arrangement::{self, Section, SectionFile};
+use crate::clock_follower::BarGrid;
 use crate::cue::{Cue, CueEntry, PixelCues, resolve_look};
 use crate::duration::TimeSignature;
 use crate::look::Look;
@@ -28,6 +30,10 @@ struct SongFile {
     safe_look: Mapping,
     #[serde(default)]
     cues: BTreeMap<u8, CueEntry>,
+    #[serde(default)]
+    sections: BTreeMap<String, SectionFile>,
+    #[serde(default)]
+    arrangement: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +50,12 @@ pub struct Song {
     pub safe_look: Look,
     /// Channel-2 note number → the cue it fires.
     pub cues: BTreeMap<u8, Cue>,
+    /// By name; the arrangement places them.
+    pub sections: BTreeMap<String, Section>,
+    /// Section names in playing order; empty for a song without an arrangement.
+    pub arrangement: Vec<String>,
+    /// Bar lines of the arrangement's sections, then of `time_signature`.
+    pub bar_grid: BarGrid,
 }
 
 impl Song {
@@ -90,6 +102,30 @@ impl Song {
             let cue = entry.resolve(show, time_signature, &pixel_cues);
             cues.insert(slot, cue.map_err(in_cue)?);
         }
+        let mut sections = BTreeMap::new();
+        for (section_name, section) in file.sections {
+            let section = section
+                .resolve(time_signature, |note| cues.contains_key(&note))
+                .map_err(|(block, error)| {
+                    let message = format!("section {section_name}: {error}");
+                    match line_in_section(yaml, &section_name, block) {
+                        Some(line) => format!("line {line}: {message}"),
+                        None => message,
+                    }
+                })?;
+            sections.insert(section_name, section);
+        }
+        if let Some(unknown) = file
+            .arrangement
+            .iter()
+            .find(|placed| !sections.contains_key(*placed))
+        {
+            return Err(located(
+                "arrangement",
+                format!("arrangement: no section {unknown:?} in sections"),
+            ));
+        }
+        let bar_grid = arrangement::bar_grid(&sections, &file.arrangement, time_signature);
         Ok(Song {
             name: name.into(),
             program: file.program,
@@ -97,8 +133,43 @@ impl Song {
             time_signature,
             safe_look,
             cues,
+            sections,
+            arrangement: file.arrangement,
+            bar_grid,
         })
     }
+}
+
+/// The 1-based line of section `name` under `sections:`, or of its block `block` when given
+/// and found. Finds keys and items of block-style YAML only, each nested deeper than its parent.
+fn line_in_section(yaml: &str, name: &str, block: Option<usize>) -> Option<usize> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let lines = &lines[..];
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let is_key = |line: &str, key: &str| {
+        line.trim_start()
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.starts_with(':'))
+    };
+    let nested = |parent: usize| {
+        let parent_indent = indent(lines[parent]);
+        lines[parent + 1..]
+            .iter()
+            .enumerate()
+            .take_while(move |(_, line)| line.trim().is_empty() || indent(line) > parent_indent)
+            .map(move |(offset, line)| (parent + 1 + offset, *line))
+    };
+    let sections = lines
+        .iter()
+        .position(|line| indent(line) == 0 && is_key(line, "sections"))?;
+    let (section, _) = nested(sections).find(|(_, line)| is_key(line, name))?;
+    let block_line = block.and_then(|block| {
+        let (blocks, _) = nested(section).find(|(_, line)| is_key(line, "blocks"))?;
+        nested(blocks)
+            .filter(|(_, line)| line.trim_start().starts_with('-'))
+            .nth(block)
+    });
+    Some(block_line.map_or(section, |(line, _)| line) + 1)
 }
 
 /// The 1-based line that starts with `key:`. Finds keys of block-style YAML only.
@@ -464,12 +535,80 @@ mod tests {
         );
         assert_eq!(
             error("program: 3\ntempo: 92\n"),
-            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `safe_look`, `cues` at line 2 column 1"
+            "unknown field `tempo`, expected one of `program`, `bpm`, `time_signature`, `safe_look`, `cues`, `sections`, `arrangement` at line 2 column 1"
         );
         assert_eq!(
             error("program: 3\ntime_signature: 4/3\n"),
             "line 2: time signature \"4/3\" must be beats/note value with a power of two up to 32 below, e.g. 4/4 or 6/8"
         );
+    }
+
+    const ARRANGED: &str = "program: 3\ncues:\n  36: { name: red, type: scene, values: {} }\n  37: { name: blue, type: scene, values: {} }\nsections:\n  verse:\n    bars: 2\n    blocks:\n      - { scene: 36, bar: 1, length: 2 bars }\n      - { scene: 37, bar: 2, beat: 3.5, length: 1.5 beats, level: 50% }\n  bridge:\n    bars: 1\n    time_signature: 3/4\n    blocks:\n      - { scene: 36, bar: 1, length: 3 beats }\narrangement: [verse, bridge, verse]\n";
+
+    #[test]
+    fn an_arrangement_places_its_sections_and_their_blocks_in_beats() {
+        let song = Song::parse("song", ARRANGED, &show()).unwrap();
+
+        assert_eq!(song.arrangement, ["verse", "bridge", "verse"]);
+        let verse = &song.sections["verse"];
+        assert_eq!(verse.time_signature, TimeSignature::default());
+        assert_eq!(
+            (
+                verse.blocks[1].start,
+                verse.blocks[1].end,
+                verse.blocks[1].level
+            ),
+            (6.5, 8.0, 0.5)
+        );
+        assert_eq!(song.sections["bridge"].beats(), 3.0);
+        let bar_and_beat = |beats| {
+            let position = song.bar_grid.position(beats);
+            (position.bar, position.beat)
+        };
+        assert_eq!(bar_and_beat(9.0), (3, 2.0), "the bridge's 3/4 bar");
+        assert_eq!(
+            bar_and_beat(11.0),
+            (4, 1.0),
+            "the verse again, from beat 11"
+        );
+        assert_eq!(bar_and_beat(20.0), (6, 2.0), "4/4 after the arrangement");
+    }
+
+    #[test]
+    fn arrangement_errors_name_their_line() {
+        let refused = [
+            (
+                ("[verse, bridge, verse]", "[verse, outro]"),
+                "line 16: arrangement: no section \"outro\" in sections",
+            ),
+            (
+                ("scene: 37", "scene: 50"),
+                "line 10: section verse: block 2: scene 50 is not in cues",
+            ),
+            (
+                ("length: 3 beats", "length: 4 beats"),
+                "line 15: section bridge: block 1: runs 1 beats past the end of the section",
+            ),
+            (
+                ("scene: 37", "scene: 36"),
+                "line 10: section verse: block 2: overlaps block 1 of scene 36; a scene plays once at a time",
+            ),
+            (
+                ("length: 2 bars", "length: 4s"),
+                "line 9: section verse: block 1: length must be in beats or bars, not ms or s",
+            ),
+            (
+                ("beat: 3.5", "beat: 5"),
+                "line 10: section verse: block 2: bar 2 beat 5 is not in a bar: bars count from 1, beats from 1 to under 5",
+            ),
+            (
+                ("bars: 1", "bars: 0"),
+                "line 11: section bridge: bars must be 1 or more",
+            ),
+        ];
+        for ((from, to), expected) in refused {
+            assert_eq!(error(&ARRANGED.replacen(from, to, 1)), expected, "{to}");
+        }
     }
 
     #[test]

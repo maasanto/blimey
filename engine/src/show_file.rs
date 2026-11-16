@@ -128,8 +128,8 @@ fn refuse_case_twin(show_dir: &Path, file: &str, name: &str) -> io::Result<()> {
     }
 }
 
-/// Keys in the order the schema lists them, each cue's by its type's definition, and cues by
-/// note number.
+/// Keys in the order the schema lists them, each cue's by its type's definition, each section's
+/// and block's by theirs, and cues by note number.
 fn song_in_schema_order(content: Value, schema: &Value) -> Value {
     let Value::Object(mut song) = content else {
         return content;
@@ -152,6 +152,16 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
                 }
             })
             .collect();
+    }
+    if let Some(Value::Object(sections)) = song.get_mut("sections") {
+        for section in sections.values_mut() {
+            *section = in_order(section.take(), &schema["$defs"]["section"]["properties"]);
+            if let Some(Value::Array(blocks)) = section.get_mut("blocks") {
+                for block in blocks {
+                    *block = in_order(block.take(), &schema["$defs"]["block"]["properties"]);
+                }
+            }
+        }
     }
     in_order(Value::Object(song), &schema["properties"])
 }
@@ -447,6 +457,28 @@ pub fn delete_cue(show_dir: &Path, song: &str, note: u8) -> io::Result<Save> {
 pub fn set_bpm(show_dir: &Path, song: &str, bpm: serde_json::Number) -> io::Result<Save> {
     edit_song(show_dir, song, |_, song| {
         song.insert("bpm".into(), bpm.into());
+        Ok(())
+    })
+}
+
+/// Sets the `sections` and `arrangement` of `songs/<song>.yaml`, leaving the rest of it as it
+/// is. An empty one is left out of the file.
+pub fn set_arrangement(
+    show_dir: &Path,
+    song: &str,
+    sections: Value,
+    arrangement: Value,
+) -> io::Result<Save> {
+    edit_song(show_dir, song, |_, song| {
+        for (key, value) in [("sections", sections), ("arrangement", arrangement)] {
+            let is_empty = value.as_object().is_some_and(Map::is_empty)
+                || value.as_array().is_some_and(Vec::is_empty);
+            if is_empty {
+                song.remove(key);
+            } else {
+                song.insert(key.into(), value);
+            }
+        }
         Ok(())
     })
 }
