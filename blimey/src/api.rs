@@ -315,7 +315,7 @@ async fn arrangement_midi(State(api): State<Api>, Path(song): Path<String>) -> R
                 (header::CONTENT_TYPE, "audio/midi".to_owned()),
                 (
                     header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{song}.mid\""),
+                    attachment(&format!("{song}.mid")),
                 ),
             ],
             bytes,
@@ -323,6 +323,30 @@ async fn arrangement_midi(State(api): State<Api>, Path(song): Path<String>) -> R
             .into_response(),
         Err(error) => error_response(&error),
     }
+}
+
+/// A `Content-Disposition` downloading as `file_name`, whatever it holds: an ASCII stand-in
+/// for old clients, and the name itself percent-encoded (RFC 6266, RFC 5987).
+fn attachment(file_name: &str) -> String {
+    let is_safe = |byte: u8| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte);
+    let ascii: String = file_name
+        .chars()
+        .map(|c| match u8::try_from(c) {
+            Ok(byte) if is_safe(byte) => c,
+            _ => '_',
+        })
+        .collect();
+    let encoded: String = file_name
+        .bytes()
+        .map(|byte| {
+            if is_safe(byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 async fn delete_cue(State(api): State<Api>, Path((song, note)): Path<(String, u8)>) -> Response {
@@ -898,6 +922,20 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             let show = Show::load(&dir).unwrap();
             assert_eq!(file, arrangement::midi_file(&show.songs[0]).unwrap());
+
+            let named = "café \"live\"";
+            std::fs::write(
+                dir.join(format!("songs/{named}.yaml")),
+                arranged.replace("program: 1", "program: 2"),
+            )
+            .unwrap();
+            let download = arrangement_midi(State(api.clone()), Path(named.into())).await;
+            assert_eq!(download.status(), StatusCode::OK);
+            assert_eq!(
+                download.headers()[header::CONTENT_DISPOSITION],
+                "attachment; filename=\"caf___live_.mid\"; filename*=UTF-8''caf%C3%A9%20%22live%22.mid"
+            );
+            std::fs::remove_file(dir.join(format!("songs/{named}.yaml"))).unwrap();
 
             assert_eq!(undo(State(api.clone())).await.status(), StatusCode::OK);
             assert_eq!(std::fs::read_to_string(&song_file).unwrap(), unarranged);
