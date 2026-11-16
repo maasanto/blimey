@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { withAudio } from './audio.js';
 import { test, expect } from './engine.js';
 
 // The C20 fixture: 8 bars, 14 s at 120 BPM.
@@ -9,42 +10,8 @@ const NOTE_ON = 0x91;
 const NOTE_OFF = 0x81;
 /** How far from its time each scene may be sent, as the plan allows. */
 const TOLERANCE_MS = 50;
-const SAMPLE_RATE = 8000;
 
 const songFile = (show) => path.join(show, 'songs/arranged.yaml');
-
-/** 16-bit mono PCM: a 10 ms beep every half second, so the waveform shows the beats at 120 BPM. */
-function beepsWav(seconds) {
-  const samples = Math.round(seconds * SAMPLE_RATE);
-  const wav = Buffer.alloc(44 + samples * 2);
-  wav.write('RIFF', 0);
-  wav.writeUInt32LE(36 + samples * 2, 4);
-  wav.write('WAVEfmt ', 8);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(SAMPLE_RATE, 24);
-  wav.writeUInt32LE(SAMPLE_RATE * 2, 28);
-  wav.writeUInt16LE(2, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write('data', 36);
-  wav.writeUInt32LE(samples * 2, 40);
-  for (let index = 0; index < samples; index += 1) {
-    const isBeep = index % (SAMPLE_RATE / 2) < SAMPLE_RATE / 100;
-    wav.writeInt16LE(isBeep ? Math.round(Math.sin((index / SAMPLE_RATE) * 2 * Math.PI * 1000) * 20000) : 0, 44 + index * 2);
-  }
-  return wav;
-}
-
-/** Gives the song `audio: { file }`, and writes the file unless `isMissing`. */
-function withAudio(show, file, { isMissing = false } = {}) {
-  const song = readFileSync(songFile(show), 'utf8').replace('bpm: 120\n', `bpm: 120\naudio: { file: ${file} }\n`);
-  writeFileSync(songFile(show), song);
-  if (isMissing) return song;
-  mkdirSync(path.join(show, 'audio'));
-  writeFileSync(path.join(show, file), beepsWav(16));
-  return song;
-}
 
 /** Every MIDI message the page posts, with when it posted it. */
 function recordPosts(page) {
