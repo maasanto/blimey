@@ -35,7 +35,8 @@
   const NO_HITS = { pattern: { length: '1 bar', hits: [] } };
 
   const thumbnails = new Thumbnails();
-  const speed = $derived(speedOf(layer));
+  const speedText = $derived(layer.params?.speed ?? '1 bar');
+  const speed = $derived(speedOf(speedText));
   const rhythm = $derived(layer.swell ? { swell: layer.swell } : layer.pattern ? { pattern: layer.pattern } : null);
   const grooveChoices = $derived(grooves(barBeats));
   const groove = $derived.by(() => {
@@ -88,8 +89,8 @@
   const hex = (color) => palettes[color] ?? (color?.startsWith('#') ? color : '#000000');
 
   /** `speed` as a slider value and unit; milliseconds show as seconds. */
-  function speedOf({ params }) {
-    const match = /^\s*([0-9.]+)\s*(ms|s|beats?|bars?)\s*$/.exec(params?.speed ?? '1 bar');
+  function speedOf(text) {
+    const match = /^\s*([0-9.]+)\s*(ms|s|beats?|bars?)\s*$/.exec(text);
     if (!match) return { value: 1, unit: 'bars' };
     const value = Number(match[1]);
     if (match[2] === 'ms') return { value: value / 1000, unit: 's' };
@@ -198,6 +199,15 @@
     {/if}
   {/key}
   <div class="fields">
+    <!-- First, so its full row never leaves a hole in the grid. Negated so that right, and up, is a shorter period: a faster pattern. -->
+    <label class="speed">
+      Speed
+      <input type="range" aria-label="Speed" aria-valuetext={speedText} min="-16" max="-0.25" step="0.25" value={-speed.value} oninput={(event) => setSpeed({ ...speed, value: -Number(event.currentTarget.value) })} />
+      <select aria-label="Speed unit" value={speed.unit} onchange={(event) => setSpeed({ ...speed, unit: event.currentTarget.value })}>
+        {#each SPEED_UNITS as unit (unit)}<option>{unit}</option>{/each}
+      </select>
+      <output>{speedText}</output>
+    </label>
     <label>
       Direction
       <select aria-label="Direction" value={layer.params?.direction ?? DIRECTIONS[0]} onchange={(event) => setParam('direction', event.currentTarget.value)}>
@@ -208,14 +218,6 @@
       Width
       <input type="range" aria-label="Width" min="0.05" max="1" step="0.05" value={layer.params?.width ?? 1} oninput={(event) => setParam('width', Number(event.currentTarget.value))} />
       <output>{layer.params?.width ?? 1}</output>
-    </label>
-    <label>
-      Speed
-      <input type="range" aria-label="Speed" min="0.25" max="16" step="0.25" value={speed.value} oninput={(event) => setSpeed({ ...speed, value: Number(event.currentTarget.value) })} />
-      <select aria-label="Speed unit" value={speed.unit} onchange={(event) => setSpeed({ ...speed, unit: event.currentTarget.value })}>
-        {#each SPEED_UNITS as unit (unit)}<option>{unit}</option>{/each}
-      </select>
-      <output>{layer.params?.speed ?? '1 bar'}</output>
     </label>
     <label>
       Level
@@ -371,6 +373,10 @@
   .fields input[type='range'] {
     flex: 1;
     min-width: 0;
+  }
+
+  .speed {
+    grid-column: 1 / -1;
   }
 
   .area {

@@ -430,6 +430,28 @@ test('a groove written by hand in another key and hit order still reads as that 
   await expect(page.getByRole('button', { name: 'Rhythm: backbeat' })).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('the speed slider runs slow to fast, left to right, and saves the period as before', async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  const songFile = path.join(show, 'songs/demo.yaml');
+  writeFileSync(songFile, 'program: 1\ncues:\n  40:\n    name: run\n    type: pixel\n    layers:\n      - { effect: chase, params: { speed: 1 bar } }\n');
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'white chase everywhere', exact: true }).click();
+  const speed = page.getByLabel('Speed', { exact: true });
+  const width = page.getByLabel('Width', { exact: true });
+  expect((await speed.boundingBox()).width, 'the speed slider gets a row of its own').toBeGreaterThan((await width.boundingBox()).width);
+
+  await speed.press('ArrowRight');
+  await expect(speed).toHaveAttribute('aria-valuetext', '0.75 bars');
+  await speed.press('End');
+  await expect(speed).toHaveAttribute('aria-valuetext', '0.25 bars');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toContain('params: { speed: 0.25 bars }');
+});
+
 test("an area keeps its own saved rhythm to audition after a reorder, and a new one has none", async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
   const layers =
