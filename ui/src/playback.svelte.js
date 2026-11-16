@@ -8,6 +8,9 @@ export const PEAKS_PER_SECOND = 100;
 const CLICK_HZ = 1000;
 const CLICK_SECONDS = 0.03;
 const CLICK_GAIN = 0.3;
+/** How long the audio clock may take to start after Play, well over Chromium's ~135 ms. */
+const CLOCK_START_MS = 2000;
+const CLOCK_POLL_MS = 5;
 
 export class Playback {
   /** Where the song is, in seconds from bar 1. */
@@ -21,8 +24,14 @@ export class Playback {
   #offset = 0;
   #context = new AudioContext();
   #source = null;
+  /** The click track of the playback under way, through one gain to silence it at once. */
+  #clicks = null;
   #frame = null;
   #scheduler;
+  #bpm = 120;
+  #seconds = 0;
+  /** How long after the audio clock the sound is heard, as read at the last start. */
+  #latency = 0;
   /** Counts audio loads, so a slow one that a newer one replaced is dropped. */
   #loads = 0;
 
@@ -30,18 +39,21 @@ export class Playback {
   constructor(send) {
     this.#scheduler = createScheduler({
       clock: () => this.#context.currentTime,
-      send,
-      click: () => {
-        if (!this.audio) this.#click();
+      latency: () => {
+        this.#latency = (this.#context.outputLatency ?? 0) + this.#context.baseLatency;
+        return this.#latency;
       },
+      send,
       onstart: (seconds) => this.#start(seconds),
       onstop: () => this.#stop(),
     });
   }
 
-  /** The song's events, `GET /api/songs/<song>/arrangement/events`. */
-  load(song) {
-    this.#scheduler.load(song);
+  /** The song's events, `GET /api/songs/<song>/arrangement/events`, and its length in `seconds`. */
+  load(song, seconds) {
+    this.#bpm = song.bpm;
+    this.#seconds = seconds;
+    this.#scheduler.load(song, seconds);
   }
 
   /** Decodes the audio at `url`, or plays with the click for none; a missing file (`404`) plays silent too. */
@@ -66,7 +78,7 @@ export class Playback {
   set offset(seconds) {
     if (seconds === this.#offset) return;
     this.#offset = seconds;
-    if (this.isPlaying) this.#restartAudio();
+    if (this.isPlaying && this.audio) this.#restartAudio();
   }
 
   async play() {
@@ -75,7 +87,14 @@ export class Playback {
     // the audio plays from where it stood: start on it once it moves, so the first scenes land
     // with the music rather than ahead of it.
     const stood = this.#context.currentTime;
-    while (this.#context.currentTime === stood) await new Promise(requestAnimationFrame);
+    const deadline = performance.now() + CLOCK_START_MS;
+    while (this.#context.currentTime === stood) {
+      if (this.#context.state === 'closed') return;
+      if (performance.now() > deadline) {
+        throw new Error("The browser's audio output didn't start, so the song can't play: check that the browser may play sound and an output device is connected, then press Play again.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLOCK_POLL_MS));
+    }
     this.#scheduler.play(this.position);
   }
 
@@ -95,7 +114,8 @@ export class Playback {
 
   #start(seconds) {
     this.isPlaying = true;
-    this.#playAudio(seconds);
+    if (this.audio) this.#playAudio(seconds);
+    else this.#playClicks(seconds);
     const follow = () => {
       this.position = this.#scheduler.position();
       this.#frame = requestAnimationFrame(follow);
@@ -105,34 +125,50 @@ export class Playback {
 
   #stop() {
     cancelAnimationFrame(this.#frame);
-    this.#source?.stop();
-    this.#source = null;
+    this.#silence();
     this.isPlaying = false;
     this.position = this.#scheduler.position();
   }
 
+  #silence() {
+    this.#source?.stop();
+    this.#source = null;
+    this.#clicks?.disconnect();
+    this.#clicks = null;
+  }
+
+  /** Plays the audio from the song's second `seconds`, starting now: it is heard as the scheduler plays it. */
   #playAudio(seconds) {
     const at = this.#offset + seconds;
-    if (!this.audio || at >= this.audio.buffer.duration) return;
+    if (at >= this.audio.buffer.duration) return;
     this.#source = new AudioBufferSourceNode(this.#context, { buffer: this.audio.buffer });
     this.#source.connect(this.#context.destination);
     this.#source.start(0, at);
   }
 
+  /** Puts the audio, now loaded or moved, where the scheduler will be once what starts now is heard. */
   #restartAudio() {
-    this.#source?.stop();
-    this.#source = null;
-    this.#playAudio(this.#scheduler.position());
+    this.#silence();
+    this.#playAudio(this.#scheduler.position() + this.#latency);
   }
 
-  #click() {
+  /** Schedules a click on each beat from the song's second `seconds` to its end, on the audio clock from now. */
+  // ponytail: every click of the song is scheduled at once; schedule a few seconds ahead if long songs ever stutter.
+  #playClicks(seconds) {
     const now = this.#context.currentTime;
-    const tone = new OscillatorNode(this.#context, { frequency: CLICK_HZ });
-    const gain = new GainNode(this.#context, { gain: CLICK_GAIN });
-    gain.gain.exponentialRampToValueAtTime(0.001, now + CLICK_SECONDS);
-    tone.connect(gain).connect(this.#context.destination);
-    tone.start(now);
-    tone.stop(now + CLICK_SECONDS);
+    this.#clicks = new GainNode(this.#context, { gain: CLICK_GAIN });
+    this.#clicks.connect(this.#context.destination);
+    const beatSeconds = 60 / this.#bpm;
+    for (let beat = Math.ceil(seconds / beatSeconds); beat * beatSeconds < this.#seconds; beat += 1) {
+      const at = now + beat * beatSeconds - seconds;
+      const tone = new OscillatorNode(this.#context, { frequency: CLICK_HZ });
+      const envelope = new GainNode(this.#context);
+      envelope.gain.setValueAtTime(1, at);
+      envelope.gain.exponentialRampToValueAtTime(0.001, at + CLICK_SECONDS);
+      tone.connect(envelope).connect(this.#clicks);
+      tone.start(at);
+      tone.stop(at + CLICK_SECONDS);
+    }
   }
 }
 

@@ -25,17 +25,19 @@ const SONG = {
   ],
 };
 
-/** A scheduler on a fake clock, recording what it sends and when. */
-function fakePlayback() {
+/** The song's 3 bars: the last block ends at 6 s, the arrangement at 8 s. */
+const SONG_SECONDS = 8;
+
+/** A scheduler on a fake clock, its sound heard `latency` seconds late, recording what it sends and when. */
+function fakePlayback({ latency = 0 } = {}) {
   let now = 0;
   let nextTimer = 0;
   const timers = new Map();
   const sent = [];
-  const clicks = [];
   const scheduler = createScheduler({
     clock: () => now,
+    latency: () => latency,
     send: (message) => sent.push({ at: now, message }),
-    click: (beat) => clicks.push({ at: now, beat }),
     setTimer: (wake, ms) => {
       nextTimer += 1;
       timers.set(nextTimer, { wake, at: now + Math.max(0, ms) / 1000 });
@@ -43,7 +45,7 @@ function fakePlayback() {
     },
     clearTimer: (timer) => timers.delete(timer),
   });
-  scheduler.load(SONG);
+  scheduler.load(SONG, SONG_SECONDS);
   /** Moves the clock on by `seconds`, running each timer due on the way a little late. */
   function advance(seconds) {
     const until = now + seconds;
@@ -59,13 +61,15 @@ function fakePlayback() {
   /** The messages sent since the last call. */
   let read = 0;
   const since = () => sent.slice(read, (read = sent.length)).map(({ message }) => message);
-  return { scheduler, sent, clicks, advance, since };
+  return { scheduler, sent, advance, since };
 }
 
-test('playing from the top sends the song, then every event within a frame of its time, and stops at the end', () => {
-  const { scheduler, sent, clicks, advance } = fakePlayback();
+test('playing from the top sends the song, then every event within a frame of its time, and stops at the end of the last bar', () => {
+  const { scheduler, sent, advance } = fakePlayback();
   scheduler.play();
-  advance(10);
+  advance(7);
+  expect(scheduler.isPlaying(), 'the bars after the last block still play').toBe(true);
+  advance(3);
 
   expect(sent.map(({ message }) => message)).toEqual([
     [0xc1, 1],
@@ -79,10 +83,41 @@ test('playing from the top sends the song, then every event within a frame of it
   ]);
   const due = [0, 0, 0, 3, 4, 4, 4, 6];
   sent.forEach(({ at }, index) => expect(Math.abs(at - due[index]), `message ${index}`).toBeLessThanOrEqual(FRAME_SECONDS));
-  expect(clicks.map(({ beat }) => beat)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-  clicks.forEach(({ at, beat }) => expect(Math.abs(at - beat / 2)).toBeLessThanOrEqual(FRAME_SECONDS));
   expect(scheduler.isPlaying()).toBe(false);
-  expect(scheduler.position()).toBe(6);
+  expect(scheduler.position()).toBe(SONG_SECONDS);
+});
+
+test('each scene is sent as the sound is heard, the output latency after the clock', () => {
+  const latency = 0.2;
+  const { scheduler, sent, advance } = fakePlayback({ latency });
+  scheduler.play();
+  advance(5);
+
+  const scenes = sent.slice(2);
+  const due = [0, 3, 4, 4, 4].map((seconds) => seconds + latency);
+  scenes.forEach(({ at }, index) => expect(Math.abs(at - due[index]), `scene message ${index}`).toBeLessThanOrEqual(FRAME_SECONDS));
+});
+
+test('an arrangement without blocks plays to its end', () => {
+  const { scheduler, advance } = fakePlayback();
+  scheduler.load({ bpm: 120, events: SONG.events.filter((event) => !event.scene) }, SONG_SECONDS);
+  scheduler.play();
+  advance(SONG_SECONDS - 1);
+  expect(scheduler.isPlaying()).toBe(true);
+  advance(2);
+  expect(scheduler.isPlaying()).toBe(false);
+});
+
+test('an event an edit adds before the next one is sent on time', () => {
+  const { scheduler, sent, advance } = fakePlayback();
+  scheduler.play();
+  advance(0.5);
+  const withRed = [...SONG.events.slice(0, 4), { beats: 2, seconds: 1, type: 'note_on', scene: 40, velocity: 127 }, ...SONG.events.slice(4)];
+  scheduler.load({ ...SONG, events: withRed }, SONG_SECONDS);
+  advance(1);
+
+  const added = sent.find(({ message }) => message[1] === 40);
+  expect(Math.abs(added.at - 1)).toBeLessThanOrEqual(FRAME_SECONDS);
 });
 
 test('a seek mid-block releases what it started, sends the position and fires the blocks playing there', () => {
@@ -93,8 +128,8 @@ test('a seek mid-block releases what it started, sends the position and fires th
 
   scheduler.seek(5);
   expect(since(), 'beat 10 is sixteenth 40').toEqual([[0x81, 36, 0], [0x81, 37, 0], [0xf2, 40, 0], [0x91, 42, 127]]);
-  advance(1.1);
-  expect(since()).toEqual([[0x81, 42, 0]]);
+  advance(3.1);
+  expect(since(), 'then on to the end').toEqual([[0x81, 42, 0]]);
 
   scheduler.play(3.5);
   since();
@@ -133,7 +168,7 @@ test('an edit while playing takes effect from the next event, releasing a block 
 
   const withoutBlue = SONG.events.filter((event) => event.scene !== 37);
   const later = withoutBlue.map((event) => (event.scene === 42 ? { ...event, beats: event.beats + 2, seconds: event.seconds + 1 } : event));
-  scheduler.load({ ...SONG, events: later });
+  scheduler.load({ ...SONG, events: later }, SONG_SECONDS);
   expect(since()).toEqual([[0x81, 37, 0]]);
   advance(1);
   expect(since()).toEqual([[0x81, 36, 0]]);

@@ -12,17 +12,18 @@ const DATA_BITS = 7;
 const DATA_MASK = 0x7f;
 
 /**
- * `clock()` is the time in seconds; `send(message)` sends one MIDI message; `click(beat)` sounds
- * the click on each beat from the top of the song; `onstart(seconds)` and `onstop()` say when
- * playback starts from a point of the song and stops, to start and stop the audio with it.
- * `setTimer` and `clearTimer` default to the browser's.
+ * `clock()` is the time in seconds; `latency()` how long after the clock what plays is heard,
+ * read at each start, so the scenes land with the sound rather than ahead of it. `send(message)`
+ * sends one MIDI message; `onstart(seconds)` and `onstop()` say when playback starts from a point
+ * of the song and stops, to start and stop the audio with it. `setTimer` and `clearTimer`
+ * default to the browser's.
  */
-export function createScheduler({ clock, send, click = () => {}, onstart = () => {}, onstop = () => {}, setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function createScheduler({ clock, latency = () => 0, send, onstart = () => {}, onstop = () => {}, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timeline = [];
   let bpm = 120;
   let program = null;
   let end = 0;
-  /** While playing: the clock and the song's second at the last start. */
+  /** While playing: the clock when the song's second `song` is heard, from the last start. */
   let origin = null;
   let stoppedAt = 0;
   let cursor = 0;
@@ -41,8 +42,6 @@ export function createScheduler({ clock, send, click = () => {}, onstart = () =>
       held.add(event.scene);
     } else if (event.type === 'note_off' && held.delete(event.scene)) {
       send([NOTE_OFF, event.scene, 0]);
-    } else if (event.type === 'click') {
-      click(event.beat);
     }
   }
 
@@ -52,10 +51,11 @@ export function createScheduler({ clock, send, click = () => {}, onstart = () =>
   }
 
   function wake() {
+    clearTimer(timer);
     const now = position();
     while (cursor < timeline.length && timeline[cursor].seconds <= now) fire(timeline[cursor++]);
-    if (cursor < timeline.length) timer = setTimer(wake, (timeline[cursor].seconds - now) * 1000);
-    else stop(end);
+    if (cursor >= timeline.length && now >= end) stop(end);
+    else timer = setTimer(wake, ((timeline[cursor]?.seconds ?? end) - now) * 1000);
   }
 
   function start(from) {
@@ -65,7 +65,7 @@ export function createScheduler({ clock, send, click = () => {}, onstart = () =>
     const state = stateAt(timeline, at);
     for (const [scene, velocity] of state.playing) fire({ type: 'note_on', scene, velocity });
     cursor = state.next;
-    origin = { clock: clock(), song: at };
+    origin = { clock: clock() + latency(), song: at };
     onstart(at);
     wake();
   }
@@ -83,22 +83,24 @@ export function createScheduler({ clock, send, click = () => {}, onstart = () =>
     position,
     isPlaying: () => origin !== null,
     /**
-     * Takes the song's events, `{ bpm, events }`. While playing, they take effect from the
-     * next event, and a scene this playback started that no longer plays here is released.
+     * Takes the song's events, `{ bpm, events }`, and its length in `seconds`. While playing,
+     * they take effect from the next event, and a scene this playback started that no longer
+     * plays here is released.
      */
-    load(song) {
+    load(song, seconds) {
       bpm = song.bpm;
       program = song.events.find((event) => event.type === 'program_change')?.program ?? null;
-      timeline = withClicks(song.events, bpm);
-      end = timeline.at(-1)?.seconds ?? 0;
+      timeline = song.events;
+      end = seconds;
       if (!origin) return;
       const state = stateAt(timeline, position());
       for (const scene of held) if (!state.playing.has(scene)) release(scene);
       cursor = state.next;
+      wake();
     },
     /** Plays from the paused point, or from `from` seconds; from the top once at the end. */
     play(from = stoppedAt) {
-      if (origin || !timeline.length) return;
+      if (origin || end <= 0) return;
       if (program !== null) send([PROGRAM_CHANGE, program]);
       start(from < end ? from : 0);
     },
@@ -117,24 +119,17 @@ export function createScheduler({ clock, send, click = () => {}, onstart = () =>
 
 /**
  * What plays at `seconds`: the scene → velocity of each block started before it and not ended
- * by it, and the index of the first event still to come. At one time note offs come before note
- * ons and clicks, so a block ending there is over and one starting there is still to come.
+ * by it, and the index of the first event still to come. At one time note ons come last, so a
+ * block ending there is over and one starting there is still to come.
  */
 function stateAt(timeline, seconds) {
   const playing = new Map();
   let next = 0;
   for (; next < timeline.length; next += 1) {
     const event = timeline[next];
-    if (event.seconds > seconds || (event.seconds === seconds && event.type !== 'note_off')) break;
+    if (event.seconds > seconds || (event.seconds === seconds && event.type === 'note_on')) break;
     if (event.type === 'note_on') playing.set(event.scene, event.velocity);
     else if (event.type === 'note_off') playing.delete(event.scene);
   }
   return { playing, next };
-}
-
-/** The events with a click on each beat before the last, after the events on that beat. */
-function withClicks(events, bpm) {
-  const end = events.at(-1)?.beats ?? 0;
-  const clicks = Array.from({ length: Math.ceil(end) }, (_, beat) => ({ type: 'click', beat, beats: beat, seconds: (beat * 60) / bpm }));
-  return [...events, ...clicks].sort((a, b) => a.seconds - b.seconds || (a.type === 'click') - (b.type === 'click'));
 }
