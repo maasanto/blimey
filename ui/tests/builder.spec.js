@@ -212,6 +212,26 @@ test('a new song takes the next free number and a scene, and two undos remove th
   expect(readFileSync(encoreFile, 'utf8')).toBe(withScene);
 });
 
+test('leaving right after a save, while the song reloads, asks nothing', async ({ page, show, startEngine }) => {
+  addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  await page.getByRole('button', { name: 'New scene' }).click();
+  await ingredient(page, 'Wash').click();
+  await page.getByLabel('Name').fill('slow-reload');
+  await page.route('**/api/show/songs/demo.yaml', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await route.continue();
+  });
+
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText(/^Saved scene \d+ in demo\.$/)).toBeVisible();
+  await backToScenes(page).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.locator('[data-pad]').filter({ hasText: 'slow-reload' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('a fixture dragged on the front view is a step to undo in the builder', async ({ page, startEngine }) => {
   const { url } = await startEngine();
   await page.goto(`${url}#front`);
