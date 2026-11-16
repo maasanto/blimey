@@ -62,34 +62,58 @@
   const overviewLanes = $derived(scenesIn(placements.map(({ section }) => section)));
   const totalBars = $derived(placements.reduce((sum, { section }) => sum + section.bars, 0));
   const bpm = $derived(song.bpm ?? DEFAULT_BPM);
-  const totalSeconds = $derived((placements.reduce((sum, { section }) => sum + section.beats, 0) * 60) / bpm);
+  const totalBeats = $derived(placements.reduce((sum, { section }) => sum + section.beats, 0));
+  const totalSeconds = $derived((totalBeats * 60) / bpm);
 
   const songPath = $derived(`/api/songs/${encodeURIComponent(songName)}`);
-  const playback = new Playback((message) => request('POST', '/api/midi', { message }));
+  const playback = new Playback(sendMidi);
   $effect(() => () => playback.close());
+
+  /**
+   * Sends MIDI one message at a time, each once the one before is in, so the engine takes them
+   * in order: parallel requests could land a note before its song. A failure stops playback.
+   */
+  let sending = Promise.resolve();
+  function sendMidi(message) {
+    sending = sending
+      .then(() => request('POST', '/api/midi', { message }))
+      .catch((failure) => {
+        playback.pause();
+        attempt(() => Promise.reject(failure));
+      });
+  }
+
   let hasEvents = $state(false);
-  const canPlay = $derived(editable && hasEvents);
+  const canPlay = $derived(editable && hasEvents && totalSeconds > 0);
   /** Where bar 1 falls in the audio while the waveform is dragged, in seconds; null otherwise. */
   let draggedOffset = $state(null);
   /** The waveform drag, not reactive: the pointer, where it pressed and the offset then. */
   let offsetPress = null;
   let overviewWidth = $state(0);
   let waveform = $state();
+  let overview = $state();
   const savedOffset = $derived(secondsOf(song.audio?.offset));
   const offset = $derived(draggedOffset ?? savedOffset);
   const playheadBeat = $derived((playback.position * bpm) / 60);
   const playingPlacement = $derived(placements.find((placed) => playheadBeat >= placed.startBeat && playheadBeat < placed.startBeat + placed.section.beats) ?? null);
   const audioFile = $derived(song.audio?.file ?? null);
 
+  /** Counts event loads, so a slow one that a newer one replaced is dropped. */
+  let eventLoads = 0;
   // After every save: an edit made while playing takes effect from the next event.
   $effect(() => {
     song;
+    const load = ++eventLoads;
+    const seconds = totalSeconds;
     request('GET', `${songPath}/arrangement/events`)
       .then((events) => {
-        playback.load(events);
-        hasEvents = events.events.length > 0;
+        if (load !== eventLoads) return;
+        playback.load(events, seconds);
+        hasEvents = true;
       })
-      .catch((failure) => attempt(() => Promise.reject(failure)));
+      .catch((failure) => {
+        if (load === eventLoads) attempt(() => Promise.reject(failure));
+      });
   });
 
   $effect(() => {
@@ -106,7 +130,7 @@
   });
 
   $effect(() => {
-    if (waveform && overviewWidth) drawWaveform(waveform, playback.audio?.peaks, offset, totalSeconds);
+    if (waveform && overviewWidth) drawWaveform(waveform, playback.audio?.peaks, offset);
   });
 
   function secondsOf(text) {
@@ -133,11 +157,12 @@
     seekToBeat(placed.startBeat + clamp(beat, 0, section.beats));
   }
 
-  /** Space plays and pauses, unless typing. */
+  /** Space plays and pauses, unless typing or on a control, which Space presses. */
   function spaceBar(event) {
-    if (event.key !== ' ' || event.repeat || event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    const isOnControl = event.target.closest?.('input, textarea, select, button, a, [role="button"], [contenteditable]');
+    if (event.key !== ' ' || event.repeat || !canPlay || isOnControl) return;
     event.preventDefault();
-    if (canPlay) togglePlayback();
+    togglePlayback();
   }
 
   function whereLabel() {
@@ -146,32 +171,59 @@
     return `Bar ${bar + Math.floor((playheadBeat - startBeat) / section.barBeats)} · ${minutes(playback.position)}`;
   }
 
-  /** The audio's peaks from `offset` seconds on, over the song's `seconds`, one column per pixel. */
-  function drawWaveform(canvas, peaks, offset, seconds) {
+  /** Each placement with where its beats lie on the overview, from its left edge, in CSS pixels. */
+  function placementBoxes() {
+    const buttons = overview.querySelectorAll('.placement');
+    const overviewLeft = overview.getBoundingClientRect().left;
+    return placements.map((placed, index) => {
+      const button = buttons[index];
+      return { ...placed, box: { left: button.getBoundingClientRect().left - overviewLeft + button.clientLeft, width: button.clientWidth } };
+    });
+  }
+
+  /**
+   * The audio's peaks under each placement of the overview, bar 1 at `offset` seconds into it,
+   * one column per pixel: the gaps and borders between placements show none, so the audio stays
+   * on its bars.
+   */
+  function drawWaveform(canvas, peaks, offset) {
     const context = canvas.getContext('2d');
-    const { width, height } = canvas;
-    context.clearRect(0, 0, width, height);
-    if (!peaks || !seconds) return;
+    const { height } = canvas;
+    context.clearRect(0, 0, canvas.width, height);
+    if (!peaks || !totalBeats) return;
     context.fillStyle = getComputedStyle(canvas).color;
-    const peakAt = (x) => Math.floor((offset + (x / width) * seconds) * PEAKS_PER_SECOND);
-    for (let x = 0; x < width; x += 1) {
-      const loudest = Math.max(0, ...peaks.subarray(peakAt(x), Math.max(peakAt(x) + 1, peakAt(x + 1))));
-      const bar = Math.max(1, loudest * height);
-      context.fillRect(x, (height - bar) / 2, 1, bar);
+    const scale = canvas.width / overviewWidth;
+    for (const { startBeat, section, box } of placementBoxes()) {
+      const left = Math.round(box.left * scale);
+      const width = Math.round(box.width * scale);
+      const beatWidth = width / section.beats;
+      const peakAt = (x) => Math.floor((offset + ((startBeat + x / beatWidth) * 60) / bpm) * PEAKS_PER_SECOND);
+      for (let x = 0; x < width; x += 1) {
+        const loudest = Math.max(0, ...peaks.subarray(peakAt(x), Math.max(peakAt(x) + 1, peakAt(x + 1))));
+        const bar = Math.max(1, loudest * height);
+        context.fillRect(left + x, (height - bar) / 2, 1, bar);
+      }
     }
   }
 
   function pressWaveform(event) {
     if (!editable || !playback.audio || event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    offsetPress = { pointer: event.pointerId, x: event.clientX, from: offset };
+    const [{ section, box }] = placementBoxes();
+    offsetPress = { pointer: event.pointerId, x: event.clientX, from: offset, pxPerBeat: box.width / section.beats };
   }
 
   /** Dragging the waveform right moves the audio later against the bars: bar 1 falls earlier in it. */
   function dragWaveform(event) {
     if (offsetPress?.pointer !== event.pointerId) return;
-    const seconds = ((event.clientX - offsetPress.x) / overviewWidth) * totalSeconds;
+    const seconds = ((event.clientX - offsetPress.x) / offsetPress.pxPerBeat) * (60 / bpm);
     draggedOffset = Math.max(0, offsetPress.from - seconds);
+  }
+
+  function cancelWaveformDrag(event) {
+    if (offsetPress?.pointer !== event.pointerId) return;
+    offsetPress = null;
+    draggedOffset = null;
   }
 
   async function dropWaveform(event) {
@@ -517,6 +569,7 @@
       style:--overview-label="{OVERVIEW_LABEL_PX}px"
       style:--overview-lane="{OVERVIEW_LANE_PX}px"
       bind:clientWidth={overviewWidth}
+      bind:this={overview}
     >
       {#each placements as placed (placed.index)}
         <button
@@ -557,7 +610,7 @@
         onpointerdown={pressWaveform}
         onpointermove={dragWaveform}
         onpointerup={dropWaveform}
-        onpointercancel={dropWaveform}
+        onpointercancel={cancelWaveformDrag}
       ></canvas>
     {/if}
   {:else}

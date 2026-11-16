@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { withAudio } from './audio.js';
-import { test, expect } from './engine.js';
+import { test, expect, recordMidi } from './engine.js';
 
 // The C20 fixture: 8 bars, 14 s at 120 BPM.
 test.use({ showSource: 'tests/fixtures/shows/arranged' });
@@ -71,7 +71,8 @@ test('a missing audio file plays silent with a click; pausing releases the scene
 
   await page.keyboard.press(' ');
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.clicks)).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => page.evaluate(() => window.clicks), 'one on each beat').toBe(28);
+  await expect.poll(() => posts.length).toBe(3);
   await page.keyboard.press(' ');
   await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
   await expect.poll(() => posts.map(({ message }) => message)).toEqual([[0xc1, 1], [0xf2, 0, 0], [NOTE_ON, 36, 127], [NOTE_OFF, 36, 0]]);
@@ -113,6 +114,78 @@ test('dragging the waveform sets where bar 1 falls in the audio, saved and undon
 
   await page.getByRole('button', { name: /^Undo/ }).click();
   await expect(page.getByTestId('audio')).toContainText('Bar 1 falls 0 s');
+  expect(readFileSync(songFile(show), 'utf8')).toBe(before);
+});
+
+test('each message reaches the engine after the one before, however slow its request', async ({ page, startEngine }) => {
+  const { url, address } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  const midi = await recordMidi(address);
+  let isFirst = true;
+  await page.route('**/api/midi', async (route) => {
+    if (isFirst) {
+      isFirst = false;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    await route.continue();
+  });
+
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect.poll(() => midi.messages.slice(0, 3)).toEqual([[0xc1, 1], [0xf2, 0, 0], [NOTE_ON, 36, 127]]);
+  await page.getByRole('button', { name: 'Pause' }).click();
+  midi.close();
+});
+
+test('a message the engine refuses stops playback and says why', async ({ page, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await page.route('**/api/midi', (route) => route.fulfill({ status: 500, json: { error: 'the engine is busy' } }));
+
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByRole('alert')).toHaveText('the engine is busy');
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+});
+
+test("an audio output that never starts says so rather than waiting for ever", async ({ page, startEngine }) => {
+  await page.addInitScript(() => Object.defineProperty(BaseAudioContext.prototype, 'currentTime', { get: () => 0 }));
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  const posts = recordPosts(page);
+
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByRole('alert')).toContainText("The browser's audio output didn't start");
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+  expect(posts).toEqual([]);
+});
+
+test('Space on a focused button presses it rather than playing', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  const posts = recordPosts(page);
+
+  await page.getByRole('button', { name: 'Add verse to the arrangement' }).focus();
+  await page.keyboard.press(' ');
+  await expect(page.locator('.tile')).toHaveCount(5);
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+  expect(posts).toEqual([]);
+});
+
+test('a cancelled waveform drag puts the offset back and saves nothing', async ({ page, show, startEngine }) => {
+  const before = withAudio(show, 'audio/arranged.wav');
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  const waveform = page.getByLabel('Waveform');
+  const box = await waveform.boundingBox();
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 4, box.y + box.height / 2, { steps: 4 });
+  await expect(page.getByTestId('audio')).not.toContainText('Bar 1 falls 0 s');
+  // A mouse is pointer 1 in Chromium.
+  await waveform.dispatchEvent('pointercancel', { pointerId: 1 });
+  await page.mouse.up();
+  await expect(page.getByTestId('audio')).toContainText('Bar 1 falls 0 s');
+  await page.waitForTimeout(300);
   expect(readFileSync(songFile(show), 'utf8')).toBe(before);
 });
 
