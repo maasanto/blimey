@@ -92,6 +92,16 @@ test('markers are added, renamed, moved and deleted, each saved and undone', asy
   await expect.poll(() => song(show)).toContain('{ name: Intro');
 });
 
+test('a new marker takes a number no other marker uses', async ({ page, show, startEngine }) => {
+  writeFileSync(songFile(show), song(show).replace('bpm: 120\n', 'bpm: 120\nmarkers:\n  - { name: Marker 2, at: 1s }\n'));
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await expect(page.getByRole('button', { name: 'Marker Marker 2, bar 1' })).toBeVisible();
+
+  await page.keyboard.press('m');
+  await expect.poll(() => song(show)).toContain('\nmarkers:\n  - { name: Marker 3, at: 0s }\n  - { name: Marker 2, at: 1s }\n');
+});
+
 test('replacing the song\'s markers with the audio\'s asks first', async ({ page, show, startEngine }) => {
   const { url } = await startEngine({ look: DARK });
   writeFileSync(songFile(show), song(show).replace('bpm: 120\n', 'bpm: 120\nmarkers:\n  - { name: Mine, at: 1s }\n'));

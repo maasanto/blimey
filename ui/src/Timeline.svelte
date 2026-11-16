@@ -243,7 +243,9 @@
   }
 
   async function addMarker(at) {
-    const name = `Marker ${markers.length + 1}`;
+    let number = markers.length + 1;
+    while (markers.some((marker) => marker.name === `Marker ${number}`)) number += 1;
+    const name = `Marker ${number}`;
     const rounded = roundedSeconds(at);
     await saveMarkers([...markers, { name, at: rounded }], `Added ${name}, ${rounded} s into the audio.`);
     selectedMarkerIndex = markers.findIndex((marker) => marker.name === name && marker.at === rounded);
@@ -362,7 +364,7 @@
     await takeMarkers(found, audioFile);
   }
 
-  const isFileDrag = (event) => editable && event.dataTransfer.types.includes('Files');
+  const isFileDrag = (event) => editable && !uploading && event.dataTransfer.types.includes('Files');
 
   function dragFile(event) {
     if (!isFileDrag(event)) return;
