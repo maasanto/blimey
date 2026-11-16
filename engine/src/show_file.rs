@@ -1265,9 +1265,10 @@ mod tests {
         );
 
         let path = show.join(DEMO_SONG);
-        let with_audio = fs::read_to_string(&path)
-            .unwrap()
-            .replace("bpm: 92\n", "bpm: 92\naudio: { file: audio/demo-song.wav }\n");
+        let with_audio = fs::read_to_string(&path).unwrap().replace(
+            "bpm: 92\n",
+            "bpm: 92\naudio: { file: audio/demo-song.wav }\n",
+        );
         fs::write(&path, &with_audio).unwrap();
         set_audio_offset(&show, "demo-song", "1.25s".into()).unwrap();
         assert_eq!(
