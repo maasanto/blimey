@@ -607,6 +607,7 @@ Tempo changes within a song, per-placement overrides of a section, legacy channe
 | C20 | Arrangement, bar grid and MIDI export | C19 | — |
 | C21 | Builder: song timeline | C20 | — |
 | C22 | Builder: playback with audio | C21 | — |
+| C23 | Builder: audio upload and markers | C22 | — |
 
 ### C20 — Arrangement, bar grid and MIDI export
 
@@ -628,6 +629,13 @@ Tempo changes within a song, per-placement overrides of a section, legacy channe
 - **Build:** `audio` in the song model, schema and `docs/api.md`; `audio/` kept out of git; `GET /api/songs/{song}/audio` with range requests. On the timeline: play, pause, back to start, space bar; a playhead on the overview and the section editor; click the ruler to seek; a waveform under the overview ruler, decoded in the browser; drag the waveform against the bar grid to set `offset`, saved to the file. A look-ahead scheduler on the audio clock sending Program Change, notes and Song Position Pointer as above; a click track when there is no audio; edits made while playing take effect from the next event.
 - **Acceptance:** scheduler tests on a fake audio clock: every event sent within one frame of its time, a seek mid-block re-fires it, releases the others and sends the position, pause releases all. Playwright with a short generated audio file and `FakeDmx`: playing from bar 1 sends the C20 events in order, each within 50 ms; a missing audio file plays silently with the click; show mode disables playback. An HTTP test for range requests.
 - **Human check:** bounce `tell-me` from Reaper, set its offset, play it in Blimey with the front view and judge whether the lights land with the music.
+
+### C23 — Builder: audio upload and markers
+
+- **Goal:** bring a song's track into Blimey from the browser, with the markers set in Reaper, and edit those markers on the timeline.
+- **Build:** `PUT /api/songs/{song}/audio` takes the file as the body (WAV, MP3 or FLAC, up to 1 GB), writes it atomically to `audio/<song>.<ext>`, removes that song's previous audio file, sets `audio.file` and keeps `offset`; refused in show mode. The response lists the markers found in the file. Marker import from WAV: cue points with their `labl` names (unnamed ones become "Marker N"), and `ltxt` regions as a marker at their start, converted to seconds with the file's sample rate; a hand-written RIFF reader in the engine, no new crate, and a damaged file gives an error, never a panic. `GET /api/songs/{song}/audio/markers` re-reads them. `markers` in the song model, schema and `docs/api.md`: a list of `{ name, at }`, with `at` a time in the audio file, so markers stay on the music when the offset changes. `PUT /api/songs/{song}/markers` goes through the show-file writer (validated, atomic, undoable). On the timeline: an upload button and drop zone; markers drawn as flags on the overview and the section editor, placed with the offset and the tempo (markers before bar 1 aren't drawn); on upload, a song with no markers takes the file's markers, and one with markers asks before replacing them; "Import markers from audio" does the same later; add a marker at the playhead (M key) or by double-clicking the ruler, rename, drag to move, delete. Undo restores the song file, not a replaced audio file.
+- **Acceptance:** Rust tests on WAVs generated in the test: named and unnamed cue points, a region, odd-sized chunks with their padding byte, 48 kHz, a truncated file and a non-WAV file. Upload: atomic write, a previous file with another extension removed, `audio.file` set with the offset kept, show mode, an unsupported type and an oversized body refused, a song name that can't reach outside the show. Markers: round trip, refusal of a negative `at` or an empty name with the file untouched, undo. Playwright with a generated WAV holding two markers: upload, the markers drawn on the expected bars, playback of the uploaded file; add, rename, move and delete each write the expected YAML; replacing existing markers asks first; show mode is read-only.
+- **Human check:** render `tell-me` from Reaper with markers in the WAV, upload it, and check the markers land on the song's sections.
 
 ### Open questions
 
