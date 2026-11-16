@@ -95,6 +95,8 @@ program: 3          # Program Change value on channel 2, 0-127, unique across so
 bpm: 92             # optional: tempo for beats and bars when no MIDI clock arrives; default 120
 time_signature: 4/4 # optional: beats per bar over the note value; default 4/4
 audio: { file: audio/tell-me.mp3, offset: 1.25s }  # optional: see Audio below
+markers:            # optional: see Markers below
+  - { name: Chorus, at: 42.5s }
 safe_look:          # optional: what panic shows; without it panic goes dark
   all-wash: { color: warm-white, dimmer: 30% }
 cues:
@@ -281,6 +283,14 @@ A bounce of the song, which the builder's timeline plays along with the lights (
 - `file` is relative to the show folder and under `audio/`, which is kept out of git: put the bounce there and name it here. Any format the browser decodes: WAV, MP3, AAC, Ogg or FLAC.
 - `offset` is where bar 1 falls in the file, in `ms` or `s`; default `0s`. The timeline sets it as the waveform is dragged.
 - A missing file is not an error: the song plays silent, with a click. Refused at load: a `file` outside `audio/` (`line 4: audio: file "../a.mp3" must be a path under audio/, e.g. audio/tell-me.mp3`) and an `offset` in beats or bars.
+- The timeline uploads the file through [`PUT /api/songs/<song>/audio`](#song-audio-upload-put-apisongssongaudio), which names it `audio/<song>.<ext>`.
+
+### Markers
+
+Named points in the song's audio, as set in Reaper, which the timeline draws as flags to find one's way: `markers: [{ name, at }]`, in time order.
+
+- `at` is a time from the start of the audio file, in `ms` or `s`, not from bar 1, so a marker stays on the music when the offset changes. The timeline places it at `at - offset` on the song's tempo and bar grid; a marker before bar 1 isn't drawn.
+- Refused at load: an empty `name` (`line 6: markers: a marker needs a name`) and an `at` in beats or bars.
 
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
@@ -516,6 +526,28 @@ The song's [audio](#audio) file, with its type from the extension (`audio/wav`, 
 ### Audio offset: `PUT /api/songs/<song>/audio/offset`
 
 Sets where bar 1 falls in the song's audio, leaving the rest of the file as it is (`204`). The body is `{ "offset": "1.25s" }`. It goes under the same lock as the cue endpoints, is checked and written like `PUT /api/show/<file>`, and is recorded for undo. Refused with `422`, leaving the file untouched: a song without `audio`, or an offset the loader refuses.
+
+### Song audio upload: `PUT /api/songs/<song>/audio`
+
+Stores the request body, the audio file itself, as the song's audio. Its type is read from its content, whatever the request's headers say: WAV (`RIFF`/`WAVE`), MP3 (an ID3 tag or an MPEG frame) or FLAC (`fLaC`). The body is streamed to a temporary file in `audio/`, then renamed to `audio/<song>.<ext>`, so a reader never sees half a file. The song file's `audio.file` then names it, keeping `offset`, through the show-file writer and recorded for undo; undo puts back the song file, not a replaced audio file. The song's previous upload, `audio/<song>.<other ext>`, is removed; a file named by hand is left alone.
+
+Answers `200` with the file and the [markers](#markers) found in it, for the timeline to offer, without changing the song's `markers`:
+
+```json
+{ "file": "audio/tell-me.wav", "markers": [{ "name": "Verse", "at": "12.5s" }, { "name": "Marker 2", "at": "40s" }] }
+```
+
+Markers come from a WAV's `cue ` points, at their sample position over the file's sample rate, named by their `labl` (or a region's `ltxt` text); an unnamed one is `Marker N`, N counting in time order. A region is a marker at its start. MP3 and FLAC give none.
+
+Refused, writing nothing: show mode (`403`), an unknown song (`404`), a body over 1 GB (`413`, from `Content-Length` or as it arrives), a file that is not WAV, MP3 or FLAC (`415`), a damaged or truncated WAV (`422`, naming what is wrong).
+
+### Audio markers: `GET /api/songs/<song>/audio/markers`
+
+Reads the markers of the song's audio file as it is now, as `{ "markers": [...] }` in the upload's form, for "Import markers from audio". Works in show mode too. `404` without audio or file, `422` for a damaged WAV.
+
+### Markers: `PUT /api/songs/<song>/markers`
+
+Replaces the song's `markers`, leaving the rest of the file as it is (`204`). The body is `{ "markers": [{ "name": "Verse", "at": "12.5s" }] }`; an empty list removes the key. Checked and written like `PUT /api/show/<file>`, and recorded for undo. Refused with `422`, leaving the file untouched: a negative or non-time `at`, an empty `name`.
 
 ### New song: `POST /api/songs`
 
