@@ -142,7 +142,8 @@ test('show mode is read-only', async ({ page, show, startEngine }) => {
   await page.mouse.up();
   await marker.click();
   await expect(page.getByLabel('Marker name')).toBeDisabled();
-  const upload = await fetch(`${url}api/songs/arranged/audio`, { method: 'PUT', body: MARKED_WAV.buffer });
+  // A small body: the engine refuses before reading one, and may close on a large one still being sent.
+  const upload = await fetch(`${url}api/songs/arranged/audio`, { method: 'PUT', body: MARKED_WAV.buffer.subarray(0, 12) });
   expect(upload.status).toBe(403);
   await page.waitForTimeout(300);
   expect(song(show)).toBe(before);
