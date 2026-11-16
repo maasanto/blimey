@@ -32,6 +32,30 @@ export function beepsWav(seconds) {
 }
 
 /**
+ * Gives the page's audio contexts a clock that runs with `performance.now()` from their creation,
+ * heard `outputLatency` seconds late, whatever the host's audio output does: a machine without a
+ * working output stalls the real clock. The rest of Web Audio stays real.
+ */
+export function steadyAudioClock(page, { outputLatency = 0 } = {}) {
+  return page.addInitScript((latency) => {
+    const created = new WeakMap();
+    const define = (name, get) => Object.defineProperty(AudioContext.prototype, name, { get, configurable: true });
+    define('currentTime', function () {
+      if (!created.has(this)) created.set(this, performance.now());
+      return (performance.now() - created.get(this)) / 1000;
+    });
+    define('outputLatency', () => latency);
+    define('baseLatency', () => 0);
+    const resume = AudioContext.prototype.resume;
+    // A host whose output never starts never resolves the real resume.
+    AudioContext.prototype.resume = function () {
+      resume.call(this).catch(() => {});
+      return Promise.resolve();
+    };
+  }, outputLatency);
+}
+
+/**
  * Gives the arranged fixture's song in `show` `audio: { file }`, and writes 16 s of beeps there
  * unless `isMissing`. Returns the song file as it then is.
  */

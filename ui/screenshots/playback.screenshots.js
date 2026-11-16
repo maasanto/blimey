@@ -1,4 +1,4 @@
-import { withAudio } from '../tests/audio.js';
+import { steadyAudioClock, withAudio } from '../tests/audio.js';
 import { test, expect } from '../tests/engine.js';
 import { capture } from './capture.js';
 
@@ -9,6 +9,7 @@ const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
 const lit = (page, number) => expect(pad(page, number).locator('circle').first()).not.toHaveAttribute('fill', '#000000');
 
 test.use({ showSource: 'tests/fixtures/shows/arranged' });
+test.beforeEach(({ page }) => steadyAudioClock(page));
 
 test('playing with the audio, and setting where bar 1 falls', async ({ page, show, startEngine }) => {
   withAudio(show, 'audio/arranged.wav');

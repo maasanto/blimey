@@ -1,10 +1,14 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { withAudio } from './audio.js';
+import { steadyAudioClock, withAudio } from './audio.js';
 import { test, expect, recordMidi } from './engine.js';
 
 // The C20 fixture: 8 bars, 14 s at 120 BPM.
 test.use({ showSource: 'tests/fixtures/shows/arranged' });
+/** What headless Chromium reports for its output, in seconds: room for the song's messages before bar 1 is heard. */
+const OUTPUT_LATENCY = 0.192;
+// Timed on a clock of the tests' own, not the host's audio output, which may never start.
+test.beforeEach(({ page }) => steadyAudioClock(page, { outputLatency: OUTPUT_LATENCY }));
 const DARK = ['--set', 'both', 'dimmer=0%'];
 const NOTE_ON = 0x91;
 const NOTE_OFF = 0x81;
@@ -36,25 +40,35 @@ const countClicks = (page) =>
 test('playing from bar 1 with the audio sends the arrangement in order, each within 50 ms, without a click', async ({ page, show, startEngine }) => {
   withAudio(show, 'audio/arranged.wav');
   await countClicks(page);
+  // Timed in the page, as each message is sent, clear of the test runner's own delays.
+  await page.addInitScript(() => {
+    window.posts = [];
+    const send = window.fetch;
+    window.fetch = (url, options) => {
+      if (String(url).endsWith('/api/midi')) window.posts.push({ at: performance.now(), message: JSON.parse(options.body).message });
+      return send(url, options);
+    };
+  });
   const { url } = await startEngine({ look: DARK });
   const { events } = await (await fetch(`${url}api/songs/arranged/arrangement/events`)).json();
   const scenes = events.filter((event) => event.type === 'note_on' || event.type === 'note_off');
   await page.goto(`${url}#builder/arranged/timeline`);
   await expect(page.getByTestId('audio')).toHaveText('Bar 1 falls 0 s into audio/arranged.wav: drag the waveform to move it against the bars.');
-  const posts = recordPosts(page);
 
   await page.getByRole('button', { name: 'Play' }).click();
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
   await expect(page.locator('.section-editor .playhead')).toBeVisible();
-  await expect.poll(() => posts.length, { timeout: 20_000 }).toBe(scenes.length + 2);
+  await expect.poll(() => page.evaluate(() => window.posts.length), { timeout: 20_000 }).toBe(scenes.length + 2);
   await expect(page.getByRole('button', { name: 'Play' }), 'stops at the end').toBeVisible();
+  const posts = await page.evaluate(() => window.posts);
 
   expect(posts.slice(0, 2).map(({ message }) => message), 'the song, then where it starts').toEqual([[0xc1, 1], [0xf2, 0, 0]]);
   const sent = posts.slice(2);
   expect(sent.map(({ message }) => message)).toEqual(
     scenes.map((event) => (event.type === 'note_on' ? [NOTE_ON, event.scene, event.velocity] : [NOTE_OFF, event.scene, 0])),
   );
-  const start = sent[0].at;
+  // Bar 1 is heard the output latency after Play sends the song.
+  const start = posts[0].at + OUTPUT_LATENCY * 1000;
   for (const [index, { at }] of sent.entries()) {
     expect(Math.abs(at - start - scenes[index].seconds * 1000), `${JSON.stringify(scenes[index])} sent at ${at - start} ms`).toBeLessThanOrEqual(TOLERANCE_MS);
   }
@@ -147,7 +161,8 @@ test('a message the engine refuses stops playback and says why', async ({ page, 
 });
 
 test("an audio output that never starts says so rather than waiting for ever", async ({ page, startEngine }) => {
-  await page.addInitScript(() => Object.defineProperty(BaseAudioContext.prototype, 'currentTime', { get: () => 0 }));
+  // After the steady clock's script: this one stalls it.
+  await page.addInitScript(() => Object.defineProperty(AudioContext.prototype, 'currentTime', { get: () => 0, configurable: true }));
   const { url } = await startEngine({ look: DARK });
   await page.goto(`${url}#builder/arranged/timeline`);
   const posts = recordPosts(page);
