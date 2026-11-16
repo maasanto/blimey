@@ -51,6 +51,17 @@ export function nextDmx(address) {
   });
 }
 
+/** Every MIDI message the engine at `address` takes in from now on, as the stream sends them. */
+export function recordMidi(address) {
+  const messages = [];
+  const socket = new WebSocket(`ws://${address}/ws`);
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === 'midi') messages.push(message.message);
+  };
+  return new Promise((resolve) => (socket.onopen = () => resolve({ messages, close: () => socket.close() })));
+}
+
 export const test = base.extend({
   /** The show each test copies, from the repository root. */
   showSource: ['tests/fixtures/shows/four-washes', { option: true }],
