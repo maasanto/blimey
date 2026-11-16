@@ -539,7 +539,7 @@ Answers `200` with the file and the [markers](#markers) found in it, for the tim
 
 Markers come from a WAV's `cue ` points, at their sample position over the file's sample rate, named by their `labl` (or a region's `ltxt` text); an unnamed one is `Marker N`, N counting in time order. A region is a marker at its start. MP3 and FLAC give none.
 
-Refused, writing nothing: show mode (`403`), an unknown song (`404`), a body over 1 GB (`413`, from `Content-Length` or as it arrives), a file that is not WAV, MP3 or FLAC (`415`), a damaged or truncated WAV (`422`, naming what is wrong).
+Refused, writing nothing: show mode (`403`), an unknown song, its name spelled in another case included (`404`), a body over 1 GB (`413`, from `Content-Length` or as it arrives), a file that is not WAV, MP3 or FLAC (`415`), a damaged or truncated WAV (`422`, naming what is wrong).
 
 ### Audio markers: `GET /api/songs/<song>/audio/markers`
 
