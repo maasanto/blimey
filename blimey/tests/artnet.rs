@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::net::UdpSocket;
 use std::process::{Child, Command};
 use std::time::Duration;
@@ -28,6 +29,17 @@ fn decode(packet: &[u8]) -> ArtDmx {
         universe: u16::from_le_bytes([packet[14], packet[15]]),
         sequence: packet[12],
         channels: packet[18..].to_vec(),
+    }
+}
+
+/// The next datagram's size. A signal reaching the test process interrupts `recv` (EINTR on
+/// Linux CI): that is no reason to fail, so it waits again.
+fn receive(receiver: &UdpSocket, buffer: &mut [u8]) -> usize {
+    loop {
+        match receiver.recv(buffer) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            received => return received.expect("an Art-Net frame"),
+        }
     }
 }
 
@@ -65,7 +77,7 @@ fn fire_mirrors_the_frame_over_art_net_on_the_chosen_universe() {
 
     let mut buffer = [0; 1024];
     let mut next = || {
-        let size = receiver.recv(&mut buffer).unwrap();
+        let size = receive(&receiver, &mut buffer);
         decode(&buffer[..size])
     };
     let first = next();
@@ -99,7 +111,7 @@ fn output_carries_on_when_stderr_cannot_be_written() {
     let mut engine = Running(child);
 
     let mut buffer = [0; 1024];
-    let size = receiver.recv(&mut buffer).expect("an Art-Net frame");
+    let size = receive(&receiver, &mut buffer);
 
     assert_eq!(decode(&buffer[..size]).channels, reference_channels());
     assert!(engine.0.try_wait().unwrap().is_none(), "the engine exited");
@@ -127,7 +139,7 @@ fn output_starts_without_the_ui_when_its_port_is_taken() {
     let _engine = Running(child);
 
     let mut buffer = [0; 1024];
-    let size = receiver.recv(&mut buffer).expect("an Art-Net frame");
+    let size = receive(&receiver, &mut buffer);
 
     assert_eq!(decode(&buffer[..size]).channels, reference_channels());
 }
