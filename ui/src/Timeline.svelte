@@ -1,7 +1,8 @@
 <script>
   import { request } from './engine.svelte.js';
   import { FULL_VELOCITY, holdToAudition } from './audition.js';
-  import { beatsIn, beatsPerBar, DEFAULT_BPM, formatLength } from './duration.js';
+  import { beatsIn, beatsPerBar, DEFAULT_BPM, formatLength, parseLength } from './duration.js';
+  import { PEAKS_PER_SECOND, Playback } from './playback.svelte.js';
   import ScenePads, { SCENE_DRAG_TYPE } from './ScenePads.svelte';
 
   /**
@@ -27,6 +28,7 @@
   /** How strongly a block at 0% is drawn, so it still shows; 100% is drawn solid. */
   const DIMMEST_SHADE = 0.35;
   const TIME_SIGNATURE = /^[1-9][0-9]*\/[1-9][0-9]*$/;
+  const WAVEFORM_PX = 40;
 
   let openName = $state(null);
   let newName = $state('');
@@ -46,18 +48,144 @@
   const selectedBlock = $derived(selected?.section === openSection?.name ? findBlock(openSection, selected) : undefined);
   const beatPx = $derived(openSection ? Math.max(MIN_BEAT_PX, Math.floor((editorWidth - LANE_LABEL_PX) / openSection.beats)) : MIN_BEAT_PX);
   const lanes = $derived(openSection ? scenesIn([openSection]) : []);
-  /** Each placed section and the song's bar it starts on. */
+  /** Each placed section and the song's bar and beat, from 0, it starts on. */
   const placements = $derived.by(() => {
     let bar = 1;
+    let startBeat = 0;
     return arrangement.map((name, index) => {
-      const placed = { index, name, section: byName[name], bar };
+      const placed = { index, name, section: byName[name], bar, startBeat };
       bar += placed.section.bars;
+      startBeat += placed.section.beats;
       return placed;
     });
   });
   const overviewLanes = $derived(scenesIn(placements.map(({ section }) => section)));
   const totalBars = $derived(placements.reduce((sum, { section }) => sum + section.bars, 0));
-  const totalSeconds = $derived((placements.reduce((sum, { section }) => sum + section.beats, 0) * 60) / (song.bpm ?? DEFAULT_BPM));
+  const bpm = $derived(song.bpm ?? DEFAULT_BPM);
+  const totalSeconds = $derived((placements.reduce((sum, { section }) => sum + section.beats, 0) * 60) / bpm);
+
+  const songPath = $derived(`/api/songs/${encodeURIComponent(songName)}`);
+  const playback = new Playback((message) => request('POST', '/api/midi', { message }));
+  $effect(() => () => playback.close());
+  let hasEvents = $state(false);
+  const canPlay = $derived(editable && hasEvents);
+  /** Where bar 1 falls in the audio while the waveform is dragged, in seconds; null otherwise. */
+  let draggedOffset = $state(null);
+  /** The waveform drag, not reactive: the pointer, where it pressed and the offset then. */
+  let offsetPress = null;
+  let overviewWidth = $state(0);
+  let waveform = $state();
+  const savedOffset = $derived(secondsOf(song.audio?.offset));
+  const offset = $derived(draggedOffset ?? savedOffset);
+  const playheadBeat = $derived((playback.position * bpm) / 60);
+  const playingPlacement = $derived(placements.find((placed) => playheadBeat >= placed.startBeat && playheadBeat < placed.startBeat + placed.section.beats) ?? null);
+  const audioFile = $derived(song.audio?.file ?? null);
+
+  // After every save: an edit made while playing takes effect from the next event.
+  $effect(() => {
+    song;
+    request('GET', `${songPath}/arrangement/events`)
+      .then((events) => {
+        playback.load(events);
+        hasEvents = events.events.length > 0;
+      })
+      .catch((failure) => attempt(() => Promise.reject(failure)));
+  });
+
+  $effect(() => {
+    playback.loadAudio(audioFile && `${songPath}/audio`).catch((failure) => attempt(() => Promise.reject(failure)));
+  });
+
+  $effect(() => {
+    playback.offset = offset;
+  });
+
+  // Show mode doesn't play: the stage follows Reaper.
+  $effect(() => {
+    if (!editable) playback.pause();
+  });
+
+  $effect(() => {
+    if (waveform && overviewWidth) drawWaveform(waveform, playback.audio?.peaks, offset, totalSeconds);
+  });
+
+  function secondsOf(text) {
+    const length = parseLength(text) ?? { count: 0, unit: 's' };
+    return length.unit === 'ms' ? length.count / 1000 : length.count;
+  }
+
+  const togglePlayback = () => attempt(() => (playback.isPlaying ? playback.pause() : playback.play()));
+  function seekToBeat(beat) {
+    if (canPlay) playback.seek((beat * 60) / bpm);
+  }
+
+  /** Seeks to where the click landed on placement `placed` of the overview. */
+  function seekInPlacement(event, placed) {
+    const box = event.currentTarget.getBoundingClientRect();
+    seekToBeat(placed.startBeat + clamp((event.clientX - box.left) / box.width, 0, 1) * placed.section.beats);
+  }
+
+  /** Seeks to where the click landed on the section editor's ruler: in the placement playing, or the section's first. */
+  function seekInSection(event, section) {
+    const placed = playingPlacement?.name === section.name ? playingPlacement : placements.find((other) => other.name === section.name);
+    if (!placed) return;
+    const beat = (event.clientX - event.currentTarget.getBoundingClientRect().left) / beatPx;
+    seekToBeat(placed.startBeat + clamp(beat, 0, section.beats));
+  }
+
+  /** Space plays and pauses, unless typing. */
+  function spaceBar(event) {
+    if (event.key !== ' ' || event.repeat || event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    event.preventDefault();
+    if (canPlay) togglePlayback();
+  }
+
+  function whereLabel() {
+    if (!playingPlacement) return `End · ${minutes(playback.position)}`;
+    const { bar, startBeat, section } = playingPlacement;
+    return `Bar ${bar + Math.floor((playheadBeat - startBeat) / section.barBeats)} · ${minutes(playback.position)}`;
+  }
+
+  /** The audio's peaks from `offset` seconds on, over the song's `seconds`, one column per pixel. */
+  function drawWaveform(canvas, peaks, offset, seconds) {
+    const context = canvas.getContext('2d');
+    const { width, height } = canvas;
+    context.clearRect(0, 0, width, height);
+    if (!peaks || !seconds) return;
+    context.fillStyle = getComputedStyle(canvas).color;
+    const peakAt = (x) => Math.floor((offset + (x / width) * seconds) * PEAKS_PER_SECOND);
+    for (let x = 0; x < width; x += 1) {
+      const loudest = Math.max(0, ...peaks.subarray(peakAt(x), Math.max(peakAt(x) + 1, peakAt(x + 1))));
+      const bar = Math.max(1, loudest * height);
+      context.fillRect(x, (height - bar) / 2, 1, bar);
+    }
+  }
+
+  function pressWaveform(event) {
+    if (!editable || !playback.audio || event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    offsetPress = { pointer: event.pointerId, x: event.clientX, from: offset };
+  }
+
+  /** Dragging the waveform right moves the audio later against the bars: bar 1 falls earlier in it. */
+  function dragWaveform(event) {
+    if (offsetPress?.pointer !== event.pointerId) return;
+    const seconds = ((event.clientX - offsetPress.x) / overviewWidth) * totalSeconds;
+    draggedOffset = Math.max(0, offsetPress.from - seconds);
+  }
+
+  async function dropWaveform(event) {
+    if (offsetPress?.pointer !== event.pointerId) return;
+    offsetPress = null;
+    const seconds = Math.round((draggedOffset ?? savedOffset) * 1000) / 1000;
+    if (seconds !== savedOffset) {
+      await edit(async () => {
+        await request('PUT', `${songPath}/audio/offset`, { offset: formatLength(seconds, 's') });
+        await onsaved(`Bar 1 now falls ${seconds} s into the audio of ${songName}. Undo takes it back.`);
+      });
+    }
+    draggedOffset = null;
+  }
 
   /** A section of the file, its blocks in beats from its first beat, in playing order. */
   function sectionOf(name, { bars, time_signature, blocks = [] }) {
@@ -338,12 +466,31 @@
   }
 </script>
 
+<svelte:window onkeydown={spaceBar} />
+
 <section class="arrangement" aria-label="Arrangement">
   <div class="heading">
     <h2>Arrangement</h2>
     <span class="hint" data-testid="song-length">{totalBars} bars · {minutes(totalSeconds)}</span>
   </div>
   {#if placements.length}
+    <div class="row transport">
+      <button class="quiet" aria-label="Back to start" title="Back to start" disabled={!canPlay} onclick={() => playback.seek(0)}>⏮</button>
+      <button class="primary" title="Space" disabled={!canPlay} onclick={togglePlayback}>{playback.isPlaying ? 'Pause' : 'Play'}</button>
+      <span class="where" data-testid="playhead">{whereLabel()}</span>
+      <span class="hint" data-testid="audio">
+        {#if !audioFile}
+          No audio for this song: it plays with a click. To play its bounce, put the file in the show's audio/ folder and name it in the song file.
+        {:else if playback.isAudioMissing}
+          No file at {audioFile}: the song plays silent, with a click.
+        {:else if !playback.audio}
+          Loading {audioFile}…
+        {:else}
+          Bar 1 falls {Math.round(offset * 1000) / 1000} s into {audioFile}{editable ? ': drag the waveform to move it against the bars.' : '.'}
+        {/if}
+      </span>
+    </div>
+
     <ol class="tiles">
       {#each placements as placed (placed.index)}
         <li
@@ -369,10 +516,23 @@
       style:--lanes={overviewLanes.length}
       style:--overview-label="{OVERVIEW_LABEL_PX}px"
       style:--overview-lane="{OVERVIEW_LANE_PX}px"
+      bind:clientWidth={overviewWidth}
     >
       {#each placements as placed (placed.index)}
-        <button class="placement" class:open={placed.name === openSection?.name} style:flex-grow={placed.section.beats} data-placement={placed.name} onclick={() => (openName = placed.name)}>
+        <button
+          class="placement"
+          class:open={placed.name === openSection?.name}
+          style:flex-grow={placed.section.beats}
+          data-placement={placed.name}
+          onclick={(event) => {
+            openName = placed.name;
+            seekInPlacement(event, placed);
+          }}
+        >
           <span class="at">{placed.bar} · {placed.name}</span>
+          {#if placed.index === playingPlacement?.index}
+            <span class="playhead" style:left="{((playheadBeat - placed.startBeat) / placed.section.beats) * 100}%"></span>
+          {/if}
           {#each placed.section.blocks as block (`${block.scene}:${block.nth}`)}
             <span
               class="mini"
@@ -386,6 +546,20 @@
         </button>
       {/each}
     </div>
+    {#if playback.audio}
+      <canvas
+        class="waveform"
+        class:draggable={editable}
+        aria-label="Waveform"
+        bind:this={waveform}
+        width={overviewWidth * devicePixelRatio}
+        height={WAVEFORM_PX * devicePixelRatio}
+        onpointerdown={pressWaveform}
+        onpointermove={dragWaveform}
+        onpointerup={dropWaveform}
+        onpointercancel={dropWaveform}
+      ></canvas>
+    {/if}
   {:else}
     <p class="hint">Add sections to the arrangement with their +, in the order they play.</p>
   {/if}
@@ -448,9 +622,14 @@
       </div>
 
       <div class="lanes" style:--beat="{beatPx}px" style:--bar="{beatPx * section.barBeats}px" style:--label="{LANE_LABEL_PX}px">
+        {#if playingPlacement?.name === section.name}
+          <span class="playhead" style:left="{LANE_LABEL_PX + (playheadBeat - playingPlacement.startBeat) * beatPx}px"></span>
+        {/if}
         <div class="lane">
           <span></span>
-          <div class="ruler track" style:width="{section.beats * beatPx}px" data-testid="ruler">
+          <!-- Seeking by keyboard goes through the overview's buttons. -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div class="ruler track" class:seekable={canPlay} style:width="{section.beats * beatPx}px" data-testid="ruler" role="presentation" onclick={(event) => seekInSection(event, section)}>
             {#each { length: section.bars } as _, bar (bar)}
               <span class="bar-number" style:left="{bar * section.barBeats * beatPx}px">{bar + 1}</span>
             {/each}
@@ -591,6 +770,45 @@
     border-radius: 2px;
   }
 
+  .transport {
+    margin-bottom: 8px;
+  }
+
+  .where {
+    min-width: 9em;
+    font: 13px var(--mono);
+  }
+
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    width: 2px;
+    margin-left: -1px;
+    pointer-events: none;
+    background: var(--text);
+  }
+
+  .waveform {
+    display: block;
+    width: 100%;
+    height: 40px;
+    margin: -16px 0 20px;
+    color: var(--muted);
+    background: var(--well);
+    border-radius: 4px;
+  }
+
+  .waveform.draggable {
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  .ruler.seekable {
+    cursor: pointer;
+  }
+
   .workspace {
     display: grid;
     grid-template-columns: 220px minmax(0, 1fr);
@@ -641,6 +859,7 @@
   }
 
   .lanes {
+    position: relative;
     overflow-x: auto;
   }
 
