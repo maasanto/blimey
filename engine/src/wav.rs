@@ -9,7 +9,8 @@ use crate::song::Marker;
 
 /// More than any song carries; a count past it is a damaged file, not a long list to allocate.
 const MAX_CUE_POINTS: u32 = 10_000;
-/// The most read of one `fmt `, `cue ` or `LIST` chunk; the audio is skipped, never read.
+/// The most read of one `fmt ` or `cue ` chunk, and of all `adtl` lists together; the audio and
+/// other lists are skipped, never read.
 const MAX_METADATA_CHUNK: u32 = 1 << 20;
 const CUE_POINT_SIZE: usize = 24;
 /// `ltxt`: cue point id, sample length, purpose, country, language, dialect, code page.
@@ -34,6 +35,8 @@ pub fn markers(file: &mut (impl Read + Seek)) -> Result<Vec<Marker>, String> {
     let mut sample_rate = None;
     let mut cue_points = Vec::new();
     let mut labels = Labels::default();
+    // Across every adtl list, so the names kept stay within MAX_METADATA_CHUNK however many lists.
+    let mut adtl_bytes = 0u64;
     let mut position = 12;
     while position + 8 <= length {
         file.seek(SeekFrom::Start(position)).map_err(damaged)?;
@@ -50,7 +53,18 @@ pub fn markers(file: &mut (impl Read + Seek)) -> Result<Vec<Marker>, String> {
         match id {
             b"fmt " => sample_rate = Some(format_sample_rate(&chunk(file, id, size)?)?),
             b"cue " => cue_points = parse_cue_points(&chunk(file, id, size)?)?,
-            b"LIST" => labels.read_list(&chunk(file, id, size)?),
+            b"LIST" if size >= 4 => {
+                let mut list_type = [0; 4];
+                file.read_exact(&mut list_type).map_err(damaged)?;
+                // Other lists, such as INFO, may be large and say nothing of markers.
+                if &list_type == b"adtl" {
+                    adtl_bytes += u64::from(size - 4);
+                    if adtl_bytes > u64::from(MAX_METADATA_CHUNK) {
+                        return Err("damaged WAV file: its adtl lists hold over 1 MB, more than markers ever take".into());
+                    }
+                    labels.read_entries(&chunk(file, b"adtl", size - 4)?);
+                }
+            }
             _ => {}
         }
         // Chunks start on an even byte: an odd-sized one is followed by a padding byte.
@@ -114,11 +128,8 @@ struct Labels {
 }
 
 impl Labels {
-    fn read_list(&mut self, list: &[u8]) {
-        if list.get(..4) != Some(b"adtl") {
-            return;
-        }
-        let mut entries = &list[4..];
+    /// The entries of an `adtl` list, after its type.
+    fn read_entries(&mut self, mut entries: &[u8]) {
         while entries.len() >= 8 {
             let size = u32_at(entries, 4) as usize;
             let Some(entry) = entries.get(8..8 + size) else {
@@ -167,13 +178,11 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).trim().to_owned()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
+/// WAV files with markers, built byte by byte for tests here and in the API's.
+#[doc(hidden)]
+pub mod build {
     /// A RIFF chunk, with its padding byte when `body` is odd-sized.
-    fn riff_chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    pub fn riff_chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut chunk = id.to_vec();
         chunk.extend((body.len() as u32).to_le_bytes());
         chunk.extend(body);
@@ -184,7 +193,7 @@ mod tests {
     }
 
     /// A mono 16-bit WAV at `sample_rate`: `chunks` after `fmt `, ahead of a short `data`.
-    fn wav(sample_rate: u32, chunks: &[Vec<u8>]) -> Vec<u8> {
+    pub fn wav(sample_rate: u32, chunks: &[Vec<u8>]) -> Vec<u8> {
         let mut format = vec![1, 0, 1, 0];
         format.extend(sample_rate.to_le_bytes());
         format.extend((sample_rate * 2).to_le_bytes());
@@ -198,7 +207,8 @@ mod tests {
         riff_chunk(b"RIFF", &body)
     }
 
-    fn cue_points(points: &[(u32, u32)]) -> Vec<u8> {
+    /// A `cue ` chunk of `(id, sample)` points.
+    pub fn cue_points(points: &[(u32, u32)]) -> Vec<u8> {
         let mut body = (points.len() as u32).to_le_bytes().to_vec();
         for (id, sample) in points {
             body.extend(id.to_le_bytes());
@@ -210,7 +220,7 @@ mod tests {
         riff_chunk(b"cue ", &body)
     }
 
-    fn adtl(entries: &[Vec<u8>]) -> Vec<u8> {
+    pub fn adtl(entries: &[Vec<u8>]) -> Vec<u8> {
         let mut body = b"adtl".to_vec();
         for entry in entries {
             body.extend(entry);
@@ -218,14 +228,14 @@ mod tests {
         riff_chunk(b"LIST", &body)
     }
 
-    fn label(id: u32, name: &str) -> Vec<u8> {
+    pub fn label(id: u32, name: &str) -> Vec<u8> {
         let mut body = id.to_le_bytes().to_vec();
         body.extend(name.as_bytes());
         body.push(0);
         riff_chunk(b"labl", &body)
     }
 
-    fn region(id: u32, samples: u32, text: &str) -> Vec<u8> {
+    pub fn region(id: u32, samples: u32, text: &str) -> Vec<u8> {
         let mut body = id.to_le_bytes().to_vec();
         body.extend(samples.to_le_bytes());
         body.extend(b"rgn ");
@@ -233,6 +243,13 @@ mod tests {
         body.extend(text.as_bytes());
         riff_chunk(b"ltxt", &body)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build::*;
+    use super::*;
+    use std::io::Cursor;
 
     fn read(bytes: Vec<u8>) -> Result<Vec<(String, Duration)>, String> {
         markers(&mut Cursor::new(bytes))
@@ -280,6 +297,35 @@ mod tests {
             ],
         );
         assert_eq!(read(file), Ok(vec![("Outro".into(), at(2.0))]));
+    }
+
+    #[test]
+    fn a_large_info_list_is_skipped_but_adtl_lists_are_capped_together() {
+        let mut info = b"INFO".to_vec();
+        info.resize(2 << 20, b'x');
+        let file = wav(
+            44_100,
+            &[
+                riff_chunk(b"LIST", &info),
+                cue_points(&[(1, 44_100)]),
+                adtl(&[label(1, "Verse")]),
+            ],
+        );
+        assert_eq!(read(file), Ok(vec![("Verse".into(), at(1.0))]));
+
+        let long_name = "x".repeat(600 << 10);
+        let file = wav(
+            44_100,
+            &[
+                cue_points(&[(1, 0)]),
+                adtl(&[label(1, &long_name)]),
+                adtl(&[label(1, &long_name)]),
+            ],
+        );
+        assert_eq!(
+            read(file).unwrap_err(),
+            "damaged WAV file: its adtl lists hold over 1 MB, more than markers ever take"
+        );
     }
 
     #[test]

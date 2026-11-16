@@ -1257,44 +1257,6 @@ mod tests {
         dir
     }
 
-    /// A WAV at 48 kHz with one cue point, named `name`, at `sample`.
-    fn wav_with_marker(sample: u32, name: &str) -> Vec<u8> {
-        let chunk = |id: &[u8], body: &[u8]| {
-            let mut chunk = id.to_vec();
-            chunk.extend((body.len() as u32).to_le_bytes());
-            chunk.extend(body);
-            if body.len() % 2 == 1 {
-                chunk.push(0);
-            }
-            chunk
-        };
-        let format = [
-            [1, 0, 1, 0],
-            48_000u32.to_le_bytes(),
-            96_000u32.to_le_bytes(),
-            [2, 0, 16, 0],
-        ];
-        let mut cue = [1u32, 1, sample].map(u32::to_le_bytes).concat();
-        cue.extend(b"data");
-        cue.extend([0; 8]);
-        cue.extend(sample.to_le_bytes());
-        let mut label = 1u32.to_le_bytes().to_vec();
-        label.extend(name.as_bytes());
-        label.push(0);
-        let mut list = b"adtl".to_vec();
-        list.extend(chunk(b"labl", &label));
-        let mut wave = b"WAVE".to_vec();
-        for part in [
-            chunk(b"fmt ", &format.concat()),
-            chunk(b"data", &[0; 32]),
-            chunk(b"cue ", &cue),
-            chunk(b"LIST", &list),
-        ] {
-            wave.extend(part);
-        }
-        chunk(b"RIFF", &wave)
-    }
-
     #[test]
     fn an_upload_replaces_the_songs_audio_and_lists_its_markers() {
         let dir = arranged_rig_copy("upload");
@@ -1320,7 +1282,13 @@ mod tests {
                 Body::from(bytes),
             )
         };
-        let wav = wav_with_marker(24_000, "Verse");
+        let wav = wav::build::wav(
+            48_000,
+            &[
+                wav::build::cue_points(&[(1, 24_000)]),
+                wav::build::adtl(&[wav::build::label(1, "Verse")]),
+            ],
+        );
 
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let show_mode = Api {
