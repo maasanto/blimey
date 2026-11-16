@@ -529,4 +529,107 @@ Areas that aren't rectangles (mute covers the need), held cues that mix, rotated
 2. A bar hung vertically needs a rotation on its `canvas` entry, which a fixture doesn't have today. Wait for the fixture.
 3. A light with no colour pixels (a plain dimmer) is outside pixel cues and still needs a scene cue. Not the case of any fixture in the rig.
 4. Should the pixels a cue doesn't cover be see-through, so that held cues mix? Left out; revisit if the Reaper sessions want to stack looks.
-5. How Reaper selects a song and fires a scene, now that the builder knows them only by number, is designed in a later chunk. Until then scene N is channel-2 note N and song N is channel-2 Program Change N.
+5. How Reaper selects a song and fires a scene, now that the builder knows them only by number, is designed in a later chunk. Until then scene N is channel-2 note N and song N is channel-2 Program Change N. Section 17 answers it: Reaper plays a MIDI file that Blimey exports.
+
+## 17. Song timeline
+
+Nov 15, 2026 · draft. Builds on section 16; the ground rules of section 14 and the validation of section 15 apply. Lifts the "standalone timeline" non-goal of section 3 for building the show only: Reaper stays the clock on stage.
+
+### Why
+
+Scenes are built in Blimey, then placed by hand in Reaper as channel-2 notes. The piano roll shows note numbers, not looks, and the running order is arranged without seeing the lights. The song's running order should be built in Blimey, against the lights and the audio, and handed to Reaper ready to play.
+
+### The model
+
+- **Reaper plays, Blimey writes.** Blimey exports the running order as a MIDI file on the channel-2 protocol of section 5, and Reaper plays it as a normal item. The engine still renders only from the MIDI it receives; after a seek, the lights catch up at the next scene, as today.
+- **Sections are defined once.** A song has sections (intro, verse, chorus) and an arrangement, the order they play in. Editing a section changes every place it plays. A chorus that differs the last time round is a section of its own: duplicate, then edit.
+- **A section is bars and blocks.** A number of bars, its own time signature if it differs from the song's, and blocks: a scene held from one point to another, at a level.
+- **Playback with audio in Blimey.** The browser plays a bounce of the song and drives the engine through the audition path, so the front view and the lights follow the music. For building the show, in edit mode only.
+- **One tempo per song.**
+
+### In the show file
+
+```yaml
+time_signature: 4/4
+audio: { file: audio/tell-me.mp3, offset: 1.25s }
+sections:
+  verse:
+    bars: 16
+    blocks:
+      - { scene: 36, bar: 1, length: 16 bars }
+      - { scene: 42, bar: 9, length: 8 bars, level: 80% }
+  chorus:
+    bars: 8
+    blocks:
+      - { scene: 37, bar: 1, length: 8 bars }
+      - { scene: 39, bar: 5, beat: 3, length: 6 beats }
+  bridge:
+    bars: 4
+    time_signature: 3/4
+    blocks:
+      - { scene: 40, bar: 1, length: 4 bars }
+arrangement: [verse, chorus, verse, chorus, bridge, chorus]
+```
+
+- `sections` is keyed by name; `arrangement` lists names in playing order, each as often as needed.
+- `bars` is the section's length; `time_signature` overrides the song's for that section.
+- A block holds `scene` (its number, the key in `cues`) from `bar` and `beat` (default 1, fractions allowed) for `length`, in `beats` or `bars` of the section's signature. `level` scales the scene like the note's velocity; default 100%.
+- A block ends at or before its section's end. When one placement ends with a block that the next placement starts with (same scene, same level, end and start on the boundary), the export joins them into one held note, so a scene held across sections doesn't restart.
+- Different scenes may overlap; they combine as they do live. Two blocks of the same scene may not overlap.
+- `audio.file` is relative to the show folder, under `audio/`, kept out of git. `offset` is where bar 1 falls in the file. A missing file is not an error: the song plays silent.
+- Load errors: an unknown section in `arrangement`, an unknown scene, a block outside its section, overlapping blocks of one scene, a `length` in `ms` or `s`.
+
+### Export
+
+- `<show>/export/<song>.mid`, written when a song with an arrangement is saved or loaded in edit mode, and by `blimey export <show> [song]`; `export/` is kept out of git. The timeline also downloads it.
+- Contents: the song's tempo, the time signature with a change at each section that has its own, a marker per placed section, Program Change `program` on channel 2 at bar 1, then a note on per block (note = scene number, velocity = level × 127) and a note off at its end. A note off and a note on on the same tick go off first.
+- In Reaper: insert the file at the song's first bar; re-insert after a change.
+
+### Engine
+
+- The bar grid follows the arrangement: bar lines and bar positions use each section's time signature, so a pattern fired at the start of a 3/4 section starts on that section's bar line. Durations inside a scene (`length: 1 bar` on a pattern) keep the song's signature. A song without an arrangement behaves as today.
+
+### Playback in Blimey
+
+- The engine lists the arrangement's events in beats and seconds, the same list the export writes, so the browser doesn't redo the musical-time arithmetic. It serves the song's audio with range requests.
+- The browser plays the audio and is the clock: it schedules each event against the audio position and sends it through `POST /api/midi`. Play sends the Program Change first. Seeking sends a Song Position Pointer, releases the blocks it started and re-fires the blocks active at the new position, so a swell restarts from the seek point. Pause releases them.
+- Without audio, playback runs on the browser's clock at the song's tempo, with a click.
+- Timing is good enough to build with (a few ms of jitter); the gig runs from Reaper.
+
+### Not in this version
+
+Tempo changes within a song, per-placement overrides of a section, legacy channel-1 notes and CC automation on the timeline (they stay in Reaper and play alongside the exported item), recording a Reaper run into the timeline, exact state after a seek on stage.
+
+### Chunks
+
+| # | Chunk | Depends on | Can run in parallel with |
+| --- | --- | --- | --- |
+| C20 | Arrangement, bar grid and MIDI export | C19 | — |
+| C21 | Builder: song timeline | C20 | — |
+| C22 | Builder: playback with audio | C21 | — |
+
+### C20 — Arrangement, bar grid and MIDI export
+
+- **Goal:** a song's running order lives in its file, and Reaper plays it from an exported MIDI file.
+- **Build:** `sections` and `arrangement` in the song model, schema and `docs/api.md`, with the load errors above; the bar grid per section; the event list (one engine function used by the export and by the API); the `.mid` writer on `MidiFile::encode`; `export/` written on save and edit-mode load, and kept out of git; `blimey export`; `GET /api/songs/{song}/arrangement/events` and `GET /api/songs/{song}/arrangement.mid`; `PUT /api/songs/{song}/arrangement` through the show-file writer (validated, atomic, undoable). An arranged song in `tests/fixtures/`, with a 3/4 section and a scene held across two sections.
+- **Acceptance:** the fixture's exported file, replayed with its show, matches a stored reference dump; the event list puts each block on the expected beat and second across the 3/4 section; the held scene is one note; a pattern fired at the start of the 3/4 section starts at once rather than at the next 4/4 line; every existing reference dump is unchanged; each load error names its line; the save endpoint round-trips, and an invalid arrangement is refused with the file untouched; the exported file parses back with its tempo, signatures and markers.
+- **Human check:** insert one exported song into Reaper at the laptop and check the scenes fire where expected; try re-inserting it after an edit.
+
+### C21 — Builder: song timeline
+
+- **Goal:** build a song's running order by placing scenes on sections, without Reaper.
+- **Build:** a Timeline screen in the Builder tab at `#builder/<song>/timeline`, opened from the song bar of the scenes home. A section library: new, rename, duplicate, delete (refused while placed), bars, time signature. An arrangement strip: sections as tiles in playing order; add, drag to reorder, remove; the song's length in bars and minutes. A section editor: a bar ruler with beat ticks, one lane per scene, scenes dragged on from a strip of live thumbnails, blocks moved and resized with beat snapping, level, delete, hold a block to audition its scene; the other placements of the open section are highlighted. An overview of the whole song on one ruler; a click opens a section. "Export for Reaper" downloads the file. Saves through `PUT /api/songs/{song}/arrangement`, with undo and redo from the song bar. Scenes are named and numbered as in C19; no notes or MIDI in the wording.
+- **Acceptance:** Playwright against the engine with `FakeDmx`: the C20 fixture arrangement built from empty by drag, resize and level saves the fixture's YAML; editing a block in a reused section changes every placement on the overview; reordering the strip writes the new order; deleting a placed section is refused; an edit the engine refuses shows its error and leaves the file untouched; holding a block sends note-on and letting go note-off; the export downloads a file equal to C20's; show mode is read-only.
+- **Human check:** lay out `tell-me` from its real structure at the laptop; note what feels fiddly.
+
+### C22 — Builder: playback with audio
+
+- **Goal:** play the song in Blimey with its audio and watch the lights follow.
+- **Build:** `audio` in the song model, schema and `docs/api.md`; `audio/` kept out of git; `GET /api/songs/{song}/audio` with range requests. On the timeline: play, pause, back to start, space bar; a playhead on the overview and the section editor; click the ruler to seek; a waveform under the overview ruler, decoded in the browser; drag the waveform against the bar grid to set `offset`, saved to the file. A look-ahead scheduler on the audio clock sending Program Change, notes and Song Position Pointer as above; a click track when there is no audio; edits made while playing take effect from the next event.
+- **Acceptance:** scheduler tests on a fake audio clock: every event sent within one frame of its time, a seek mid-block re-fires it, releases the others and sends the position, pause releases all. Playwright with a short generated audio file and `FakeDmx`: playing from bar 1 sends the C20 events in order, each within 50 ms; a missing audio file plays silently with the click; show mode disables playback. An HTTP test for range requests.
+- **Human check:** bounce `tell-me` from Reaper, set its offset, play it in Blimey with the front view and judge whether the lights land with the music.
+
+### Open questions
+
+1. The engine reads a Song Position Pointer as beats from the top of the song. If one Reaper project holds the whole set and sends positions from the project start, the bar grid is off on stage. Check how the session sends clock before relying on bar-aligned patterns in sections with their own signature.
+2. Whether a Reaper item can reference the exported file on disk and pick up changes, instead of being re-inserted.

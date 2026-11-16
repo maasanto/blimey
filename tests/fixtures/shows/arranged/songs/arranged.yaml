@@ -1,0 +1,33 @@
+program: 1
+bpm: 120
+cues:
+  36:
+    name: red
+    type: scene
+    values:
+      both: { color: red }
+  37:
+    name: blue
+    type: scene
+    values:
+      rgb-par: { color: blue }
+  42:
+    name: pulse
+    type: pattern
+    length: 1 bar
+    target: { both: dimmer }
+    hits:
+      - { at: 1, shape: ramp-down, length: 1 beat, level: 100% }
+sections:
+  verse:
+    bars: 2
+    blocks:
+      - { scene: 36, bar: 1, length: 2 bars }
+      - { scene: 37, bar: 2, beat: 3, length: 2 beats, level: 50% }
+  waltz:
+    bars: 2
+    time_signature: 3/4
+    blocks:
+      - { scene: 36, bar: 1, length: 1 bar }
+      - { scene: 42, bar: 1, length: 2 bars }
+arrangement: [verse, waltz, verse, waltz]

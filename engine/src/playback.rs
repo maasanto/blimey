@@ -181,8 +181,11 @@ impl Playback {
     fn select_song(&mut self, show: &Show, program: u8, at: Duration) {
         let song = show.songs.iter().find(|song| song.program == program);
         self.song = song.map(|song| song.name.clone());
-        self.clock =
-            song.map(|song| ClockFollower::started_at(at, song.tempo(), song.time_signature));
+        self.clock = song.map(|song| {
+            let mut clock = ClockFollower::started_at(at, song.tempo(), song.time_signature);
+            follow_song(&mut clock, song, at);
+            clock
+        });
         self.cues.clear();
         self.safe_look = false;
     }
@@ -283,9 +286,8 @@ impl Playback {
         // Legacy notes are raw DMX: colour at full, at intensity 1.
         let mut dimmers = VirtualDimmers::of(&output.enttec);
         look::render(&show.rig, look, &mut output.enttec, &mut dimmers);
-        // The builder's metronome: an edited `bpm` takes over at once.
         if let (Some(song), Some(clock)) = (self.song(show), self.clock.as_mut()) {
-            clock.set_song_bpm(at, song.tempo());
+            follow_song(clock, song, at);
         }
         let (Some(song), Some(clock)) = (self.song(show), &self.clock) else {
             apply_master(&show.rig, self.master, &mut output);
@@ -428,6 +430,13 @@ impl Playback {
 }
 
 /// Runs one cue's `work`. If it panics, which is a bug, adds the cue's `note` to `failed`.
+/// Keeps the clock on the song as it is now. The builder's metronome: an edited `bpm`, time
+/// signature or arrangement takes over at once.
+fn follow_song(clock: &mut ClockFollower, song: &Song, at: Duration) {
+    clock.set_song_bpm(at, song.tempo());
+    clock.set_bars(song.time_signature, &song.bar_grid);
+}
+
 fn isolated<T>(failed: &mut BTreeSet<u8>, note: u8, work: impl FnOnce() -> T) -> Option<T> {
     let done = panic::catch_unwind(AssertUnwindSafe(work)).ok();
     if done.is_none() {

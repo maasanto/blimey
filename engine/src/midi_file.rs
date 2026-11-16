@@ -5,13 +5,20 @@ use std::path::Path;
 use std::time::Duration;
 
 use midly::live::LiveEvent;
-use midly::num::{u15, u28};
-use midly::{Format, Header, MetaMessage, Smf, Timing, TrackEvent, TrackEventKind};
+use midly::num::{u4, u7, u15, u24, u28};
+use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 
+use crate::arrangement::{ArrangementEvent, EventKind, TICKS_PER_BEAT};
 use crate::{MidiEvent, MidiSource};
 
 /// SMF default when a file sets no tempo: 120 BPM.
 const DEFAULT_MICROS_PER_BEAT: u64 = 500_000;
+/// Channel 2, numbered from 0, as midly does.
+const CUE_CHANNEL: u4 = u4::new(1);
+/// The time signature meta event's usual metronome click, once a quarter note, and its
+/// quarter note of eight 32nds.
+const CLOCKS_PER_CLICK: u8 = 24;
+const THIRTY_SECONDS_PER_BEAT: u8 = 8;
 /// Files `MidiFile::encode` writes run at the default 120 BPM with this resolution: one tick is
 /// 20 µs, and a 25 ms frame period is a whole number of ticks.
 const ENCODED_TICKS_PER_BEAT: u16 = 25_000;
@@ -128,21 +135,77 @@ impl MidiFile {
             };
             track.push(TrackEvent { delta, kind });
         }
-        track.push(TrackEvent {
-            delta: u28::new(0),
-            kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
-        });
-        let smf = Smf {
-            header: Header::new(
-                Format::SingleTrack,
-                Timing::Metrical(u15::new(ENCODED_TICKS_PER_BEAT)),
-            ),
-            tracks: vec![track],
-        };
-        let mut bytes = Vec::new();
-        smf.write_std(&mut bytes)?;
-        Ok(bytes)
+        write_track(ENCODED_TICKS_PER_BEAT, track)
     }
+
+    /// A format 0 Standard MIDI File playing an arrangement's `events` at `bpm`, the channel-2
+    /// protocol of plan §5 with the time signatures and markers as meta events. Times are the
+    /// events' beats, on a grid of `arrangement::TICKS_PER_BEAT`.
+    pub fn encode_arrangement(bpm: f64, events: &[ArrangementEvent]) -> io::Result<Vec<u8>> {
+        let micros_per_beat = u24::try_from((60_000_000.0 / bpm).round() as u32)
+            .ok_or_else(|| invalid(format!("{bpm} BPM is too slow for a MIDI file")))?;
+        let mut track = vec![TrackEvent {
+            delta: u28::new(0),
+            kind: TrackEventKind::Meta(MetaMessage::Tempo(micros_per_beat)),
+        }];
+        let mut previous_tick = 0;
+        for event in events {
+            let tick = (event.beats * f64::from(TICKS_PER_BEAT)).round() as u32;
+            let delta = tick
+                .checked_sub(previous_tick)
+                .and_then(u28::try_from)
+                .ok_or_else(|| invalid(format!("event at beat {} out of range", event.beats)))?;
+            previous_tick = tick;
+            let channel_2 = |message| TrackEventKind::Midi {
+                channel: CUE_CHANNEL,
+                message,
+            };
+            let kind = match &event.kind {
+                EventKind::TimeSignature {
+                    numerator,
+                    denominator,
+                } => TrackEventKind::Meta(MetaMessage::TimeSignature(
+                    *numerator,
+                    denominator.trailing_zeros() as u8,
+                    CLOCKS_PER_CLICK,
+                    THIRTY_SECONDS_PER_BEAT,
+                )),
+                EventKind::Marker { section } => {
+                    TrackEventKind::Meta(MetaMessage::Marker(section.as_bytes()))
+                }
+                EventKind::ProgramChange { program } => channel_2(MidiMessage::ProgramChange {
+                    program: u7::new(*program),
+                }),
+                EventKind::NoteOn { scene, velocity } => channel_2(MidiMessage::NoteOn {
+                    key: u7::new(*scene),
+                    vel: u7::new(*velocity),
+                }),
+                EventKind::NoteOff { scene } => channel_2(MidiMessage::NoteOff {
+                    key: u7::new(*scene),
+                    vel: u7::new(0),
+                }),
+            };
+            track.push(TrackEvent { delta, kind });
+        }
+        write_track(TICKS_PER_BEAT, track)
+    }
+}
+
+fn write_track(ticks_per_beat: u16, mut track: Vec<TrackEvent>) -> io::Result<Vec<u8>> {
+    track.push(TrackEvent {
+        delta: u28::new(0),
+        kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+    });
+    let smf = Smf {
+        header: Header::new(
+            Format::SingleTrack,
+            Timing::Metrical(u15::new(ticks_per_beat)),
+        ),
+        tracks: vec![track],
+    };
+    let mut bytes = Vec::new();
+    smf.write_std(&mut bytes)?;
+    Ok(bytes)
 }
 
 impl MidiSource for MidiFile {
