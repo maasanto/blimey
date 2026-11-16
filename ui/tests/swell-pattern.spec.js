@@ -6,8 +6,8 @@ const HEADER = '# Demo song for the builder tests.\nprogram: 1\nbpm: 120\ncues:\
 const BLACKOUT = '  38:\n    name: blackout\n    type: scene\n    values:\n      all-wash: { dimmer: 0% }\n';
 
 /** The plan's example song, in canonical form: C4's swell and C5's pattern references. */
-const TELL_ME = readFileSync(path.resolve(import.meta.dirname, '../../shows/fossile/songs/tell-me.yaml'), 'utf8');
-const cueText = (from, to) => TELL_ME.slice(TELL_ME.indexOf(`  ${from}:\n`), to ? TELL_ME.indexOf(`  ${to}:\n`) : undefined);
+const DEMO_SONG = readFileSync(path.resolve(import.meta.dirname, '../../tests/fixtures/shows/demo/songs/demo-song.yaml'), 'utf8');
+const cueText = (from, to) => DEMO_SONG.slice(DEMO_SONG.indexOf(`  ${from}:\n`), to ? DEMO_SONG.indexOf(`  ${to}:\n`) : undefined);
 const CHORUS_SWELL = cueText(39, 40);
 const VERSE_PULSE = cueText(42);
 
@@ -159,7 +159,7 @@ test('only the editor loops a swell, timed by the saved scene rather than unsave
   await page.getByRole('button', { name: 'Stop audition' }).click();
   await expect(playhead).toHaveCount(0);
 
-  // Fired as from Reaper, it plays once and holds its end.
+  // Fired as from the DAW, it plays once and holds its end.
   for (const message of [[0xc1, 1], [0x91, 39, 127]]) await page.request.post(`${url}api/midi`, { data: { message } });
   await expect(playhead).toHaveAttribute('x1', '600', { timeout: 2000 });
   await page.waitForTimeout(3500);

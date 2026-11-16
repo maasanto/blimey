@@ -33,7 +33,7 @@ fn a_valid_show_passes() {
 fn a_broken_song_names_its_file_and_line() {
     let show = Path::new(env!("CARGO_TARGET_TMPDIR")).join("show-with-a-typo");
     fs::create_dir_all(show.join("songs")).unwrap();
-    let song = show.join("songs/tell-me.yaml");
+    let song = show.join("songs/demo-song.yaml");
     fs::write(
         &song,
         "program: 3\ncues:\n  36:\n    name: verse-blue\n    type: scene\n    fade_in: 2 secs\n    values: {}\n",

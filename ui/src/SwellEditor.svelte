@@ -35,7 +35,7 @@
   const savedBeats = $derived(saved ? beatsIn(saved.duration, barBeats) : null);
   const progress = $derived(beats === undefined || !savedBeats ? null : Math.min(Math.max(beats / savedBeats, 0), 1));
 
-  // Only an audition started here loops: a cue fired from Reaper or the cue list plays as fired.
+  // Only an audition started here loops: a cue fired from the DAW or the cue list plays as fired.
   let looping = $state(false);
   let restarted = false;
   $effect(() => {

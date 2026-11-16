@@ -86,7 +86,7 @@ test('a two-layer pixel look plays after a restart as the engine renders its sav
   const second = await startEngine();
   expect((await nextDmx(second.address)).slice(0, 4), "fire's own look on wash-1").toEqual([255, 0, 0, 0]);
 
-  // 4. Fire scene 40 as Reaper would, on note 40: the output is the engine's render of the saved file.
+  // 4. Fire scene 40 as the DAW would, on note 40: the output is the engine's render of the saved file.
   for (const message of [SELECT_SONG, FIRE_40]) {
     expect((await page.request.post(`${second.url}api/midi`, { data: { message } })).status()).toBe(204);
   }

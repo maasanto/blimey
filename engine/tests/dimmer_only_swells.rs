@@ -2,7 +2,7 @@
 //! Washes run 16ch with no dimmer channel: replayed through the engine, it brings the scene
 //! below to full through their virtual dimmers, as a dimmer channel would.
 //!
-//! The song is `tell-me` at its 92 BPM, no MIDI clock: 4 bars are 16 beats, 10.43 s.
+//! The song is `demo-song` at its 92 BPM, no MIDI clock: 4 bars are 16 beats, 10.43 s.
 
 use std::path::Path;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use blimey_engine::{
     DMX_CHANNELS, FRAME_PERIOD, Frame, MidiEvent, MidiFile, RecordedFrame, Show, replay,
 };
 
-const FOSSILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../shows/fossile");
+const DEMO_SHOW: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/shows/demo");
 const PROGRAM_CHANGE: u8 = 0xC1;
 const NOTE_ON: u8 = 0x91;
 const NOTE_OFF: u8 = 0x81;
@@ -26,7 +26,7 @@ const CHORUS_SWELL: u8 = 39;
 const SWELL_SECONDS: f64 = 16.0 * 60.0 / 92.0;
 
 fn show() -> Show {
-    Show::load(Path::new(FOSSILE)).unwrap()
+    Show::load(Path::new(DEMO_SHOW)).unwrap()
 }
 
 fn on(seconds: f64, note: u8) -> (f64, [u8; 3]) {
@@ -37,7 +37,7 @@ fn off(seconds: f64, note: u8) -> (f64, [u8; 3]) {
     (seconds, [NOTE_OFF, note, 0])
 }
 
-/// Selects tell-me, plays `messages` at their seconds, and renders `until` seconds.
+/// Selects demo-song, plays `messages` at their seconds, and renders `until` seconds.
 fn play(show: &Show, messages: &[(f64, [u8; 3])], until: f64) -> Vec<RecordedFrame> {
     let event = |seconds: f64, message: Vec<u8>| MidiEvent {
         at: Duration::from_secs_f64(seconds),

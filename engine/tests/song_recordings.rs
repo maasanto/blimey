@@ -1,7 +1,7 @@
-//! Every recorded song of the real show replays to its reference dump (plan §9), found by
-//! convention: `shows/fossile/recordings/<name>.mid` against
-//! `tests/fixtures/dumps/fossile-<name>.dump`. `<name>` is the song's name, or
-//! `<song>.synthetic` for a stand-in written by hand rather than recorded from Reaper.
+//! Every recorded song of the demo show replays to its reference dump (plan §9), found by
+//! convention: `tests/fixtures/shows/demo/recordings/<name>.mid` against
+//! `tests/fixtures/dumps/demo-<name>.dump`. `<name>` is the song's name, or
+//! `<song>.synthetic` for a stand-in written by hand rather than recorded from the DAW.
 //! See docs/migration.md for recording a song and creating its reference.
 
 use std::fs;
@@ -23,12 +23,12 @@ fn recordings(show_dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn every_recorded_song_matches_its_reference_dump() {
-    let show_dir = Path::new(ROOT).join("shows/fossile");
+    let show_dir = Path::new(ROOT).join("tests/fixtures/shows/demo");
     let show = Show::load(&show_dir).unwrap();
     let recordings = recordings(&show_dir);
     assert!(
         !recordings.is_empty(),
-        "no recordings in shows/fossile/recordings"
+        "no recordings in tests/fixtures/shows/demo/recordings"
     );
 
     let mut failures = Vec::new();
@@ -37,14 +37,14 @@ fn every_recorded_song_matches_its_reference_dump() {
         let song = song_of(&name);
         if !show.songs.iter().any(|candidate| candidate.name == song) {
             failures.push(format!(
-                "{name}.mid: shows/fossile/songs has no song {song:?}"
+                "{name}.mid: tests/fixtures/shows/demo/songs has no song {song:?}"
             ));
             continue;
         }
-        let reference = Path::new(ROOT).join(format!("tests/fixtures/dumps/fossile-{name}.dump"));
+        let reference = Path::new(ROOT).join(format!("tests/fixtures/dumps/demo-{name}.dump"));
         let Ok(text) = fs::read_to_string(&reference) else {
             failures.push(format!(
-                "{name}.mid: no reference; create it with `blimey replay shows/fossile --midi shows/fossile/recordings/{name}.mid --out tests/fixtures/dumps/fossile-{name}.dump`"
+                "{name}.mid: no reference; create it with `blimey replay tests/fixtures/shows/demo --midi tests/fixtures/shows/demo/recordings/{name}.mid --out tests/fixtures/dumps/demo-{name}.dump`"
             ));
             continue;
         };
@@ -71,7 +71,7 @@ fn song_of(name: &str) -> &str {
 
 #[test]
 fn only_a_trailing_synthetic_marks_a_stand_in() {
-    assert_eq!(song_of("tell-me.synthetic"), "tell-me");
+    assert_eq!(song_of("demo-song.synthetic"), "demo-song");
     assert_eq!(song_of("mr.blue"), "mr.blue");
     assert_eq!(song_of("mr.blue.synthetic"), "mr.blue");
 }

@@ -63,7 +63,7 @@
   import SwellEditor from './SwellEditor.svelte';
   import Timeline from './Timeline.svelte';
 
-  // Until the Reaper control chunk, song N is channel-2 Program Change N and scene N channel-2
+  // Until the MIDI control chunk, song N is channel-2 Program Change N and scene N channel-2
   // note N (docs/api.md, Scenes and songs in the builder).
   const NOTE_ON = 0x91;
   const NOTE_OFF = 0x81;
@@ -494,7 +494,7 @@
   /** Plays the swell being edited again from the top, for a looped audition. */
   const restartEdited = () => midi([NOTE_ON, form.replaces.note, FULL_VELOCITY]).catch((failure) => (error = failure.message));
 
-  /** Fires or releases a saved scene through the engine, as Reaper would. */
+  /** Fires or releases a saved scene through the engine, as the DAW would. */
   async function audition(number) {
     if (isPlaying(number)) return release(number);
     await fire(number);
@@ -661,7 +661,7 @@
     <a class="back" href="#builder">← Scenes</a>
     <strong class="title">Song {summary?.songs.find((entry) => entry.name === timelineSong)?.program ?? ''} · {timelineSong}: timeline</strong>
     <button disabled={!song?.arrangement?.length || songLoaded !== timelineSong} onclick={() => location.assign(`/api/songs/${encodeURIComponent(timelineSong)}/arrangement.mid`)}
-      >Export for Reaper</button
+      >Export to DAW</button
     >
     {@render history()}
   </div>

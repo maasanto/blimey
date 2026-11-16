@@ -17,7 +17,7 @@ use crate::duration::TimeSignature;
 use crate::look::Look;
 
 const MIDI_DATA_MAX: u8 = 127;
-/// Reaper's default tempo, for a song without `bpm` when no MIDI clock arrives.
+/// The usual DAW default tempo, for a song without `bpm` when no MIDI clock arrives.
 const DEFAULT_BPM: f32 = 120.0;
 
 #[derive(Deserialize)]
@@ -42,7 +42,7 @@ pub struct Song {
     pub name: String,
     /// The channel-2 Program Change value, 0–127, that selects the song.
     pub program: u8,
-    /// Tempo for beat durations when Reaper sends no MIDI clock.
+    /// Tempo for beat durations when the DAW sends no MIDI clock.
     pub bpm: Option<f32>,
     /// How many beats make a bar, for bar durations and bar positions.
     pub time_signature: TimeSignature,
@@ -59,7 +59,7 @@ pub struct Song {
 }
 
 impl Song {
-    /// Beats per minute when no MIDI clock arrives: `bpm`, or Reaper's default.
+    /// Beats per minute when no MIDI clock arrives: `bpm`, or the usual DAW default.
     pub fn tempo(&self) -> f64 {
         f64::from(self.bpm.unwrap_or(DEFAULT_BPM))
     }

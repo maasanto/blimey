@@ -1,4 +1,4 @@
-# Test copy of the Fossile rig, with fixed addresses so references don't move with the real show.
+# Test copy of the demo rig, with fixed addresses so references don't move when the demo show is edited.
 fixtures:
   - name: wash-1
     profile: stairville-wild-wash-pro-648-rgbw
