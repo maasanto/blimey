@@ -24,7 +24,7 @@ use blimey_engine::pattern::Pattern;
 use blimey_engine::pixel::{self, PixelScene, Rhythm};
 use blimey_engine::rig::Rig;
 use blimey_engine::show_file::{self, History, Save};
-use blimey_engine::song::Song;
+use blimey_engine::song::{Audio, Song};
 use blimey_engine::{ArtNetFrames, DMX_CHANNELS, Show, Universes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -335,21 +335,7 @@ async fn song_audio(
     Path(song): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let _turn = show_load_turn().await;
-    let audio = Show::load(&api.show_dir).and_then(|show| {
-        let song = song_named(&show, &song)?;
-        let audio = song.audio.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("song {:?} has no audio", song.name),
-            )
-        })?;
-        let file = std::fs::File::open(api.show_dir.join(&audio.file)).map_err(|error| {
-            io::Error::new(error.kind(), format!("{}: {error}", audio.file.display()))
-        })?;
-        Ok((file, content_type(&audio.file)))
-    });
-    let (mut file, content_type) = match audio {
+    let (mut file, content_type) = match open_song_audio(&api.show_dir, &song) {
         Ok(audio) => audio,
         Err(error) => return error_response(&error),
     };
@@ -396,6 +382,27 @@ async fn song_audio(
         )
             .into_response(),
     }
+}
+
+/// The audio file `songs/<song>.yaml` names, opened, and its type. Reads only the song file, so
+/// a request for a range of the audio costs no show load.
+fn open_song_audio(
+    show_dir: &std::path::Path,
+    song: &str,
+) -> io::Result<(std::fs::File, &'static str)> {
+    let content = show_file::read(show_dir, &format!("songs/{song}.yaml"))?;
+    let audio = Audio::of_song(&content)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("song {song:?} has no audio"),
+            )
+        })?;
+    let file = std::fs::File::open(show_dir.join(&audio.file)).map_err(|error| {
+        io::Error::new(error.kind(), format!("{}: {error}", audio.file.display()))
+    })?;
+    Ok((file, content_type(&audio.file)))
 }
 
 /// The first and last byte a `Range` header asks of a file of `length` bytes; `Ok(None)` for

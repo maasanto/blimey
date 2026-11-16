@@ -54,6 +54,19 @@ pub struct Audio {
     pub offset: Duration,
 }
 
+impl Audio {
+    /// The `audio` of a song file's content, as `show_file::read` gives it, checked as at load,
+    /// without loading the show; `None` for a song without audio.
+    pub fn of_song(content: &serde_json::Value) -> Result<Option<Audio>, String> {
+        let Some(audio) = content.get("audio") else {
+            return Ok(None);
+        };
+        let audio: AudioFile =
+            serde_json::from_value(audio.clone()).map_err(|error| format!("audio: {error}"))?;
+        audio.resolve().map(Some)
+    }
+}
+
 impl AudioFile {
     fn resolve(self) -> Result<Audio, String> {
         let file = PathBuf::from(&self.file);
