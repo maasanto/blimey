@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { test, expect } from './engine.js';
+import { test, expect, recordMidi } from './engine.js';
 
 const HEADER = 'program: 1\nbpm: 120\ncues:\n';
 const scene = (number, name, values) => `  ${number}:\n    name: ${name}\n    type: scene\n    values:\n      ${values}\n`;
@@ -24,17 +24,6 @@ const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
 const firstLight = (page, number) => pad(page, number).locator('circle').first();
 const backToScenes = (page) => page.getByRole('link', { name: '← Scenes' });
 const leavePrompt = (page) => page.getByRole('dialog');
-
-/** Every MIDI message the engine at `address` takes in from now on, as the stream sends them. */
-function recordMidi(address) {
-  const messages = [];
-  const socket = new WebSocket(`ws://${address}/ws`);
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === 'midi') messages.push(message.message);
-  };
-  return new Promise((resolve) => (socket.onopen = () => resolve({ messages, close: () => socket.close() })));
-}
 
 test('the scenes home shows the song file in number order after a load, a save and an undo', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);

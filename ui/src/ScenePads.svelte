@@ -1,15 +1,21 @@
+<script module>
+  /** What a pad dragged out carries: its scene's number. */
+  export const SCENE_DRAG_TYPE = 'application/x-blimey-scene';
+</script>
+
 <script>
   import { engine, request } from './engine.svelte.js';
   import { curvePoints } from './envelope.svelte.js';
 
   /**
    * `cues`: the song file's scenes, number → scene. `isPlaying(number)`: whether the engine
-   * plays that scene. `onopen(number)` opens a scene in the editor, `onnew()` a new one;
-   * `onhold(number)` starts an audition and resolves once it is sent, `onrelease(number)` ends
-   * it; `onaudition(number)` starts or ends one from the keyboard. `editable`: false in show
-   * mode, where scenes still open, read-only, but don't audition.
+   * plays that scene. `onopen(number)` opens a scene in the editor, `onnew()` a new one, and
+   * without it there is no New scene pad; `onhold(number)` starts an audition and resolves once
+   * it is sent, `onrelease(number)` ends it; `onaudition(number)` starts or ends one from the
+   * keyboard. `editable`: false in show mode, where scenes still open, read-only, but don't
+   * audition. `draggable`: pads drag out their scene's number, as `SCENE_DRAG_TYPE`.
    */
-  let { songName, cues = {}, editable, isPlaying, onopen, onnew, onhold, onrelease, onaudition } = $props();
+  let { songName, cues = {}, editable, isPlaying, onopen, onnew, onhold, onrelease, onaudition, draggable = false } = $props();
 
   /** A press held this long auditions; a shorter one opens the scene. */
   const HOLD_MS = 250;
@@ -164,6 +170,15 @@
   function click(number) {
     if (!isClickSuppressed) onopen(number);
   }
+
+  /** A pad dragged out is not held: its audition ends, or doesn't start. */
+  function dragOut(event, number) {
+    clearTimeout(pressed?.timer);
+    pressed?.started?.then(() => onrelease(number));
+    pressed = null;
+    event.dataTransfer.setData(SCENE_DRAG_TYPE, String(number));
+    event.dataTransfer.effectAllowed = 'copy';
+  }
 </script>
 
 <svelte:window onpointerup={letGo} onpointercancel={letGo} />
@@ -196,6 +211,8 @@
           onpointerdown={(event) => press(event, number)}
           onclick={() => click(number)}
           oncontextmenu={(event) => event.preventDefault()}
+          {draggable}
+          ondragstart={(event) => dragOut(event, number)}
           {@attach watch}
         >
           {@render picture(thumbnailOf(number), inView.has(number))}
@@ -213,15 +230,18 @@
         >
       </li>
     {/each}
-    <li class="slot">
-      <button class="pad new" disabled={!editable} onclick={onnew}>
-        <span class="thumbnail add" style:aspect-ratio={pictureRatio} aria-hidden="true">+</span>
-        <span class="label"><span class="name">New scene</span></span>
-      </button>
-    </li>
+    {#if onnew}
+      <li class="slot">
+        <button class="pad new" disabled={!editable} onclick={onnew}>
+          <span class="thumbnail add" style:aspect-ratio={pictureRatio} aria-hidden="true">+</span>
+          <span class="label"><span class="name">New scene</span></span>
+        </button>
+      </li>
+    {/if}
   </ol>
   <p class="hint">
     {#if editable}
+      {#if draggable}Drag a scene onto the section to place it.{/if}
       Click a scene to edit it. Hold it, or press its ▶, to audition it on the rig.
     {:else}
       Show mode: scenes open read-only and don't audition.
