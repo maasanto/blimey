@@ -88,7 +88,7 @@ Profiles are generated from Open Fixture Library JSON with `blimey fixture impor
 
 ### songs/&lt;name&gt;.yaml
 
-The song's name is its file name (`songs/tell-me.yaml` is `tell-me`).
+The song's name is its file name (`songs/demo-song.yaml` is `demo-song`).
 
 ```yaml
 program: 3          # Program Change value on channel 2, 0-127, unique across songs
@@ -171,12 +171,12 @@ arrangement: [verse, bridge, verse]
 ```
 
 - `safe_look`, `values` and `target` use the [look](#looks) keys.
-- Durations are a number then `ms`, `s`, `beat(s)` or `bar(s)`: `500ms`, `1.5s`, `0.5 beats`, `4 bars`. A beat is a quarter note, as in MIDI clock and Reaper's BPM, so a bar of 6/8 is 3 beats. Beats and bars follow the MIDI clock while they run, tempo changes included; without a clock they run at the song's `bpm`. `fade_in`, `release` and `duration` all accept every unit.
+- Durations are a number then `ms`, `s`, `beat(s)` or `bar(s)`: `500ms`, `1.5s`, `0.5 beats`, `4 bars`. A beat is a quarter note, as in MIDI clock and a DAW's BPM, so a bar of 6/8 is 3 beats. Beats and bars follow the MIDI clock while they run, tempo changes included; without a clock they run at the song's `bpm`. `fade_in`, `release` and `duration` all accept every unit.
 - Cue types:
   - `scene` holds a look: it fades in over `fade_in` from note-on and out over `release` from note-off.
   - `swell` reaches its `target` look along `curve` over `duration` from note-on, then holds where the curve ends until note-off, and fades out over `release`. Curves: `ramp-up`, `ramp-down`, `ease-in` (slow start), `sine` (up and back down), `hold` (the target at once), or custom points `{ points: [[0, 0], [0.5, 1], [1, 0.3]] }`: `[time, level]` pairs, both 0–1, times rising, joined by straight lines. The level is how much of the target shows over the layers below, as a scene's fade does. `target: { bridge-chase: intensity }` drives a pixel cue's intensity instead: see [intensity links](#intensity-links).
   - `pattern` plays `hits` in a loop of `length` bars until note-off, then fades out over `release` from where it was at note-off. Each hit plays a `shape` (any swell curve) scaled to `level` over its `length` (beats or bars, at most the pattern's length), from beat `at` of the pattern: 1 to the beats in `length`, in quarter beats. A hit running past the end of the loop carries on into the next pass, and where hits overlap the highest one wins.
-    - Start: the loop starts on the next bar line after note-on, so a note just before a bar line waits for it. A note up to one MIDI clock tick (1/24 beat) after a bar line starts it at once, in step with that bar line. That window absorbs MIDI jitter and a note placed on the bar but counted a tick late; it is 18–27 ms at 140–92 BPM, under one frame, so the first hit loses at most a frame of light. Bar lines follow Reaper's bar position from the MIDI clock, or count from the song select without one.
+    - Start: the loop starts on the next bar line after note-on, so a note just before a bar line waits for it. A note up to one MIDI clock tick (1/24 beat) after a bar line starts it at once, in step with that bar line. That window absorbs MIDI jitter and a note placed on the bar but counted a tick late; it is 18–27 ms at 140–92 BPM, under one frame, so the first hit loses at most a frame of light. Bar lines follow the DAW's bar position from the MIDI clock, or count from the song select without one.
     - `target: { all-wash: dimmer }` scales the intensity the layers below give those fixtures by the pattern's level (their dimmer channel, or their colour channels without one): dark between hits, so put a scene under it for colour. Velocity sets how deep it cuts: 127 goes dark between hits, 64 halfway. On release the fixtures fade back to the layers below.
     - `target: { all-wash: { color: amber } }` takes look settings, as a swell's `target`: the level is how much of that look shows over the layers below. Every entry of one target is either `dimmer` or look settings.
     - `target: { bridge-chase: intensity }` drives the intensity of the song's pixel cues of that name, as `dimmer` drives fixtures: see [intensity links](#intensity-links).
@@ -266,7 +266,7 @@ A swell or pattern can drive the intensity of a pixel cue in the same song inste
 
 ### Sections and arrangement
 
-A song's running order (plan §17), built in Blimey and played by Reaper from an exported MIDI file.
+A song's running order (plan §17), built in Blimey and played by the DAW from an exported MIDI file.
 
 - `sections` is keyed by name; `arrangement` lists section names in playing order, each as often as it plays. Editing a section changes every place it plays.
 - `bars` is the section's length, a whole number from 1 to 9999; `time_signature` overrides the song's for that section's bar lines and its blocks' bars.
@@ -274,7 +274,7 @@ A song's running order (plan §17), built in Blimey and played by Reaper from an
 - A block ends at or before its section's end. Different scenes may overlap and combine as they do live; two blocks of one scene may not overlap, though one may start where another ends.
 - Refused at load, each naming its line: an unknown section in `arrangement` (`line 40: arrangement: no section "outro" in sections`), a scene not in `cues`, a block outside its bar or section, overlapping blocks of one scene (`line 31: section verse: block 2: overlaps block 1 of scene 36; a scene plays once at a time`), a `length` in `ms` or `s` or under 1/960 beat, `bars` outside 1-9999.
 - **Bar grid.** With an arrangement, bar lines and bar positions follow each placed section's signature from its first beat, and the song's after the arrangement ends: a pattern fired on the first beat of a 3/4 section starts at once, on that section's bar line. Durations inside a cue (`length: 1 bar` on a pattern, `4 bars` on a swell) keep the song's signature. A song without an arrangement behaves as before.
-- **Export.** `<show>/export/<song>.mid`, kept out of git, is written for each song with an arrangement whenever the show loads in edit mode, so every save is exported, and by `blimey export`; edit mode writes only the files whose content changed. The `.mid` files of songs no longer arranged (cleared, renamed or removed) are deleted from `export/` at the same time. Show mode writes nothing. A format 0 file at 960 ticks per beat: the song's tempo (its `bpm`, 120 without), a time signature at bar 1 and wherever a placed section's differs from the one before, a marker naming each placed section, a channel-2 Program Change `program` at bar 1, then a channel-2 note on per block (note = scene, velocity = level) and a note off at its end. At one tick, the order is: time signature, marker, Program Change, note offs, note ons. When one placement ends with a block the next starts with (same scene, same level, end and start on the boundary), the two are one held note, so the scene doesn't restart. In Reaper, insert the file at the song's first bar, and again after a change.
+- **Export.** `<show>/export/<song>.mid`, kept out of git, is written for each song with an arrangement whenever the show loads in edit mode, so every save is exported, and by `blimey export`; edit mode writes only the files whose content changed. The `.mid` files of songs no longer arranged (cleared, renamed or removed) are deleted from `export/` at the same time. Show mode writes nothing. A format 0 file at 960 ticks per beat: the song's tempo (its `bpm`, 120 without), a time signature at bar 1 and wherever a placed section's differs from the one before, a marker naming each placed section, a channel-2 Program Change `program` at bar 1, then a channel-2 note on per block (note = scene, velocity = level) and a note off at its end. At one tick, the order is: time signature, marker, Program Change, note offs, note ons. When one placement ends with a block the next starts with (same scene, same level, end and start on the boundary), the two are one held note, so the scene doesn't restart. In the DAW, insert the file at the song's first bar, and again after a change.
 
 ### Audio
 
@@ -292,7 +292,7 @@ Named points in the song's audio, as set in Reaper, which the timeline draws as 
 - `at` is a time from the start of the audio file, in `ms` or `s`, not from bar 1, so a marker stays on the music when the offset changes. The timeline places it at `at - offset` on the song's tempo and bar grid; a marker before bar 1 isn't drawn.
 - Refused at load: an empty `name` (`line 6: markers: a marker needs a name`) and an `at` in beats or bars.
 
-The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/tell-me.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
+The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/demo-song.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
 ## Playback
 
@@ -310,7 +310,7 @@ What the MIDI does (plan §5). Output depends only on the show and the MIDI rece
 
 Fades run from the note's timestamp, not from the next frame.
 
-**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`; an edited `bpm` sets the pace from the next frame, without moving musical time (the builder's metronome). When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After Reaper stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: tell-me: no MIDI clock: using the song's 92 BPM` or `blimey: tell-me: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top, except that pixel cues always draw above the others.
+**Musical time.** Beats come from counting clock ticks, smoothed through jitter. Without a clock, or 250 ms after it goes silent, they run at the song's `bpm`; an edited `bpm` sets the pace from the next frame, without moving musical time (the builder's metronome). When ticks come back they catch up with the clock over about a beat, never jumping or running backwards, so fades stay smooth. After the DAW stops, running swells finish at the song's `bpm`. The engine logs each change of tempo source on stderr, e.g. `blimey: demo-song: no MIDI clock: using the song's 92 BPM` or `blimey: demo-song: following the MIDI clock`. In a MIDI file for `blimey replay`, clock and transport messages are stored as SMF escape events (`F7 01 F8`). A scene crossfades each channel from the layers below it to its own value, linearly. Cues stack in the order they were fired, later ones on top, except that pixel cues always draw above the others.
 
 Layers, lowest first (plan §5): legacy notes, the safe look after panic, scene, swell and pattern cues, pixel cues, then the master dimmer. Within the cue and pixel layers, a cue fired later draws over earlier ones. The master scales dimmer channels, the colour channels of fixtures without a dimmer channel, and channels no profiled fixture uses (legacy-only, and pixel grids, on every Art-Net universe too). Other channels, such as a shutter, keep their value.
 
@@ -337,7 +337,7 @@ This applies wherever looks are used: scene `values`, swell `target`, a pattern'
 
 ```sh
 blimey validate <show>                                              # load the show; print the first error with file and line
-blimey export <show> [song]                                         # write <show>/export/<song>.mid for Reaper, for each song with an arrangement
+blimey export <show> [song]                                         # write <show>/export/<song>.mid for the DAW, for each song with an arrangement
 blimey run <show> --dmx-port /dev/cu.usbserial-… [--midi-port IAC]  # live: MIDI in, DMX out, hot reload
 blimey run <show> --listen 127.0.0.1:7340 [--dmx-port …] [--edit]   # and the web UI
 blimey fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
@@ -377,14 +377,14 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 
 - `last-good-show.json`: the show folder and the YAML files of the last show that loaded, by path, as read just before it loaded, rewritten atomically each time the show loads, at start and on every hot reload. If the show fails to load at start, `run` unpacks them to `last-good-show/` and plays that, saying so on stderr; a copy of another show folder is never played, and the show's own error stands. Saves still go to the show folder, and in edit mode the show folder reloads over the copy once it loads again.
 
-- `state.json`, `{"song": "tell-me", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. The background thread saves a change a few milliseconds after the frame that shows it; a crash inside that window resumes the state from before the change. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
+- `state.json`, `{"song": "demo-song", "master": 0.5}`: the selected song (or `null`) and the master, 0–1, rewritten atomically whenever either changes. The background thread saves a change a few milliseconds after the frame that shows it; a crash inside that window resumes the state from before the change. On start the engine resumes them, as if it had received the song's Program Change and the master's CC 7, then waits for the next cue. A saved song the show no longer has is dropped; an unreadable file gives a fresh start. Both are reported on stderr.
 - `events.log`: one JSON object per line, for post-gig diagnosis. Each line is written unbuffered as soon as the writer gets it, so a crash loses at most the lines still queued. Past 10 MB it rotates to `events.log.1`, up to `events.log.4`; if rotating fails, logging carries on in `events.log`.
 
 ```json
-{"master":0.5,"mode":"show","show":"shows/fossile","song":"tell-me","time_ms":1794470400000,"type":"start"}
+{"master":0.5,"mode":"show","show":"tests/fixtures/shows/demo","song":"demo-song","time_ms":1794470400000,"type":"start"}
 {"at_ms":1250,"message":[145,36,127],"time_ms":1794470401250,"type":"midi"}
-{"action":"start","at_ms":1250,"name":"verse-blue","note":36,"song":"tell-me","time_ms":1794470401250,"type":"cue"}
-{"action":"release","at_ms":4000,"name":"verse-blue","note":36,"song":"tell-me","time_ms":1794470404000,"type":"cue"}
+{"action":"start","at_ms":1250,"name":"verse-blue","note":36,"song":"demo-song","time_ms":1794470401250,"type":"cue"}
+{"action":"release","at_ms":4000,"name":"verse-blue","note":36,"song":"demo-song","time_ms":1794470404000,"type":"cue"}
 ```
 
 - `start`: the engine started, with the song and master it resumed.
@@ -412,7 +412,7 @@ Frame N holds the latest values received by N × 25 ms, a short packet leaving t
 ```yaml
 show: .                                  # the show folder
 songs:                                   # played in this order, then again
-  - recordings/tell-me.mid
+  - recordings/demo-song.mid
 ```
 
 In real time it sends to the outputs given as for `run` (`--dmx-port`, `--listen`, `--artnet`, `--edit`), or with `--emulated-enttec` through the real driver to an emulated box on a pseudo terminal. `--accelerated` runs on a fake clock with no outputs, as fast as the machine renders. It prints a report, writes it to `--report <file>` (by default a new `soak-<setlist>-<mode>-<unix time>-<process id>.txt` in the current folder) and exits 1 if a check fails:
@@ -439,7 +439,7 @@ Requests that load the show to answer, `GET /api/show`, the thumbnails and the p
 What the builder needs to offer choices: palette colours as `#rrggbb`, and the songs with the Program Change that selects each, which the builder shows as the song's number.
 
 ```json
-{ "palettes": { "deep-blue": "#0028ff" }, "songs": [{ "name": "tell-me", "program": 3 }] }
+{ "palettes": { "deep-blue": "#0028ff" }, "songs": [{ "name": "demo-song", "program": 3 }] }
 ```
 
 ### Show files: `GET` and `PUT /api/show/<file>`
@@ -448,7 +448,7 @@ Reads and replaces a whole show file. `<file>` is a path in the show folder: `ri
 
 `PUT` replaces the file, or creates a song (`204` on success):
 
-1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader. A song is judged by loading the whole show as it would be with the new content in place, the same checks as at start-up, so a song broken on disk can be fixed through this endpoint. Either refusal is a `422` naming the problem and the file at fault, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/tell-me.yaml: program 3 already selects song "other"`, and leaves the file untouched. A new song whose name differs from an existing one only by case is refused with `409`: macOS would write it over the other.
+1. The content is checked against the file's JSON Schema in `schema/`, then by the engine's own loader. A song is judged by loading the whole show as it would be with the new content in place, the same checks as at start-up, so a song broken on disk can be fixed through this endpoint. Either refusal is a `422` naming the problem and the file at fault, such as `rig.yaml: /fixtures/0/canvas/x: 1.5 is greater than the maximum of 1` or `songs/other.yaml: program 3 already selects song "demo-song"`, and leaves the file untouched. A new song whose name differs from an existing one only by case is refused with `409`: macOS would write it over the other.
 2. The file is written in canonical form. Its leading comment block is kept; other comments are not. Writing back what `GET` returned changes nothing for a file already in canonical form, so an edit changes only the lines it touches.
    - `rig.yaml`: block-style YAML with fields in a fixed order.
    - Songs: block-style YAML, two-space indents, keys in the order of the schema's `properties` (each cue's by its type's definition, a pixel cue's `params`, `layer_2` and `layers`, with each layer's `area`, too) and cues by note number. A mapping or list of plain values sits on one line: `all-wash: { color: deep-blue, dimmer: 60% }`, `- [0.5, 1]`.3. The write is atomic: a crash leaves the old file or the new one, never half of one.
@@ -460,7 +460,7 @@ To move a fixture, `GET` the file, change the fixture's `canvas`, `PUT` it back.
 
 The builder calls each cue a scene and goes by numbers, never notes or programs. A scene is stored as a cue entry under the song's `cues:`, and its number is that entry's key: scene 36 is `cues: { 36: … }`, saved and deleted through `/api/songs/<song>/cues/36`. A song's number is its `program`. A swell or pattern cue is a swell or pattern scene; a `type: scene` cue the builder can't open on the stage stays a "fixed look". Valid numbers are what the endpoints take.
 
-Until a later chunk designs control from Reaper, the mapping is the engine's: scene N fires on channel-2 note N and song N is selected by channel-2 Program Change N. The builder's auditions send exactly that through `POST /api/midi`.
+Until a later chunk designs control from the DAW, the mapping is the engine's: scene N fires on channel-2 note N and song N is selected by channel-2 Program Change N. The builder's auditions send exactly that through `POST /api/midi`.
 
 ### Cues: `PUT` and `DELETE /api/songs/<song>/cues/<note>`
 
@@ -476,7 +476,7 @@ Each reads, edits and writes `songs/<song>.yaml` under one lock, so no other sav
 - `cue` is the cue as in the song file.
 - `replaces`, when editing a cue, is its note and the cue as it was loaded; the cue moves from that note to `<note>`. Omit it, or send `null`, for a new cue.
 - Refused, leaving the file untouched:
-  - a note that another cue already uses, with `409`: `songs/tell-me.yaml: note 36 already fires cue "verse-blue"; pick a free note, or edit that cue`. The engine never merges or overwrites a cue it wasn't asked to replace;
+  - a note that another cue already uses, with `409`: `songs/demo-song.yaml: note 36 already fires cue "verse-blue"; pick a free note, or edit that cue`. The engine never merges or overwrites a cue it wasn't asked to replace;
   - a replaced cue that changed since it was loaded, with `409`, or is no longer there, with `404`, so a stale editor never overwrites someone else's change.
 
 `DELETE` removes the cue on `<note>` (`204`; `404` if there is none).
@@ -565,7 +565,7 @@ The engine keeps the last 50 saves made through the API, across all show files: 
 
 - `POST /api/undo` undoes the latest save still in the history: the file goes back to what it held before, byte for byte, comments and formatting included, after the same checks as a write. A song the save created is removed.
 - `POST /api/redo` makes the latest undone save again, byte for byte. A new save clears what could be redone.
-- Both return the file and the steps left: `{ "file": "songs/tell-me.yaml", "undo": 2, "redo": 1 }`. With nothing to undo or redo, they return `404`.
+- Both return the file and the steps left: `{ "file": "songs/demo-song.yaml", "undo": 2, "redo": 1 }`. With nothing to undo or redo, they return `404`.
 - `GET /api/history` returns the steps alone, `{ "undo": 3, "redo": 0 }`. It works in show mode, where the history is always empty.
 
 If the file has changed since the save or undo (by hand, say), the step is refused with `409` rather than lose that change; it stays in the history, to try again once the file is put back. A step whose earlier content no longer passes the checks, such as an undo back to a song that was broken before a fix, never could be made: it is refused with `422` and dropped, so it doesn't block the steps before it.
@@ -575,7 +575,7 @@ If the file has changed since the save or undo (by hand, say), the step is refus
 Shows a pixel cue on every output while the builder edits it (`204`). The body is the song and the cue as in its file:
 
 ```json
-{ "song": "tell-me", "cue": { "name": "bridge-chase", "type": "pixel", "effect": "chase", "params": { "color": "amber", "width": 0.25 } } }
+{ "song": "demo-song", "cue": { "name": "bridge-chase", "type": "pixel", "effect": "chase", "params": { "color": "amber", "width": 0.25 } } }
 ```
 
 The cue is checked like a saved one (`422`, for an unknown colour say); an unknown song is a `404`. It draws above every layer, on the frame as output after the master dimmer, on every fixture and grid, Art-Net ones included, at full intensity, and animates from the first frame drawn at the song's `bpm`, whatever the MIDI clock does. Layer rhythms play too: a swell from that first frame, a pattern's loop from the next bar line counted from engine start, in the song's `time_signature`. A `PUT` of another pixel cue keeps the animation going where it is, so moving a slider doesn't restart it, unless a layer's `swell` or `pattern` changed: then it starts again, so the edited rhythm plays from its start. Nothing is saved.
@@ -591,7 +591,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 ```
 
 - The grid is RGB and fills the canvas.
-- `?song=tell-me` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
+- `?song=demo-song` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
 - `frames` are 8 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note, with beats at 120 BPM. Layer rhythms play from the note too, a pattern's loop starting at once.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
@@ -626,7 +626,7 @@ A swell or pattern cue's thumbnail is its envelope, `levels`: 129 levels, 0–1,
 
 ### MIDI: `POST /api/midi`
 
-Plays one MIDI message as if it came in from the MIDI port, to audition cues without Reaper (`204`):
+Plays one MIDI message as if it came in from the MIDI port, to audition cues without the DAW (`204`):
 
 ```json
 { "message": [145, 36, 127] }
@@ -692,7 +692,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
   "at_ms": 1250,
   "dmx": [0, 10, 255, "… 512 values"],
   "pixels": { "wash-1": ["#000aff", "#000aff", "#000aff", "#000aff"] },
-  "song": "tell-me",
+  "song": "demo-song",
   "cues": [{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }],
   "master": 1.0,
   "live_parameters": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

@@ -15,8 +15,8 @@ Blimey mirrors its DMX output over Art-Net; [BlenderDMX](https://blenderdmx.eu),
 3. Run Blimey with the mirror on. `--artnet` alone sends to 127.0.0.1 on universe 0:
 
    ```sh
-   blimey run shows/fossile --dmx-port /dev/cu.usbserial-… --artnet
-   blimey fire shows/fossile --set all-wash color=deep-blue dimmer=60% --artnet
+   blimey run <show> --dmx-port /dev/cu.usbserial-… --artnet
+   blimey fire <show> --set all-wash color=deep-blue dimmer=60% --artnet
    ```
 
    For BlenderDMX on another computer, give its address: `--artnet 192.168.1.20`.
@@ -25,12 +25,12 @@ BlenderDMX's docs ask to start it before any other Art-Net program on the same c
 
 ## Patch the washes
 
-Add each fixture with Fixture > Add, on universe 0, at the addresses in `shows/fossile/rig.yaml` (1, 17, 33 and 49 at the time of writing), in 16-channel mode.
+Add each fixture with Fixture > Add, on universe 0, at the addresses in your show's `rig.yaml` (1, 17, 33 and 49 in the demo show), in 16-channel mode.
 
 There is no starter Blender scene for the 4-wash rig, because it needs a GDTF profile for the Stairville Wild Wash Pro 648 RGBW and none could be found. GDTF Share's library is behind a login and we could not confirm a file there, and none of BlenderDMX's built-in profiles matches the wash's 16-channel mode (four RGBW segments). To get one, either:
 
 - log in to [GDTF Share](https://gdtf-share.com) and search for "Wild Wash Pro 648"; or
-- build a profile with the GDTF Builder on the same site, following the channel table in `shows/fossile/fixtures/stairville-wild-wash-pro-648-rgbw.yaml`, which was checked against the manual.
+- build a profile with the GDTF Builder on the same site, following the channel table in `tests/fixtures/shows/demo/fixtures/stairville-wild-wash-pro-648-rgbw.yaml`, which was checked against the manual.
 
 Then import it with Setup > Import > Import GDTF Profile and pick it when adding the fixtures.
 

@@ -69,7 +69,7 @@ test('dragging a fixture moves it in rig.yaml', async ({ page, show, startEngine
   const [, x, y] = saved.match(wash2Canvas).map(Number);
   expect(x).toBeCloseTo(0.325 + 0.1, 2);
   expect(y).toBeCloseTo(0.2 + 0.3, 2);
-  expect(saved, 'the header comment is kept').toMatch(/^# Test copy of the Fossile rig/);
+  expect(saved, 'the header comment is kept').toMatch(/^# Test copy of the demo rig/);
   expect(saved, 'other fixtures stay put').toContain('  canvas:\n    x: 0.55\n    y: 0.2\n');
 
   // The engine sends the saved rig to the open page, and serves it again after a reload.

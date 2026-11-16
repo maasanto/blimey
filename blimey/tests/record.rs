@@ -1,5 +1,5 @@
 //! `blimey record` round trip on the real binary: a virtual CoreMIDI port plays a song in real
-//! time, as Reaper would, and the recording replays to the same frames as the song. A UDP
+//! time, as the DAW would, and the recording replays to the same frames as the song. A UDP
 //! socket stands in for EMU's Art-Net output, captured on the same timeline. macOS only,
 //! and ignored by a plain `cargo test`: run
 //! `cargo test -p blimey --test record -- --ignored --nocapture`.
@@ -54,7 +54,7 @@ fn song() -> Vec<MidiEvent> {
 fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
     let port_name = format!("blimey-record-{}", std::process::id());
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{port_name}.mid"));
-    let mut reaper = MidiOutput::new("blimey-record-test")
+    let mut daw = MidiOutput::new("blimey-record-test")
         .unwrap()
         .create_virtual(&port_name)
         .expect("create a virtual CoreMIDI port");
@@ -90,7 +90,7 @@ fn a_recorded_song_replays_to_the_same_frames_as_the_song() {
             at: started.elapsed(),
             message: event.message.clone(),
         });
-        reaper.send(&event.message).unwrap();
+        daw.send(&event.message).unwrap();
     }
     let deadline = Instant::now() + PATIENCE;
     while recorder.try_wait().unwrap().is_none() {
@@ -162,17 +162,17 @@ fn a_take_is_on_disk_every_few_seconds_and_complete_after_sigterm() {
     let port_name = format!("blimey-record-term-{}", std::process::id());
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{port_name}.mid"));
     let _ = fs::remove_file(&out);
-    let mut reaper = MidiOutput::new("blimey-record-test")
+    let mut daw = MidiOutput::new("blimey-record-test")
         .unwrap()
         .create_virtual(&port_name)
         .expect("create a virtual CoreMIDI port");
     let mut recorder = start_recording(&port_name, &out, &[]);
     let note = |velocity| [0x90, 37, velocity];
 
-    reaper.send(&note(10)).unwrap();
+    daw.send(&note(10)).unwrap();
     thread::sleep(Duration::from_secs(6));
     let saved = events(MidiFile::open(&out).expect("saved within 5 s, as a kill -9 would find it"));
-    reaper.send(&note(20)).unwrap();
+    daw.send(&note(20)).unwrap();
     thread::sleep(Duration::from_millis(100));
     // SAFETY: kill only sends a signal to the recorder's process id.
     assert_eq!(

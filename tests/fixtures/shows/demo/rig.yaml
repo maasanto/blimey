@@ -1,7 +1,4 @@
-# PLACEHOLDER ADDRESSES: the washes' real DMX start addresses and DMX mode are not confirmed
-# yet. Check them against the units' displays (menu A001-A512, mode 16Ch) before the bench
-# session. Canvas positions are a first guess too (a row on the truss); drag them in the UI's
-# front view.
+# Demo rig: four RGBW washes in 16-channel mode, in a row on the truss.
 fixtures:
 - name: wash-1
   profile: stairville-wild-wash-pro-648-rgbw

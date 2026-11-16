@@ -21,8 +21,8 @@ async function stagePoint(page, [x, y]) {
   return { x: stage.x + x * stage.width, y: stage.y + (1 - y) * stage.height };
 }
 
-// On the config's scratch copy of shows/fossile: tell-me, song 3.
-test('Fossile: monitor, patch, front view, scenes home and the old cue types', async ({ page, startEngine }) => {
+// On the config's scratch copy of tests/fixtures/shows/demo: demo-song, song 3.
+test('Demo show: monitor, patch, front view, scenes home and the old cue types', async ({ page, startEngine }) => {
   const { url } = await startEngine({ look: DARK });
 
   await page.goto(`${url}#monitor`);
@@ -58,11 +58,11 @@ test('Fossile: monitor, patch, front view, scenes home and the old cue types', a
   await shoot(page, 'number-taken');
   await page.getByLabel('Number').fill('37');
 
-  await page.goto(`${url}#builder/tell-me/38`);
+  await page.goto(`${url}#builder/demo-song/38`);
   await expect(page.getByRole('status')).toContainText('fixed look');
   await shoot(page, 'fixed-look-read-only');
 
-  await page.goto(`${url}#builder/tell-me/39`);
+  await page.goto(`${url}#builder/demo-song/39`);
   await expect(page.locator('.curve polyline')).toBeVisible();
   await page.getByRole('button', { name: 'Audition loop' }).click();
   await expect(page.locator('.curve .playhead')).toHaveCount(1);
@@ -70,12 +70,12 @@ test('Fossile: monitor, patch, front view, scenes home and the old cue types', a
   await shoot(page, 'swell-scene');
   await page.getByRole('button', { name: 'Stop audition' }).click();
 
-  await page.goto(`${url}#builder/tell-me/42`);
+  await page.goto(`${url}#builder/demo-song/42`);
   await expect(page.locator('.hit-level').first()).toBeVisible();
   await shoot(page, 'pattern-scene');
 });
 
-test('Fossile: show mode is read-only', async ({ page, startEngine }) => {
+test('Demo show: show mode is read-only', async ({ page, startEngine }) => {
   const { url } = await startEngine({ look: DARK, edit: false });
   await page.goto(`${url}#builder`);
   await expect(pad(page, 36).locator('circle').first()).not.toHaveAttribute('fill', '#000000');

@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 use blimey_engine::look::Look;
 use blimey_engine::{FRAME_PERIOD, FakeClock, FakeDmx, MidiEvent, MidiSource, Show, run};
 
-const SHOWS: [&str; 2] = ["../shows/fossile", "../tests/fixtures/shows/cues"];
+const SHOWS: [&str; 2] = [
+    "../tests/fixtures/shows/demo",
+    "../tests/fixtures/shows/cues",
+];
 
 /// xorshift64: a fixed seed, so a failure replays exactly.
 struct Random(u64);

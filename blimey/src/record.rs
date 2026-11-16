@@ -1,4 +1,4 @@
-//! `blimey record`: captures what Reaper sends on the MIDI port to a Standard MIDI File for
+//! `blimey record`: captures what the DAW sends on the MIDI port to a Standard MIDI File for
 //! replay tests (plan §9), and optionally a controller's Art-Net output, such as EMU's, on the
 //! same timeline for parity checks (plan §15).
 
@@ -62,7 +62,7 @@ pub fn record(out: &Path, recording: &Recording) -> Result<(), Box<dyn Error>> {
         "record: recording to {}; Ctrl-C to stop{}",
         out.display(),
         if recording.until_stop {
-            ", or press stop in Reaper"
+            ", or press stop in the DAW"
         } else {
             ""
         }
@@ -136,7 +136,7 @@ impl Take<'_> {
                 let is_stop = event.message == [STOP];
                 is_playing |= event.message == [START] || event.message == [CONTINUE];
                 self.events.push(event);
-                // Reaper may send Stop before it starts playing, e.g. when seeking.
+                // The DAW may send Stop before it starts playing, e.g. when seeking.
                 if until_stop && is_playing && is_stop {
                     return Ok(());
                 }

@@ -496,7 +496,7 @@
   /** Plays the swell being edited again from the top, for a looped audition. */
   const restartEdited = () => midi([NOTE_ON, form.replaces.note, FULL_VELOCITY]).catch((failure) => (error = failure.message));
 
-  /** Fires or releases a saved scene through the engine, as Reaper would. */
+  /** Fires or releases a saved scene through the engine, as the DAW would. */
   async function audition(number) {
     if (isPlaying(number)) return release(number);
     await fire(number);
@@ -529,6 +529,9 @@
 </script>
 
 <svelte:window onpagehide={clearPreview} onhashchange={followUrl} onkeydown={shortcut} />
+
+<!-- An overlay locks the rig: these front views preview the scene, they don't move fixtures. -->
+{#snippet lockedRig()}{/snippet}
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notice}<p class="notice" aria-live="polite">{notice}</p>{/if}
@@ -652,9 +655,7 @@
           {/if}
         {/key}
       </fieldset>
-      <!-- An overlay locks the rig: this front view previews the scene, it doesn't move fixtures. -->
-      {#snippet preview()}{/snippet}
-      <div><FrontView overlay={preview} /></div>
+      <div><FrontView overlay={lockedRig} /></div>
     </div>
   {/if}
 {:else if timelineSong}
@@ -662,7 +663,7 @@
     <a class="back" href="#builder">← Scenes</a>
     <strong class="title">Song {summary?.songs.find((entry) => entry.name === timelineSong)?.program ?? ''} · {timelineSong}: timeline</strong>
     <button disabled={!song?.arrangement?.length || songLoaded !== timelineSong} onclick={() => location.assign(`/api/songs/${encodeURIComponent(timelineSong)}/arrangement.mid`)}
-      >Export for Reaper</button
+      >Export to DAW</button
     >
     {@render history()}
   </div>
@@ -740,6 +741,10 @@
       onrelease={(number) => attempt(() => release(number))}
       onaudition={(number) => attempt(() => audition(number))}
     />
+    <!-- Below the pads, so showing it moves no pad from under the pointer holding one. A released scene stays until its fade ends. -->
+    {#if editable && engine.frame?.song === songName && engine.frame.cues.length}
+      <aside class="auditioned" aria-label="Scene on the rig"><FrontView overlay={lockedRig} /></aside>
+    {/if}
   {/if}
 {/if}
 
@@ -862,6 +867,20 @@
     grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
     gap: 20px;
     align-items: start;
+  }
+
+  /* Stuck to the window's bottom over a long list of pads, which can still scroll clear of it. */
+  .auditioned {
+    position: sticky;
+    bottom: 20px;
+    width: min(420px, 40vw);
+    margin-left: auto;
+    padding: 4px;
+    pointer-events: none;
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   }
 
   .new-song {

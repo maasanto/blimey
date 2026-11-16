@@ -1,4 +1,4 @@
-//! The arranged song of `tests/fixtures/shows/arranged`, exported for Reaper and replayed.
+//! The arranged song of `tests/fixtures/shows/arranged`, exported for the DAW and replayed.
 //!
 //! The rig is the cues show's (see `cue_replays.rs`). Song `arranged`, program 1, 120 BPM, plays
 //! [verse, waltz, verse, waltz]: verse is 2 bars of 4/4 (8 beats), waltz 2 bars of 3/4 (6 beats),

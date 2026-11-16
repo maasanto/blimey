@@ -330,6 +330,24 @@ test.describe('on three rows of washes', () => {
     await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     expect(readFileSync(songFile, 'utf8')).toBe(saved);
   });
+
+  test("each area shows its layer's shape moving between the fixtures, and a hidden one shows none", async ({ page, startEngine }) => {
+    const { url } = await startEngine({ look: DARK });
+    await openChorusBuild(page, url);
+    const chaseCells = page.locator('[data-shape="1"] rect');
+    await expect(chaseCells).toHaveCount(144);
+    /** The columns of the 12 × 12 picture the amber bar lights, as "4,5,6". */
+    const litColumns = () =>
+      chaseCells.evaluateAll((cells) => [...new Set(cells.flatMap((cell, index) => (cell.getAttribute('fill') === '#000000' ? [] : [index % 12])))].join());
+
+    await expect.poll(litColumns, 'a bar a quarter of the area wide, not a fill').toMatch(/^\d+(,\d+){1,3}$/);
+    const before = await litColumns();
+    await expect.poll(litColumns, 'the chase steps it along').not.toBe(before);
+
+    await page.getByRole('button', { name: 'Hide while editing: amber chase on the right' }).click();
+    await expect(chaseCells).toHaveCount(0);
+    await expect(page.locator('[data-shape]')).toHaveCount(2);
+  });
 });
 
 test('an old-form pixel cue opened and saved untouched saves as layers and plays the same', async ({ page, show, startEngine }) => {
@@ -362,8 +380,8 @@ test('an old-form pixel cue opened and saved untouched saves as layers and plays
 });
 
 /** The plan's example song: C5's pattern reference is its `verse-pulse`. */
-const TELL_ME = readFileSync(path.join(ROOT, 'shows/fossile/songs/tell-me.yaml'), 'utf8');
-const C5_HITS = TELL_ME.slice(TELL_ME.indexOf('    hits:\n', TELL_ME.indexOf('  42:\n')));
+const DEMO_SONG = readFileSync(path.join(ROOT, 'tests/fixtures/shows/demo/songs/demo-song.yaml'), 'utf8');
+const C5_HITS = DEMO_SONG.slice(DEMO_SONG.indexOf('    hits:\n', DEMO_SONG.indexOf('  42:\n')));
 
 test("the 1 / 2 / 3.5 pattern built on one area saves the reference and plays as C15's linked pattern", async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
@@ -430,6 +448,28 @@ test('a groove written by hand in another key and hit order still reads as that 
   await expect(page.getByRole('button', { name: 'Rhythm: backbeat' })).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('the speed slider runs slow to fast, left to right, and saves the period as before', async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  const songFile = path.join(show, 'songs/demo.yaml');
+  writeFileSync(songFile, 'program: 1\ncues:\n  40:\n    name: run\n    type: pixel\n    layers:\n      - { effect: chase, params: { speed: 1 bar } }\n');
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'white chase everywhere', exact: true }).click();
+  const speed = page.getByLabel('Speed', { exact: true });
+  const width = page.getByLabel('Width', { exact: true });
+  expect((await speed.boundingBox()).width, 'the speed slider gets a row of its own').toBeGreaterThan((await width.boundingBox()).width);
+
+  await speed.press('ArrowRight');
+  await expect(speed).toHaveAttribute('aria-valuetext', '0.75 bars');
+  await speed.press('End');
+  await expect(speed).toHaveAttribute('aria-valuetext', '0.25 bars');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toContain('params: { speed: 0.25 bars }');
+});
+
 test("an area keeps its own saved rhythm to audition after a reorder, and a new one has none", async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
   const layers =
@@ -450,12 +490,12 @@ test("an area keeps its own saved rhythm to audition after a reorder, and a new 
   await expect(audition, 'not saved yet').toBeDisabled();
 });
 
-test.describe('on the Fossile show', () => {
-  test.use({ showSource: 'shows/fossile' });
+test.describe('on the demo show', () => {
+  test.use({ showSource: 'tests/fixtures/shows/demo' });
 
-  test("each scene of tell-me, converted, plays alone as the scene within a DMX step", async ({ page, show, startEngine }) => {
-    const songFile = path.join(show, 'songs/tell-me.yaml');
-    // Program 3 selects tell-me; held past verse-blue's 2 s fade-in, then through its 1 s release.
+  test("each scene of demo-song, converted, plays alone as the scene within a DMX step", async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/demo-song.yaml');
+    // Program 3 selects demo-song; held past verse-blue's 2 s fade-in, then through its 1 s release.
     const fire = (note) =>
       framesOf(replay(show, [[0, [0xc1, 3]], [0, [0x91, Number(note), 127]], [3000, [0x81, Number(note), 0]], runTo(4500)]));
     const scenes = { 36: 'Deep-blue wash everywhere.', 37: 'Magenta wash everywhere except inner-wash, amber wash everywhere except outer-wash.' };
@@ -467,7 +507,7 @@ test.describe('on the Fossile show', () => {
       await pad(page, note).click();
       await expect(page.getByText(sentence)).toBeVisible();
       await page.getByRole('button', { name: 'Save', exact: true }).click();
-      await expect(page.getByText(`Saved scene ${note} in tell-me.`)).toBeVisible();
+      await expect(page.getByText(`Saved scene ${note} in demo-song.`)).toBeVisible();
       await page.getByRole('link', { name: '← Scenes' }).click();
     }
     expect(readFileSync(songFile, 'utf8')).toContain(
@@ -485,7 +525,7 @@ test.describe('on the Fossile show', () => {
   });
 
   test('the blackout, a dimmer over the scenes below, stays a fixed look that can still be auditioned, duplicated and renumbered', async ({ page, show, startEngine }) => {
-    const songFile = path.join(show, 'songs/tell-me.yaml');
+    const songFile = path.join(show, 'songs/demo-song.yaml');
     const before = readFileSync(songFile, 'utf8');
     const { url } = await startEngine();
     await page.goto(`${url}#builder`);
@@ -502,7 +542,7 @@ test.describe('on the Fossile show', () => {
     await expect(page.getByText('Duplicated scene 38 as scene 41.')).toBeVisible();
     await page.getByLabel('Number').fill('50');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByText('Saved scene 50 in tell-me.')).toBeVisible();
+    await expect(page.getByText('Saved scene 50 in demo-song.')).toBeVisible();
 
     const blackout = before.slice(before.indexOf('  38:\n'), before.indexOf('  39:\n'));
     const after = readFileSync(songFile, 'utf8');

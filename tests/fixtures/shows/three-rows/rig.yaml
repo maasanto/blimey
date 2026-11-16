@@ -1,4 +1,4 @@
-# The four washes of the Fossile rig, three rows high (plan §16): the rig once it gains height.
+# The four washes of the demo rig, three rows high (plan §16): the rig once it gains height.
 fixtures:
   - { name: low-1, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 1, canvas: { x: 0.1, y: 0.15, width: 0.125 } }
   - { name: low-2, profile: stairville-wild-wash-pro-648-rgbw, mode: 16ch, address: 17, canvas: { x: 0.325, y: 0.15, width: 0.125 } }

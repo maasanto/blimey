@@ -121,7 +121,7 @@ mod tests {
         let plist = plist(
             Path::new("/opt/blimey"),
             &[
-                "shows/fossile".into(),
+                "tests/fixtures/shows/demo".into(),
                 "--dmx-port".into(),
                 "/dev/cu.a&b".into(),
             ],
@@ -130,7 +130,7 @@ mod tests {
         );
 
         assert!(plist.contains(
-            "    <string>/opt/blimey</string>\n    <string>run</string>\n    <string>shows/fossile</string>\n    <string>--dmx-port</string>\n    <string>/dev/cu.a&amp;b</string>\n"
+            "    <string>/opt/blimey</string>\n    <string>run</string>\n    <string>tests/fixtures/shows/demo</string>\n    <string>--dmx-port</string>\n    <string>/dev/cu.a&amp;b</string>\n"
         ), "{plist}");
         assert!(plist.contains("<key>WorkingDirectory</key>\n  <string>/Users/me/blimey</string>"));
         assert!(plist.contains("<key>KeepAlive</key>\n  <true/>"));
