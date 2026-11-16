@@ -1055,6 +1055,17 @@
     background: var(--marker);
   }
 
+  .flag::after {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 8px;
+    height: 7px;
+    content: '';
+    background: var(--marker);
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+  }
+
   .marker-line {
     position: absolute;
     top: 20px;
