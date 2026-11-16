@@ -5,7 +5,8 @@ use blimey_engine::fixture::{Attribute, FixtureProfile, Mode};
 use blimey_engine::ofl::import_ofl;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
-const WILD_WASH_OFL: &str = "shows/fossile/fixtures/stairville-wild-wash-pro-648-rgbw.ofl.json";
+const WILD_WASH_OFL: &str =
+    "tests/fixtures/shows/demo/fixtures/stairville-wild-wash-pro-648-rgbw.ofl.json";
 
 fn read(path: &str) -> String {
     fs::read_to_string(Path::new(ROOT).join(path)).unwrap()
@@ -61,7 +62,7 @@ fn wild_wash_16ch_profile_matches_the_manufacturer_table() {
     assert_matches_manual(imported.mode("16ch").unwrap(), "OFL import");
 
     for profile_path in [
-        "shows/fossile/fixtures/stairville-wild-wash-pro-648-rgbw.yaml",
+        "tests/fixtures/shows/demo/fixtures/stairville-wild-wash-pro-648-rgbw.yaml",
         "tests/fixtures/shows/four-washes/fixtures/stairville-wild-wash-pro-648-rgbw.yaml",
     ] {
         let profile = FixtureProfile::load(&Path::new(ROOT).join(profile_path)).unwrap();

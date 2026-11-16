@@ -362,8 +362,8 @@ test('an old-form pixel cue opened and saved untouched saves as layers and plays
 });
 
 /** The plan's example song: C5's pattern reference is its `verse-pulse`. */
-const TELL_ME = readFileSync(path.join(ROOT, 'shows/fossile/songs/tell-me.yaml'), 'utf8');
-const C5_HITS = TELL_ME.slice(TELL_ME.indexOf('    hits:\n', TELL_ME.indexOf('  42:\n')));
+const DEMO_SONG = readFileSync(path.join(ROOT, 'tests/fixtures/shows/demo/songs/demo-song.yaml'), 'utf8');
+const C5_HITS = DEMO_SONG.slice(DEMO_SONG.indexOf('    hits:\n', DEMO_SONG.indexOf('  42:\n')));
 
 test("the 1 / 2 / 3.5 pattern built on one area saves the reference and plays as C15's linked pattern", async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
@@ -450,12 +450,12 @@ test("an area keeps its own saved rhythm to audition after a reorder, and a new 
   await expect(audition, 'not saved yet').toBeDisabled();
 });
 
-test.describe('on the Fossile show', () => {
-  test.use({ showSource: 'shows/fossile' });
+test.describe('on the demo show', () => {
+  test.use({ showSource: 'tests/fixtures/shows/demo' });
 
-  test("each scene of tell-me, converted, plays alone as the scene within a DMX step", async ({ page, show, startEngine }) => {
-    const songFile = path.join(show, 'songs/tell-me.yaml');
-    // Program 3 selects tell-me; held past verse-blue's 2 s fade-in, then through its 1 s release.
+  test("each scene of demo-song, converted, plays alone as the scene within a DMX step", async ({ page, show, startEngine }) => {
+    const songFile = path.join(show, 'songs/demo-song.yaml');
+    // Program 3 selects demo-song; held past verse-blue's 2 s fade-in, then through its 1 s release.
     const fire = (note) =>
       framesOf(replay(show, [[0, [0xc1, 3]], [0, [0x91, Number(note), 127]], [3000, [0x81, Number(note), 0]], runTo(4500)]));
     const scenes = { 36: 'Deep-blue wash everywhere.', 37: 'Magenta wash everywhere except inner-wash, amber wash everywhere except outer-wash.' };
@@ -467,7 +467,7 @@ test.describe('on the Fossile show', () => {
       await pad(page, note).click();
       await expect(page.getByText(sentence)).toBeVisible();
       await page.getByRole('button', { name: 'Save', exact: true }).click();
-      await expect(page.getByText(`Saved scene ${note} in tell-me.`)).toBeVisible();
+      await expect(page.getByText(`Saved scene ${note} in demo-song.`)).toBeVisible();
       await page.getByRole('link', { name: '← Scenes' }).click();
     }
     expect(readFileSync(songFile, 'utf8')).toContain(
@@ -485,7 +485,7 @@ test.describe('on the Fossile show', () => {
   });
 
   test('the blackout, a dimmer over the scenes below, stays a fixed look that can still be auditioned, duplicated and renumbered', async ({ page, show, startEngine }) => {
-    const songFile = path.join(show, 'songs/tell-me.yaml');
+    const songFile = path.join(show, 'songs/demo-song.yaml');
     const before = readFileSync(songFile, 'utf8');
     const { url } = await startEngine();
     await page.goto(`${url}#builder`);
@@ -502,7 +502,7 @@ test.describe('on the Fossile show', () => {
     await expect(page.getByText('Duplicated scene 38 as scene 41.')).toBeVisible();
     await page.getByLabel('Number').fill('50');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByText('Saved scene 50 in tell-me.')).toBeVisible();
+    await expect(page.getByText('Saved scene 50 in demo-song.')).toBeVisible();
 
     const blackout = before.slice(before.indexOf('  38:\n'), before.indexOf('  39:\n'));
     const after = readFileSync(songFile, 'utf8');

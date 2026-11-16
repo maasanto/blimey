@@ -92,7 +92,7 @@ enum Command {
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
-    /// Record what arrives on a MIDI port, such as Reaper playing a song over the IAC bus, to a
+    /// Record what arrives on a MIDI port, such as the DAW playing a song over the IAC bus, to a
     /// Standard MIDI File for `blimey replay`, clock, Start and Stop included. Time 0 is the
     /// first message. Stops on Ctrl-C.
     Record {
@@ -100,7 +100,7 @@ enum Command {
         /// MIDI input to record: the first port whose name contains this text.
         #[arg(long, default_value = "IAC")]
         midi_port: String,
-        /// Also stop at the first MIDI Stop after a Start or Continue: when Reaper stops.
+        /// Also stop at the first MIDI Stop after a Start or Continue: when the DAW stops.
         #[arg(long)]
         until_stop: bool,
         /// Also capture the Art-Net received on UDP 6454, such as EMU's output, to this frame
@@ -174,7 +174,7 @@ enum ServiceCommand {
         /// Print the launch agent's plist instead of installing it.
         #[arg(long)]
         dry_run: bool,
-        /// The arguments of `blimey run`, e.g. `shows/fossile --dmx-port /dev/cu.usbserial-EN123456`.
+        /// The arguments of `blimey run`, e.g. `tests/fixtures/shows/demo --dmx-port /dev/cu.usbserial-EN123456`.
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         run_args: Vec<String>,
     },
@@ -958,7 +958,7 @@ mod tests {
                 "--artnet",
                 "emu.dump",
                 "--show",
-                "shows/fossile",
+                "tests/fixtures/shows/demo",
                 "--artnet-universe",
                 universe,
             ])

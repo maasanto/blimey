@@ -106,7 +106,7 @@ fn load_as_written(
         })
 }
 
-/// Case-insensitive file systems, such as macOS's, would write `Tell-Me.yaml` over `tell-me.yaml`.
+/// Case-insensitive file systems, such as macOS's, would write `Demo-Song.yaml` over `demo-song.yaml`.
 fn refuse_case_twin(show_dir: &Path, file: &str, name: &str) -> io::Result<()> {
     let twin = fs::read_dir(show_dir.join(SONGS_DIR))
         .into_iter()
@@ -647,11 +647,11 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    const TELL_ME: &str = "songs/tell-me.yaml";
+    const DEMO_SONG: &str = "songs/demo-song.yaml";
 
-    /// A scratch copy of the Fossile show.
-    fn fossile_copy(test: &str) -> PathBuf {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shows/fossile");
+    /// A scratch copy of the demo show.
+    fn demo_copy(test: &str) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/shows/demo");
         let copy = std::env::temp_dir().join(format!("blimey-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&copy);
         for folder in [PROFILES_DIR, SONGS_DIR] {
@@ -678,28 +678,28 @@ mod tests {
 
     #[test]
     fn editing_one_cue_leaves_the_rest_of_the_song_byte_identical() {
-        let show = fossile_copy("song-round-trip");
-        let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
-        let mut content = read(&show, TELL_ME).unwrap();
+        let show = demo_copy("song-round-trip");
+        let before = fs::read_to_string(show.join(DEMO_SONG)).unwrap();
+        let mut content = read(&show, DEMO_SONG).unwrap();
 
-        write(&show, TELL_ME, content.clone()).unwrap();
+        write(&show, DEMO_SONG, content.clone()).unwrap();
         assert_eq!(
-            fs::read_to_string(show.join(TELL_ME)).unwrap(),
+            fs::read_to_string(show.join(DEMO_SONG)).unwrap(),
             before,
-            "shows/fossile/songs/tell-me.yaml is in canonical form and keeps its header"
+            "tests/fixtures/shows/demo/songs/demo-song.yaml is in canonical form and keeps its header"
         );
 
         content["cues"]["37"]["release"] = "2 beats".into();
-        write(&show, TELL_ME, content).unwrap();
+        write(&show, DEMO_SONG, content).unwrap();
         assert_eq!(
-            changed_lines(&before, &fs::read_to_string(show.join(TELL_ME)).unwrap()),
+            changed_lines(&before, &fs::read_to_string(show.join(DEMO_SONG)).unwrap()),
             [("    release: 500ms".into(), "    release: 2 beats".into())]
         );
     }
 
     #[test]
     fn songs_are_written_in_schema_order_with_flat_looks_on_one_line() {
-        let show = fossile_copy("song-canonical");
+        let show = demo_copy("song-canonical");
         let song = json!({
             "cues": {
                 "40": {
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn a_pixel_cues_params_and_layer_2_are_written_in_schema_order_whatever_order_they_came_in() {
-        let show = fossile_copy("pixel-order");
+        let show = demo_copy("pixel-order");
         let params = json!({ "speed": "1 bar", "width": 0.5, "color": "amber" });
         let cue = json!({
             "seed": 7,
@@ -756,9 +756,9 @@ mod tests {
             "name": "two-layer",
         });
 
-        save_cue(&show, "tell-me", 50, None, cue).unwrap();
+        save_cue(&show, "demo-song", 50, None, cue).unwrap();
 
-        let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        let written = fs::read_to_string(show.join(DEMO_SONG)).unwrap();
         assert!(
             written.ends_with(
                 "  50:\n    name: two-layer\n    type: pixel\n    params: { color: amber, width: 0.5, speed: 1 bar }\n    layer_2:\n      shape: bar\n      params: { color: amber, width: 0.5, speed: 1 bar }\n      blend: add\n    seed: 7\n"
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn a_pixel_cues_layers_are_written_in_schema_order() {
-        let show = fossile_copy("pixel-layers-order");
+        let show = demo_copy("pixel-layers-order");
         let cue = json!({
             "layers": [
                 {
@@ -792,9 +792,9 @@ mod tests {
             "name": "layered",
         });
 
-        save_cue(&show, "tell-me", 50, None, cue).unwrap();
+        save_cue(&show, "demo-song", 50, None, cue).unwrap();
 
-        let written = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        let written = fs::read_to_string(show.join(DEMO_SONG)).unwrap();
         assert!(
             written.ends_with(
                 "  50:\n    name: layered\n    type: pixel\n    layers:\n      -\n        area: { x: 0, y: 0, width: 0.5, height: 1 }\n        shape: fill\n        params: { color: amber, speed: 1 bar }\n        swell: { duration: 4 bars, curve: ease-in }\n      -\n        level: 60%\n        pattern:\n          length: 1 bar\n          hits:\n            - { at: 1, shape: sine, length: 1 beat, level: 100% }\n        blend: over\n        mute: [inner-wash]\n"
@@ -805,55 +805,60 @@ mod tests {
 
     #[test]
     fn a_cue_on_a_taken_note_is_refused_and_a_renumbered_one_moves() {
-        let show = fossile_copy("cue-notes");
-        let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
-        let blackout = read(&show, TELL_ME).unwrap()["cues"]["38"].clone();
+        let show = demo_copy("cue-notes");
+        let before = fs::read_to_string(show.join(DEMO_SONG)).unwrap();
+        let blackout = read(&show, DEMO_SONG).unwrap()["cues"]["38"].clone();
 
-        let error = save_cue(&show, "tell-me", 36, None, blackout.clone()).unwrap_err();
+        let error = save_cue(&show, "demo-song", 36, None, blackout.clone()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
             error.to_string(),
-            "songs/tell-me.yaml: note 36 already fires cue \"verse-blue\"; pick a free note, or edit that cue"
+            "songs/demo-song.yaml: note 36 already fires cue \"verse-blue\"; pick a free note, or edit that cue"
         );
         let from_38 = Some((38, blackout.clone()));
-        let error = save_cue(&show, "tell-me", 36, from_38.clone(), blackout.clone()).unwrap_err();
+        let error =
+            save_cue(&show, "demo-song", 36, from_38.clone(), blackout.clone()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read_to_string(show.join(TELL_ME)).unwrap(), before);
+        assert_eq!(fs::read_to_string(show.join(DEMO_SONG)).unwrap(), before);
 
-        save_cue(&show, "tell-me", 48, from_38, blackout).unwrap();
-        let cues = read(&show, TELL_ME).unwrap()["cues"].clone();
+        save_cue(&show, "demo-song", 48, from_38, blackout).unwrap();
+        let cues = read(&show, DEMO_SONG).unwrap()["cues"].clone();
         let notes: Vec<&String> = cues.as_object().unwrap().keys().collect();
         assert_eq!(notes, ["36", "37", "39", "40", "42", "48"]);
         assert_eq!(cues["48"]["name"], "blackout");
 
-        delete_cue(&show, "tell-me", 48).unwrap();
+        delete_cue(&show, "demo-song", 48).unwrap();
         assert_eq!(
-            delete_cue(&show, "tell-me", 48).unwrap_err().kind(),
+            delete_cue(&show, "demo-song", 48).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
     }
 
     #[test]
     fn undo_puts_back_the_previous_file_byte_for_byte() {
-        let show = fossile_copy("undo");
+        let show = demo_copy("undo");
         let hand_written = "# By hand.\nprogram: 3\n\ncues:\n  36: { name: verse, type: scene, values: { all-wash: { color: amber } } }  # keep\n";
-        fs::write(show.join(TELL_ME), hand_written).unwrap();
+        fs::write(show.join(DEMO_SONG), hand_written).unwrap();
         let cue = json!({ "name": "new", "type": "scene", "values": {} });
 
-        let save = save_cue(&show, "tell-me", 40, None, cue.clone()).unwrap();
+        let save = save_cue(&show, "demo-song", 40, None, cue.clone()).unwrap();
         assert_ne!(
-            fs::read_to_string(show.join(TELL_ME)).unwrap(),
+            fs::read_to_string(show.join(DEMO_SONG)).unwrap(),
             hand_written
         );
-        assert_eq!(save.file, TELL_ME);
+        assert_eq!(save.file, DEMO_SONG);
         save.undo(&show).unwrap();
         assert_eq!(
-            fs::read_to_string(show.join(TELL_ME)).unwrap(),
+            fs::read_to_string(show.join(DEMO_SONG)).unwrap(),
             hand_written
         );
 
-        let save = save_cue(&show, "tell-me", 40, None, cue).unwrap();
-        fs::write(show.join(TELL_ME), hand_written.replace("amber", "magenta")).unwrap();
+        let save = save_cue(&show, "demo-song", 40, None, cue).unwrap();
+        fs::write(
+            show.join(DEMO_SONG),
+            hand_written.replace("amber", "magenta"),
+        )
+        .unwrap();
         let error = save.undo(&show).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
         assert!(
@@ -868,13 +873,13 @@ mod tests {
 
     #[test]
     fn a_song_sharing_another_songs_program_is_refused() {
-        let show = fossile_copy("song-program");
+        let show = demo_copy("song-program");
 
-        let error = write(&show, "songs/other.yaml", json!({ "program": 3 })).unwrap_err();
+        let error = write(&show, "songs/another.yaml", json!({ "program": 3 })).unwrap_err();
 
         assert_eq!(
             error.to_string(),
-            "songs/tell-me.yaml: program 3 already selects song \"other\""
+            "songs/demo-song.yaml: program 3 already selects song \"another\""
         );
     }
 
@@ -884,15 +889,15 @@ mod tests {
 
     #[test]
     fn the_history_undoes_and_redoes_saves_across_files_newest_first() {
-        let show = fossile_copy("history");
-        let (song_0, rig_0) = (text(&show, TELL_ME), text(&show, RIG_FILE));
+        let show = demo_copy("history");
+        let (song_0, rig_0) = (text(&show, DEMO_SONG), text(&show, RIG_FILE));
         let mut history = History::default();
         let cue = json!({ "name": "new", "type": "scene", "values": {} });
 
         history.record(create_song(&show, "encore", json!({ "program": 9 })).unwrap());
         let encore = text(&show, "songs/encore.yaml");
-        history.record(save_cue(&show, "tell-me", 50, None, cue).unwrap());
-        let song_1 = text(&show, TELL_ME);
+        history.record(save_cue(&show, "demo-song", 50, None, cue).unwrap());
+        let song_1 = text(&show, DEMO_SONG);
         let mut rig = read(&show, RIG_FILE).unwrap();
         rig["fixtures"][0]["canvas"]["x"] = 0.4.into();
         history.record(write(&show, RIG_FILE, rig).unwrap());
@@ -900,8 +905,8 @@ mod tests {
 
         assert_eq!(history.undo(&show).unwrap(), RIG_FILE);
         assert_eq!(text(&show, RIG_FILE), rig_0);
-        assert_eq!(history.undo(&show).unwrap(), TELL_ME);
-        assert_eq!(text(&show, TELL_ME), song_0);
+        assert_eq!(history.undo(&show).unwrap(), DEMO_SONG);
+        assert_eq!(text(&show, DEMO_SONG), song_0);
         assert_eq!(history.undo(&show).unwrap(), "songs/encore.yaml");
         assert_eq!(text(&show, "songs/encore.yaml"), None);
         assert_eq!(history.steps(), (0, 3));
@@ -912,11 +917,11 @@ mod tests {
 
         assert_eq!(history.redo(&show).unwrap(), "songs/encore.yaml");
         assert_eq!(text(&show, "songs/encore.yaml"), encore);
-        assert_eq!(history.redo(&show).unwrap(), TELL_ME);
-        assert_eq!(text(&show, TELL_ME), song_1);
+        assert_eq!(history.redo(&show).unwrap(), DEMO_SONG);
+        assert_eq!(text(&show, DEMO_SONG), song_1);
         assert_eq!(history.steps(), (2, 1));
 
-        history.record(set_bpm(&show, "tell-me", 100.into()).unwrap());
+        history.record(set_bpm(&show, "demo-song", 100.into()).unwrap());
         assert_eq!(
             history.steps(),
             (3, 0),
@@ -926,31 +931,31 @@ mod tests {
 
     #[test]
     fn a_refused_undo_stays_in_the_history() {
-        let show = fossile_copy("history-refused");
-        let before = text(&show, TELL_ME).unwrap();
+        let show = demo_copy("history-refused");
+        let before = text(&show, DEMO_SONG).unwrap();
         let mut history = History::default();
-        history.record(set_bpm(&show, "tell-me", 100.into()).unwrap());
-        let saved = text(&show, TELL_ME).unwrap();
+        history.record(set_bpm(&show, "demo-song", 100.into()).unwrap());
+        let saved = text(&show, DEMO_SONG).unwrap();
 
-        fs::write(show.join(TELL_ME), format!("{saved}# by hand\n")).unwrap();
+        fs::write(show.join(DEMO_SONG), format!("{saved}# by hand\n")).unwrap();
         let error = history.undo(&show).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
         assert_eq!(history.steps(), (1, 0));
 
-        fs::write(show.join(TELL_ME), saved).unwrap();
+        fs::write(show.join(DEMO_SONG), saved).unwrap();
         history.undo(&show).unwrap();
-        assert_eq!(text(&show, TELL_ME).unwrap(), before);
+        assert_eq!(text(&show, DEMO_SONG).unwrap(), before);
     }
 
     #[test]
     fn an_undo_back_to_content_that_no_longer_loads_is_dropped() {
-        let show = fossile_copy("history-broken");
-        let fixed = read(&show, TELL_ME).unwrap();
-        let broken = text(&show, TELL_ME).unwrap().replace("deep-blue", "teal");
-        fs::write(show.join(TELL_ME), &broken).unwrap();
+        let show = demo_copy("history-broken");
+        let fixed = read(&show, DEMO_SONG).unwrap();
+        let broken = text(&show, DEMO_SONG).unwrap().replace("deep-blue", "teal");
+        fs::write(show.join(DEMO_SONG), &broken).unwrap();
         let mut history = History::default();
-        history.record(write(&show, TELL_ME, fixed).unwrap());
-        let saved = text(&show, TELL_ME);
+        history.record(write(&show, DEMO_SONG, fixed).unwrap());
+        let saved = text(&show, DEMO_SONG);
 
         let error = history.undo(&show).unwrap_err();
 
@@ -962,16 +967,16 @@ mod tests {
             "{error}"
         );
         assert_eq!(history.steps(), (0, 0));
-        assert_eq!(text(&show, TELL_ME), saved, "the fixed song stays");
+        assert_eq!(text(&show, DEMO_SONG), saved, "the fixed song stays");
     }
 
     #[test]
     fn the_history_keeps_the_latest_saves_only() {
-        let show = fossile_copy("history-bound");
+        let show = demo_copy("history-bound");
         let mut history = History::default();
 
         for bpm in 1..=HISTORY_LENGTH + 2 {
-            history.record(set_bpm(&show, "tell-me", bpm.into()).unwrap());
+            history.record(set_bpm(&show, "demo-song", bpm.into()).unwrap());
         }
         for _ in 0..HISTORY_LENGTH {
             history.undo(&show).unwrap();
@@ -979,7 +984,7 @@ mod tests {
 
         assert_eq!(history.steps(), (0, HISTORY_LENGTH));
         assert_eq!(
-            read(&show, TELL_ME).unwrap()["bpm"],
+            read(&show, DEMO_SONG).unwrap()["bpm"],
             2,
             "the oldest two saves were dropped"
         );
@@ -987,27 +992,27 @@ mod tests {
 
     #[test]
     fn a_new_song_is_refused_on_a_taken_name_or_program_and_never_replaces_one() {
-        let show = fossile_copy("create-song");
-        let before = text(&show, TELL_ME);
+        let show = demo_copy("create-song");
+        let before = text(&show, DEMO_SONG);
         let refusal = |name: &str, program: u8| {
             let error = create_song(&show, name, json!({ "program": program })).unwrap_err();
             (error.kind(), error.to_string())
         };
 
         assert_eq!(
-            refusal("tell-me", 9),
+            refusal("demo-song", 9),
             (
                 io::ErrorKind::AlreadyExists,
-                "songs/tell-me.yaml: the show already has song \"tell-me\"; pick another name"
+                "songs/demo-song.yaml: the show already has song \"demo-song\"; pick another name"
                     .into()
             )
         );
-        assert_eq!(refusal("Tell-Me", 9).0, io::ErrorKind::AlreadyExists);
+        assert_eq!(refusal("Demo-Song", 9).0, io::ErrorKind::AlreadyExists);
         assert_eq!(
             refusal("encore", 3),
             (
                 io::ErrorKind::InvalidData,
-                "songs/tell-me.yaml: program 3 already selects song \"encore\"".into()
+                "songs/encore.yaml: program 3 already selects song \"demo-song\"".into()
             )
         );
         assert_eq!(
@@ -1017,7 +1022,7 @@ mod tests {
                 "song name \"en core\" must be letters, digits, - and _".into()
             )
         );
-        assert_eq!(text(&show, TELL_ME), before);
+        assert_eq!(text(&show, DEMO_SONG), before);
         assert_eq!(text(&show, "songs/encore.yaml"), None);
 
         create_song(
@@ -1034,7 +1039,7 @@ mod tests {
 
     #[test]
     fn a_pattern_hit_with_a_custom_curve_round_trips_byte_for_byte() {
-        let show = fossile_copy("custom-hit-round-trip");
+        let show = demo_copy("custom-hit-round-trip");
         let song = "program: 9\n\
                     cues:\n  \
                       42:\n    \
@@ -1069,7 +1074,7 @@ mod tests {
 
     #[test]
     fn a_two_layer_pixel_cue_round_trips_byte_for_byte() {
-        let show = fossile_copy("pixel-round-trip");
+        let show = demo_copy("pixel-round-trip");
         let song = "program: 9\n\
                     cues:\n  \
                       41:\n    \
@@ -1104,49 +1109,49 @@ mod tests {
 
     #[test]
     fn a_broken_song_on_disk_can_be_fixed_through_the_write_path() {
-        let show = fossile_copy("fix-broken");
-        let fixed = read(&show, TELL_ME).unwrap();
-        let broken = fs::read_to_string(show.join(TELL_ME))
+        let show = demo_copy("fix-broken");
+        let fixed = read(&show, DEMO_SONG).unwrap();
+        let broken = fs::read_to_string(show.join(DEMO_SONG))
             .unwrap()
             .replace("deep-blue", "teal");
-        fs::write(show.join(TELL_ME), broken).unwrap();
+        fs::write(show.join(DEMO_SONG), broken).unwrap();
 
-        write(&show, TELL_ME, fixed).unwrap();
+        write(&show, DEMO_SONG, fixed).unwrap();
 
         Show::load(&show).unwrap();
     }
 
     #[test]
     fn a_song_name_differing_only_by_case_is_refused() {
-        let show = fossile_copy("song-case");
-        let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        let show = demo_copy("song-case");
+        let before = fs::read_to_string(show.join(DEMO_SONG)).unwrap();
 
-        let error = write(&show, "songs/Tell-Me.yaml", json!({ "program": 9 })).unwrap_err();
+        let error = write(&show, "songs/Demo-Song.yaml", json!({ "program": 9 })).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
             error.to_string(),
-            "songs/Tell-Me.yaml: the show already has song \"tell-me\"; song names must differ by more than case"
+            "songs/Demo-Song.yaml: the show already has song \"demo-song\"; song names must differ by more than case"
         );
-        assert_eq!(fs::read_to_string(show.join(TELL_ME)).unwrap(), before);
+        assert_eq!(fs::read_to_string(show.join(DEMO_SONG)).unwrap(), before);
         assert!(
             !fs::read_dir(show.join(SONGS_DIR))
                 .unwrap()
-                .any(|entry| entry.unwrap().file_name() == "Tell-Me.yaml")
+                .any(|entry| entry.unwrap().file_name() == "Demo-Song.yaml")
         );
     }
 
     #[test]
     fn replacing_a_cue_that_changed_or_went_since_it_was_loaded_is_refused() {
-        let show = fossile_copy("stale-replaces");
-        let loaded = read(&show, TELL_ME).unwrap()["cues"]["37"].clone();
+        let show = demo_copy("stale-replaces");
+        let loaded = read(&show, DEMO_SONG).unwrap()["cues"]["37"].clone();
         let mut edited = loaded.clone();
         edited["name"] = "edited".into();
         let mut changed_since = loaded.clone();
         changed_since["release"] = "2s".into();
         save_cue(
             &show,
-            "tell-me",
+            "demo-song",
             37,
             Some((37, loaded.clone())),
             changed_since,
@@ -1154,7 +1159,7 @@ mod tests {
         .unwrap();
         let error = save_cue(
             &show,
-            "tell-me",
+            "demo-song",
             37,
             Some((37, loaded.clone())),
             edited.clone(),
@@ -1163,32 +1168,32 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::ResourceBusy);
         assert_eq!(
             error.to_string(),
-            "songs/tell-me.yaml: cue 37 changed since it was loaded; reload the song and edit it again"
+            "songs/demo-song.yaml: cue 37 changed since it was loaded; reload the song and edit it again"
         );
 
-        delete_cue(&show, "tell-me", 37).unwrap();
-        let error = save_cue(&show, "tell-me", 40, Some((37, loaded)), edited).unwrap_err();
+        delete_cue(&show, "demo-song", 37).unwrap();
+        let error = save_cue(&show, "demo-song", 40, Some((37, loaded)), edited).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(
             error.to_string(),
-            "songs/tell-me.yaml: no cue on note 37 any more; reload the song"
+            "songs/demo-song.yaml: no cue on note 37 any more; reload the song"
         );
     }
 
     #[test]
     fn setting_the_bpm_changes_only_its_line() {
-        let show = fossile_copy("set-bpm");
-        let before = fs::read_to_string(show.join(TELL_ME)).unwrap();
+        let show = demo_copy("set-bpm");
+        let before = fs::read_to_string(show.join(DEMO_SONG)).unwrap();
 
         set_bpm(
             &show,
-            "tell-me",
+            "demo-song",
             serde_json::Number::from_f64(120.5).unwrap(),
         )
         .unwrap();
 
         assert_eq!(
-            changed_lines(&before, &fs::read_to_string(show.join(TELL_ME)).unwrap()),
+            changed_lines(&before, &fs::read_to_string(show.join(DEMO_SONG)).unwrap()),
             [("bpm: 92".into(), "bpm: 120.5".into())]
         );
     }
@@ -1214,7 +1219,7 @@ mod tests {
 
     #[test]
     fn moving_a_fixture_changes_only_its_canvas_line() {
-        let show = fossile_copy("move");
+        let show = demo_copy("move");
         let before = fs::read_to_string(show.join(RIG_FILE)).unwrap();
         let mut content = read(&show, RIG_FILE).unwrap();
 
@@ -1222,7 +1227,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(show.join(RIG_FILE)).unwrap(),
             before,
-            "shows/fossile/rig.yaml is in canonical form and keeps its header"
+            "tests/fixtures/shows/demo/rig.yaml is in canonical form and keeps its header"
         );
 
         content["fixtures"][1]["canvas"]["x"] = 0.4.into();
@@ -1235,7 +1240,7 @@ mod tests {
 
     #[test]
     fn refused_content_is_named_and_leaves_the_file_untouched() {
-        let show = fossile_copy("refuse");
+        let show = demo_copy("refuse");
         let before = fs::read_to_string(show.join(RIG_FILE)).unwrap();
         let content = read(&show, RIG_FILE).unwrap();
 
@@ -1260,7 +1265,7 @@ mod tests {
 
     #[test]
     fn a_rig_the_songs_no_longer_load_against_is_refused() {
-        let show = fossile_copy("songs");
+        let show = demo_copy("songs");
         let before = fs::read_to_string(show.join(RIG_FILE)).unwrap();
         let mut content = read(&show, RIG_FILE).unwrap();
         content["groups"]
@@ -1274,7 +1279,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("songs/tell-me.yaml: line 15: cue 37"),
+                .starts_with("songs/demo-song.yaml: line 15: cue 37"),
             "{error}"
         );
         assert_eq!(fs::read_to_string(show.join(RIG_FILE)).unwrap(), before);
@@ -1283,7 +1288,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_file_is_reported_rather_than_losing_its_header() {
-        let show = fossile_copy("unreadable");
+        let show = demo_copy("unreadable");
         let content = read(&show, RIG_FILE).unwrap();
         let mut before = b"# Notes \xff on the rig\n".to_vec();
         before.extend(fs::read(show.join(RIG_FILE)).unwrap());
@@ -1297,7 +1302,7 @@ mod tests {
 
     #[test]
     fn only_known_show_files_are_served() {
-        let show = fossile_copy("unknown");
+        let show = demo_copy("unknown");
 
         for file in [
             "../secrets.yaml",
