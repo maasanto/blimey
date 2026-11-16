@@ -360,7 +360,7 @@
 
   async function importMarkers() {
     const { markers: found } = await request('GET', `${songPath}/audio/markers`);
-    if (!found.length) throw new Error(`${audioFile} holds no markers: render it from Reaper with its markers, or add them here.`);
+    if (!found.length) throw new Error(`${audioFile} holds no markers: render it from the DAW with its markers, or add them here.`);
     await takeMarkers(found, audioFile);
   }
 

@@ -39,7 +39,7 @@ function riffChunk(id, body) {
   return Buffer.concat([header, body, Buffer.alloc(body.length % 2)]);
 }
 
-/** `seconds` of beeps, as `beepsWav`, with a cue point named by a `labl` for each of `markers`, `{ name, at }` in seconds: as Reaper renders markers. */
+/** `seconds` of beeps, as `beepsWav`, with a cue point named by a `labl` for each of `markers`, `{ name, at }` in seconds: as the DAW renders markers. */
 export function markedWav(seconds, markers) {
   const CUE_POINT_BYTES = 24;
   const cue = Buffer.alloc(4 + markers.length * CUE_POINT_BYTES);

@@ -7,11 +7,11 @@ import { test, expect } from './engine.js';
 test.use({ showSource: 'tests/fixtures/shows/arranged' });
 const DARK = ['--set', 'both', 'dimmer=0%'];
 /** Bar 3 starts 4 s in, after the first verse's 8 beats; bar 5 at 7 s, after the waltz's 6. */
-const REAPER_MARKERS = [
+const DAW_MARKERS = [
   { name: 'Waltz', at: 4 },
   { name: 'Second verse', at: 7 },
 ];
-const MARKED_WAV = { name: 'arranged.wav', mimeType: 'audio/wav', buffer: markedWav(16, REAPER_MARKERS) };
+const MARKED_WAV = { name: 'arranged.wav', mimeType: 'audio/wav', buffer: markedWav(16, DAW_MARKERS) };
 
 const songFile = (show) => path.join(show, 'songs/arranged.yaml');
 const song = (show) => readFileSync(songFile(show), 'utf8');

@@ -47,7 +47,7 @@ struct MarkerFile {
     at: Length,
 }
 
-/// A named point in the song's audio, as set in Reaper, for finding one's way on the timeline.
+/// A named point in the song's audio, as set in the DAW, for finding one's way on the timeline.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Marker {
     pub name: String,

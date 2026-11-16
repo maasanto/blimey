@@ -39,7 +39,7 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "markers": {
-      "description": "Named points in the audio, as set in Reaper, drawn on the timeline as flags.",
+      "description": "Named points in the audio, as set in the DAW, drawn on the timeline as flags.",
       "type": "array",
       "items": {
         "type": "object",

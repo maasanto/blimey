@@ -1302,9 +1302,10 @@ mod tests {
         );
 
         let path = show.join(DEMO_SONG);
-        let with_audio = fs::read_to_string(&path)
-            .unwrap()
-            .replace("bpm: 92\n", "bpm: 92\naudio: { file: audio/demo-song.wav }\n");
+        let with_audio = fs::read_to_string(&path).unwrap().replace(
+            "bpm: 92\n",
+            "bpm: 92\naudio: { file: audio/demo-song.wav }\n",
+        );
         fs::write(&path, &with_audio).unwrap();
         set_audio_offset(&show, "demo-song", "1.25s".into()).unwrap();
         assert_eq!(
@@ -1322,19 +1323,19 @@ mod tests {
 
     #[test]
     fn markers_round_trip_undo_and_a_refused_set_leaves_the_file_untouched() {
-        let show = fossile_copy("set-markers");
-        let path = show.join(TELL_ME);
+        let show = demo_copy("set-markers");
+        let path = show.join(DEMO_SONG);
         let before = fs::read_to_string(&path).unwrap();
         let markers = vec![
             json!({ "at": "12.5s", "name": "Verse" }),
             json!({ "name": "Chorus 2", "at": "61.25s" }),
         ];
-        let save = set_markers(&show, "tell-me", markers.clone()).unwrap();
+        let save = set_markers(&show, "demo-song", markers.clone()).unwrap();
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.ends_with(
             "markers:\n  - { name: Verse, at: 12.5s }\n  - { name: Chorus 2, at: 61.25s }\n"
         ));
-        let content = read(&show, TELL_ME).unwrap();
+        let content = read(&show, DEMO_SONG).unwrap();
         assert_eq!(content["markers"][1], markers[1]);
 
         for refused in [
@@ -1342,7 +1343,7 @@ mod tests {
             json!({ "name": "", "at": "1s" }),
             json!({ "name": "Verse", "at": "2 bars" }),
         ] {
-            let error = set_markers(&show, "tell-me", vec![refused.clone()]).unwrap_err();
+            let error = set_markers(&show, "demo-song", vec![refused.clone()]).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{refused}");
             assert_eq!(fs::read_to_string(&path).unwrap(), after, "{refused}");
         }
@@ -1353,15 +1354,15 @@ mod tests {
 
     #[test]
     fn the_audio_file_is_named_keeping_its_offset() {
-        let show = fossile_copy("set-audio-file");
-        let path = show.join(TELL_ME);
-        set_audio_file(&show, "tell-me", "audio/tell-me.wav").unwrap();
-        set_audio_offset(&show, "tell-me", "1.5s".into()).unwrap();
-        set_audio_file(&show, "tell-me", "audio/tell-me.flac").unwrap();
+        let show = demo_copy("set-audio-file");
+        let path = show.join(DEMO_SONG);
+        set_audio_file(&show, "demo-song", "audio/demo-song.wav").unwrap();
+        set_audio_offset(&show, "demo-song", "1.5s".into()).unwrap();
+        set_audio_file(&show, "demo-song", "audio/demo-song.flac").unwrap();
         assert!(
             fs::read_to_string(&path)
                 .unwrap()
-                .contains("\naudio: { file: audio/tell-me.flac, offset: 1.5s }\n")
+                .contains("\naudio: { file: audio/demo-song.flac, offset: 1.5s }\n")
         );
     }
 

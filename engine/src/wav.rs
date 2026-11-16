@@ -1,4 +1,4 @@
-//! Markers in a WAV file, as Reaper renders them: `cue ` points, named by the `labl` entries
+//! Markers in a WAV file, as the DAW renders them: `cue ` points, named by the `labl` entries
 //! of a `LIST`/`adtl` chunk, and regions, an `ltxt` entry on the cue point they start at.
 
 use std::collections::BTreeMap;

@@ -287,7 +287,7 @@ A bounce of the song, which the builder's timeline plays along with the lights (
 
 ### Markers
 
-Named points in the song's audio, as set in Reaper, which the timeline draws as flags to find one's way: `markers: [{ name, at }]`, in time order.
+Named points in the song's audio, as set in the DAW, which the timeline draws as flags to find one's way: `markers: [{ name, at }]`, in time order.
 
 - `at` is a time from the start of the audio file, in `ms` or `s`, not from bar 1, so a marker stays on the music when the offset changes. The timeline places it at `at - offset` on the song's tempo and bar grid; a marker before bar 1 isn't drawn.
 - Refused at load: an empty `name` (`line 6: markers: a marker needs a name`) and an `at` in beats or bars.
