@@ -317,7 +317,7 @@ mod tests {
         };
         // A bar of 4/4, two of 3/4 from beat 4, then 4/4 again from beat 10 (5 s).
         let mut clock = clock();
-        clock.set_bar_grid(&BarGrid::new(vec![
+        clock.set_bars(TimeSignature::default(), &BarGrid::new(vec![
             stretch(0.0, 1, 4.0),
             stretch(4.0, 2, 3.0),
             stretch(10.0, 4, 4.0),

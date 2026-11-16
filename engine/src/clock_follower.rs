@@ -90,7 +90,7 @@ impl BarGrid {
         let into_stretch = song_beats - stretch.beats;
         let bars = (into_stretch / stretch.beats_per_bar).floor();
         BarPosition {
-            bar: stretch.bar + bars as u32,
+            bar: stretch.bar.saturating_add(bars as u32),
             beat: into_stretch - bars * stretch.beats_per_bar + 1.0,
             beats_per_bar: stretch.beats_per_bar,
         }
@@ -183,8 +183,10 @@ impl ClockFollower {
         }
     }
 
-    /// Places bar lines on `grid` from now on, as when the song's arrangement is edited.
-    pub fn set_bar_grid(&mut self, grid: &BarGrid) {
+    /// Counts bar durations in `time_signature` and places bar lines on `grid` from now on, as
+    /// when the song's signature or arrangement is edited.
+    pub fn set_bars(&mut self, time_signature: TimeSignature, grid: &BarGrid) {
+        self.time_signature = time_signature;
         if self.bar_grid != *grid {
             self.bar_grid = grid.clone();
         }
