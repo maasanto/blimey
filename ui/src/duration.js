@@ -1,6 +1,9 @@
 // Durations as song files write them (docs/api.md): `500ms`, `2s`, `0.5 beats`, `4 bars`.
 
-const DURATION = /^\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|beats?|bars?)\s*$/;
+/** A song's tempo without a `bpm` or a clock, as the engine plays it. */
+export const DEFAULT_BPM = 120;
+
+const DURATION =/^\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|beats?|bars?)\s*$/;
 
 /** `{ count, unit }` with unit `ms`, `s`, `beats` or `bars`; null for text that isn't a duration. */
 export function parseLength(text) {

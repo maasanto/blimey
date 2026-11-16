@@ -153,6 +153,18 @@ cues:
         level: 60%
         blend: add
         mute: [inner-wash]
+sections:                # optional: the song's running order, see below
+  verse:
+    bars: 16
+    blocks:
+      - { scene: 36, bar: 1, length: 16 bars }
+      - { scene: 38, bar: 9, length: 8 bars, level: 80% }
+  bridge:
+    bars: 4
+    time_signature: 3/4  # optional, default the song's
+    blocks:
+      - { scene: 40, bar: 1, beat: 2.5, length: 6 beats }
+arrangement: [verse, bridge, verse]
 ```
 
 - `safe_look`, `values` and `target` use the [look](#looks) keys.
@@ -249,6 +261,18 @@ A swell or pattern can drive the intensity of a pixel cue in the same song inste
 - On release the link fades out over its `release` and the pixel cue returns to its own intensity. A link with no pixel cue playing does nothing; a pixel cue fired later still follows it. Several links on one pixel cue multiply.
 - The link draws nothing itself, on any fixture.
 
+### Sections and arrangement
+
+A song's running order (plan §17), built in Blimey and played by the DAW from an exported MIDI file.
+
+- `sections` is keyed by name; `arrangement` lists section names in playing order, each as often as it plays. Editing a section changes every place it plays.
+- `bars` is the section's length, a whole number from 1 to 9999; `time_signature` overrides the song's for that section's bar lines and its blocks' bars.
+- A block holds `scene`, the note number of a cue of the song, from `bar` (from 1) and `beat` (from 1 to under the beats per bar plus one, in quarter beats, fractions allowed; default 1) for `length`, in `beats` or `bars` of the section's signature. `level` scales the scene as the note's velocity does: `round(level × 127)`, at least 1; default 100%.
+- A block ends at or before its section's end. Different scenes may overlap and combine as they do live; two blocks of one scene may not overlap, though one may start where another ends.
+- Refused at load, each naming its line: an unknown section in `arrangement` (`line 40: arrangement: no section "outro" in sections`), a scene not in `cues`, a block outside its bar or section, overlapping blocks of one scene (`line 31: section verse: block 2: overlaps block 1 of scene 36; a scene plays once at a time`), a `length` in `ms` or `s` or under 1/960 beat, `bars` outside 1-9999.
+- **Bar grid.** With an arrangement, bar lines and bar positions follow each placed section's signature from its first beat, and the song's after the arrangement ends: a pattern fired on the first beat of a 3/4 section starts at once, on that section's bar line. Durations inside a cue (`length: 1 bar` on a pattern, `4 bars` on a swell) keep the song's signature. A song without an arrangement behaves as before.
+- **Export.** `<show>/export/<song>.mid`, kept out of git, is written for each song with an arrangement whenever the show loads in edit mode, so every save is exported, and by `blimey export`; edit mode writes only the files whose content changed. The `.mid` files of songs no longer arranged (cleared, renamed or removed) are deleted from `export/` at the same time. Show mode writes nothing. A format 0 file at 960 ticks per beat: the song's tempo (its `bpm`, 120 without), a time signature at bar 1 and wherever a placed section's differs from the one before, a marker naming each placed section, a channel-2 Program Change `program` at bar 1, then a channel-2 note on per block (note = scene, velocity = level) and a note off at its end. At one tick, the order is: time signature, marker, Program Change, note offs, note ons. When one placement ends with a block the next starts with (same scene, same level, end and start on the boundary), the two are one held note, so the scene doesn't restart. In the DAW, insert the file at the song's first bar, and again after a change.
+
 The engine refuses a song whose looks name an unknown fixture, group or colour, or whose program another song already uses, and a `.yml` file in `songs/`, which would otherwise be skipped. Every load error names the file and the line, for example `songs/demo-song.yaml: line 9: cue 36: all-wash: no colour "teal" in palettes.yaml, and not a #rrggbb value`.
 
 ## Playback
@@ -294,6 +318,7 @@ This applies wherever looks are used: scene `values`, swell `target`, a pattern'
 
 ```sh
 blimey validate <show>                                              # load the show; print the first error with file and line
+blimey export <show> [song]                                         # write <show>/export/<song>.mid for the DAW, for each song with an arrangement
 blimey run <show> --dmx-port /dev/cu.usbserial-… [--midi-port IAC]  # live: MIDI in, DMX out, hot reload
 blimey run <show> --listen 127.0.0.1:7340 [--dmx-port …] [--edit]   # and the web UI
 blimey fire <show> --set <fixture-or-group> key=value… [--set …]   # print the look as a one-frame dump
@@ -310,6 +335,8 @@ blimey soak <setlist.yaml> [--hours 4] [--accelerated | --emulated-enttec | <run
 ```
 
 `validate` runs the same checks as loading the show: it exits 0 and prints `<show>: ok, N fixtures, N songs`, or exits 1 with the error.
+
+`export` loads the show and writes the [MIDI file](#sections-and-arrangement) of `song`, or of every song with an arrangement, printing each path written; without `song` it also deletes the files of songs no longer arranged. A named song without an arrangement, or not in the show, exits 1 with the error.
 
 `run` needs at least one of `--dmx-port`, `--listen` and `--artnet`. In edit mode it reloads the show whenever a file in its folder changes, keeping the selected song and active cues, which take their new definitions. A file that fails to load is reported on stderr and the previous show keeps running.
 
@@ -438,6 +465,40 @@ Each reads, edits and writes `songs/<song>.yaml` under one lock, so no other sav
 ### Metronome tempo: `PUT /api/songs/<song>/bpm`
 
 Sets the song's `bpm`, the tempo for beats and bars when no MIDI clock comes in, leaving the rest of the file as it is (`204`). The body is `{ "bpm": 92 }`. It goes under the same lock as the cue endpoints and takes effect from the next frame.
+
+### Arrangement: `PUT /api/songs/<song>/arrangement`
+
+Sets the song's [`sections` and `arrangement`](#sections-and-arrangement), leaving the rest of the file as it is (`204`). The body holds both, as in the song file:
+
+```json
+{ "sections": { "verse": { "bars": 16, "blocks": [{ "scene": 36, "bar": 1, "length": "16 bars" }] } },
+  "arrangement": ["verse", "verse"] }
+```
+
+An empty `sections` or `arrangement` is left out of the file. The song is checked and written like `PUT /api/show/<file>`, under the same lock as the cue endpoints, and recorded for undo. Refused with `422`, leaving the file untouched: anything the loader refuses, such as an unknown section in `arrangement` or overlapping blocks of one scene, with the message naming the line it would be on. Hot reload picks the change up from the next frame and writes the song's MIDI file to `<show>/export/`.
+
+### Arrangement events: `GET /api/songs/<song>/arrangement/events`
+
+What the song's arrangement plays, the same list the MIDI export writes, so the browser needn't redo the musical-time arithmetic. Works in show mode too; `404` for an unknown song.
+
+```json
+{ "bpm": 120,
+  "events": [
+    { "beats": 0, "seconds": 0, "type": "time_signature", "numerator": 4, "denominator": 4 },
+    { "beats": 0, "seconds": 0, "type": "marker", "section": "verse" },
+    { "beats": 0, "seconds": 0, "type": "program_change", "program": 1 },
+    { "beats": 0, "seconds": 0, "type": "note_on", "scene": 36, "velocity": 127 },
+    { "beats": 8, "seconds": 4, "type": "note_off", "scene": 36 }
+  ] }
+```
+
+- `beats` count quarter notes from the top of the song, on a grid of 1/960 beat; `seconds` are `beats` at `bpm`.
+- In time order, and at one beat in the order of the [export](#sections-and-arrangement). `type` is `time_signature`, `marker`, `program_change`, `note_off` or `note_on`; a held scene across sections is one `note_on` and one `note_off`.
+- Empty for a song without an arrangement.
+
+### Arrangement MIDI file: `GET /api/songs/<song>/arrangement.mid`
+
+The song's [exported MIDI file](#sections-and-arrangement), as `audio/midi`, downloaded as `<song>.mid`. Works in show mode too, writing nothing. `404` for an unknown song or one without an arrangement.
 
 ### New song: `POST /api/songs`
 

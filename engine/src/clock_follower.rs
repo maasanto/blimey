@@ -47,6 +47,54 @@ pub struct BarPosition {
     pub bar: u32,
     /// From 1 to just under the beats per bar plus one; fractional between beats.
     pub beat: f64,
+    /// The length of this bar, in beats.
+    pub beats_per_bar: f64,
+}
+
+/// Where bar lines fall, in beats from the top of the song: each stretch has bars of one length
+/// from its first beat up to the next stretch, the last one for ever.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarGrid(Vec<BarStretch>);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarStretch {
+    /// Its first beat, from the top of the song.
+    pub beats: f64,
+    /// The number of its first bar, from 1.
+    pub bar: u32,
+    pub beats_per_bar: f64,
+}
+
+impl BarGrid {
+    /// Bars of one signature throughout.
+    pub fn uniform(time_signature: TimeSignature) -> Self {
+        Self(vec![BarStretch {
+            beats: 0.0,
+            bar: 1,
+            beats_per_bar: time_signature.beats_per_bar(),
+        }])
+    }
+
+    /// `stretches` in order, the first from beat 0.
+    pub fn new(stretches: Vec<BarStretch>) -> Self {
+        Self(stretches)
+    }
+
+    pub fn position(&self, song_beats: f64) -> BarPosition {
+        let stretch = self
+            .0
+            .iter()
+            .rev()
+            .find(|stretch| stretch.beats <= song_beats)
+            .unwrap_or(&self.0[0]);
+        let into_stretch = song_beats - stretch.beats;
+        let bars = (into_stretch / stretch.beats_per_bar).floor();
+        BarPosition {
+            bar: stretch.bar.saturating_add(bars as u32),
+            beat: into_stretch - bars * stretch.beats_per_bar + 1.0,
+            beats_per_bar: stretch.beats_per_bar,
+        }
+    }
 }
 
 /// A point in time with the beats elapsed at it, so a length can later be measured from it in
@@ -86,7 +134,10 @@ struct BeatLine {
 #[derive(Debug, Clone)]
 pub struct ClockFollower {
     song_bpm: f64,
+    /// For bar durations, which keep the song's signature.
     time_signature: TimeSignature,
+    /// For bar positions, which follow the arrangement's sections.
+    bar_grid: BarGrid,
     line: BeatLine,
     /// The clock's position at the latest tick, in elapsed beats.
     clock_beats: f64,
@@ -112,6 +163,7 @@ impl ClockFollower {
         Self {
             song_bpm,
             time_signature,
+            bar_grid: BarGrid::uniform(time_signature),
             line: BeatLine {
                 at,
                 beats: 0.0,
@@ -131,8 +183,13 @@ impl ClockFollower {
         }
     }
 
-    pub fn time_signature(&self) -> TimeSignature {
-        self.time_signature
+    /// Counts bar durations in `time_signature` and places bar lines on `grid` from now on, as
+    /// when the song's signature or arrangement is edited.
+    pub fn set_bars(&mut self, time_signature: TimeSignature, grid: &BarGrid) {
+        self.time_signature = time_signature;
+        if self.bar_grid != *grid {
+            self.bar_grid = grid.clone();
+        }
     }
 
     /// Changes the tempo used without a clock, as when the song's `bpm` is edited. Musical time
@@ -337,13 +394,7 @@ impl ClockFollower {
     }
 
     pub fn bar_position(&self, at: Duration) -> BarPosition {
-        let beats_per_bar = self.time_signature.beats_per_bar();
-        let song_beats = self.song_position(at);
-        let bars = (song_beats / beats_per_bar).floor();
-        BarPosition {
-            bar: bars as u32 + 1,
-            beat: song_beats - bars * beats_per_bar + 1.0,
-        }
+        self.bar_grid.position(self.song_position(at))
     }
 
     pub fn source(&self, at: Duration) -> TempoSource {
@@ -467,7 +518,7 @@ mod tests {
         follower.apply(millis(0.0), &[START]);
         let next_ms = send_ticks(&mut follower, 120.0, 0, 4 * 24 + 1);
 
-        let BarPosition { bar, beat } = follower.bar_position(millis(next_ms - 20.0));
+        let BarPosition { bar, beat, .. } = follower.bar_position(millis(next_ms - 20.0));
         assert_eq!(bar, 2);
         assert!((beat - 1.0).abs() < 1.0 / TICKS_PER_BEAT, "{beat}");
     }

@@ -199,14 +199,15 @@ impl Pattern {
     /// if the note is within `START_WINDOW_BEATS` of it. Only `beats` places the loop, and it
     /// may be ahead of `at`.
     pub fn start(clock: &ClockFollower, at: Duration) -> Moment {
-        let into_bar = clock.bar_position(at).beat - 1.0;
+        let position = clock.bar_position(at);
+        let into_bar = position.beat - 1.0;
         let bar_line = clock.beats(at) - into_bar;
         Moment {
             at,
             beats: if into_bar <= START_WINDOW_BEATS {
                 bar_line
             } else {
-                bar_line + clock.time_signature().beats_per_bar()
+                bar_line + position.beats_per_bar
             },
         }
     }
@@ -304,6 +305,32 @@ mod tests {
 
         let mid_bar = Pattern::start(&clock, seconds(bar_2 + 0.5));
         assert_close(mid_bar.beats, 8.0);
+    }
+
+    #[test]
+    fn bar_lines_follow_the_sections_of_the_arrangement() {
+        use crate::clock_follower::{BarGrid, BarStretch};
+        let stretch = |beats, bar, beats_per_bar| BarStretch {
+            beats,
+            bar,
+            beats_per_bar,
+        };
+        // A bar of 4/4, two of 3/4 from beat 4, then 4/4 again from beat 10 (5 s).
+        let mut clock = clock();
+        clock.set_bars(
+            TimeSignature::default(),
+            &BarGrid::new(vec![
+                stretch(0.0, 1, 4.0),
+                stretch(4.0, 2, 3.0),
+                stretch(10.0, 4, 4.0),
+            ]),
+        );
+
+        assert_close(Pattern::start(&clock, seconds(2.5)).beats, 7.0);
+        assert_eq!(clock.bar_position(seconds(3.5)).bar, 3);
+        // In 4/4 throughout, beat 10 is mid-bar and the loop would wait for beat 12.
+        assert_close(Pattern::start(&clock, seconds(5.0)).beats, 10.0);
+        assert_eq!(clock.bar_position(seconds(5.5)).bar, 4);
     }
 
     #[test]

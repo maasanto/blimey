@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use blimey_engine::arrangement;
 use blimey_engine::clock_follower::ClockFollower;
 use blimey_engine::colour::Rgb;
 use blimey_engine::cue::{Cue, CueTiming};
@@ -97,6 +98,12 @@ struct Tempo {
     bpm: serde_json::Number,
 }
 
+#[derive(Deserialize)]
+struct Arrangement {
+    sections: Value,
+    arrangement: Value,
+}
+
 /// A pixel cue to preview, animated at its song's tempo.
 #[derive(Deserialize)]
 struct PixelPreview {
@@ -139,6 +146,12 @@ pub fn routes(api: Api) -> Router {
         .route("/api/songs/{song}/thumbnails", get(song_thumbnails))
         .route("/api/songs", post(create_song))
         .route("/api/songs/{song}/bpm", put(set_bpm))
+        .route("/api/songs/{song}/arrangement", put(set_arrangement))
+        .route(
+            "/api/songs/{song}/arrangement/events",
+            get(arrangement_events),
+        )
+        .route("/api/songs/{song}/arrangement.mid", get(arrangement_midi))
         .route("/api/history", get(history))
         .route("/api/undo", post(undo))
         .route("/api/redo", post(redo))
@@ -248,6 +261,92 @@ async fn set_bpm(State(api): State<Api>, Path(song): Path<String>, content: Json
         Ok(tempo) => saved(&api, || show_file::set_bpm(&api.show_dir, &song, tempo.bpm)),
         Err(error) => error_response(&error),
     }
+}
+
+async fn set_arrangement(
+    State(api): State<Api>,
+    Path(song): Path<String>,
+    content: JsonBody,
+) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let content = match json_body(content) {
+        Ok(content) => content,
+        Err(error) => return error_response(&error),
+    };
+    match body::<Arrangement>(content, "send { sections, arrangement }") {
+        Ok(new) => saved(&api, || {
+            show_file::set_arrangement(&api.show_dir, &song, new.sections, new.arrangement)
+        }),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// Works in show mode too: it reads the song and changes nothing.
+async fn arrangement_events(State(api): State<Api>, Path(song): Path<String>) -> Response {
+    let _turn = show_load_turn().await;
+    let events = Show::load(&api.show_dir).and_then(|show| {
+        let song = song_named(&show, &song)?;
+        Ok(json!({ "bpm": song.tempo(), "events": arrangement::events(song) }))
+    });
+    match events {
+        Ok(events) => Json(events).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// Works in show mode too: it builds the file in memory and writes nothing.
+async fn arrangement_midi(State(api): State<Api>, Path(song): Path<String>) -> Response {
+    let _turn = show_load_turn().await;
+    let file = Show::load(&api.show_dir).and_then(|show| {
+        let song = song_named(&show, &song)?;
+        if song.arrangement.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("song {:?} has no arrangement to export", song.name),
+            ));
+        }
+        arrangement::midi_file(song)
+    });
+    match file {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "audio/midi".to_owned()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    attachment(&format!("{song}.mid")),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// A `Content-Disposition` downloading as `file_name`, whatever it holds: an ASCII stand-in
+/// for old clients, and the name itself percent-encoded (RFC 6266, RFC 5987).
+fn attachment(file_name: &str) -> String {
+    let is_safe = |byte: u8| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte);
+    let ascii: String = file_name
+        .chars()
+        .map(|c| match u8::try_from(c) {
+            Ok(byte) if is_safe(byte) => c,
+            _ => '_',
+        })
+        .collect();
+    let encoded: String = file_name
+        .bytes()
+        .map(|byte| {
+            if is_safe(byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 async fn delete_cue(State(api): State<Api>, Path((song, note)): Path<(String, u8)>) -> Response {
@@ -751,6 +850,100 @@ mod tests {
             midi: std::sync::mpsc::channel().0,
             history: Arc::default(),
         }
+    }
+
+    /// A response's status and body.
+    async fn read(response: Response) -> (StatusCode, Vec<u8>) {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
+    #[test]
+    fn the_arrangement_saves_round_trip_and_an_invalid_one_leaves_the_file_untouched() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/shows/arranged");
+        let dir = std::env::temp_dir().join(format!("blimey-arrangement-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("fixtures")).unwrap();
+        std::fs::create_dir_all(dir.join("songs")).unwrap();
+        for file in [
+            "rig.yaml",
+            "palettes.yaml",
+            "fixtures/dimmer-par.yaml",
+            "fixtures/rgb-par.yaml",
+        ] {
+            std::fs::copy(fixture.join(file), dir.join(file)).unwrap();
+        }
+        let song_file = dir.join("songs/arranged.yaml");
+        let arranged = std::fs::read_to_string(fixture.join("songs/arranged.yaml")).unwrap();
+        let unarranged = &arranged[..arranged.find("sections:").unwrap()];
+        std::fs::write(&song_file, unarranged).unwrap();
+        let content: Value = serde_yaml_ng::from_str(&arranged).unwrap();
+        let api = Api {
+            show_dir: dir.clone(),
+            mode: Mode::Edit,
+            ..cues_show_api()
+        };
+        let put = |body: Value| {
+            set_arrangement(State(api.clone()), Path("arranged".into()), Ok(Json(body)))
+        };
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let saved = put(json!({ "sections": content["sections"], "arrangement": content["arrangement"] })).await;
+            assert_eq!(saved.status(), StatusCode::NO_CONTENT);
+            assert_eq!(std::fs::read_to_string(&song_file).unwrap(), arranged);
+
+            let (status, error) = read(
+                put(json!({ "sections": content["sections"], "arrangement": ["verse", "outro"] })).await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(
+                String::from_utf8_lossy(&error).contains(r#"arrangement: no section \"outro\" in sections"#),
+                "{}",
+                String::from_utf8_lossy(&error)
+            );
+            assert_eq!(std::fs::read_to_string(&song_file).unwrap(), arranged);
+
+            let (status, events) =
+                read(arrangement_events(State(api.clone()), Path("arranged".into())).await).await;
+            assert_eq!(status, StatusCode::OK);
+            let events: Value = serde_json::from_slice(&events).unwrap();
+            assert_eq!(events["bpm"], 120.0);
+            assert_eq!(
+                events["events"][4],
+                json!({ "beats": 6.0, "seconds": 3.0, "type": "note_on", "scene": 37, "velocity": 64 })
+            );
+
+            let (status, file) =
+                read(arrangement_midi(State(api.clone()), Path("arranged".into())).await).await;
+            assert_eq!(status, StatusCode::OK);
+            let show = Show::load(&dir).unwrap();
+            assert_eq!(file, arrangement::midi_file(&show.songs[0]).unwrap());
+
+            let named = "café \"live\"";
+            std::fs::write(
+                dir.join(format!("songs/{named}.yaml")),
+                arranged.replace("program: 1", "program: 2"),
+            )
+            .unwrap();
+            let download = arrangement_midi(State(api.clone()), Path(named.into())).await;
+            assert_eq!(download.status(), StatusCode::OK);
+            assert_eq!(
+                download.headers()[header::CONTENT_DISPOSITION],
+                "attachment; filename=\"caf___live_.mid\"; filename*=UTF-8''caf%C3%A9%20%22live%22.mid"
+            );
+            std::fs::remove_file(dir.join(format!("songs/{named}.yaml"))).unwrap();
+
+            assert_eq!(undo(State(api.clone())).await.status(), StatusCode::OK);
+            assert_eq!(std::fs::read_to_string(&song_file).unwrap(), unarranged);
+            let (status, _) =
+                read(arrangement_midi(State(api.clone()), Path("arranged".into())).await).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "no arrangement once undone");
+        });
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
