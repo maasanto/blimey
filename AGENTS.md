@@ -1,6 +1,6 @@
 # Blimey — agent guide
 
-Blimey is a headless DMX lighting engine driven by Reaper over MIDI, replacing ENTTEC EMU for Fossile's show. The spec is [docs/plan.md](docs/plan.md); section 14 defines the work packages (C0–C13), section 15 the validation strategy and section 16 the builder rework (C14–C19). Read them before starting a chunk.
+Blimey is a headless DMX lighting engine driven over MIDI by any DAW or MIDI source. The spec is [docs/plan.md](docs/plan.md); section 14 defines the work packages (C0–C13), section 15 the validation strategy and section 16 the builder rework (C14–C19). Read them before starting a chunk.
 
 ## Repo layout
 
@@ -8,7 +8,7 @@ Blimey is a headless DMX lighting engine driven by Reaper over MIDI, replacing E
 - `blimey/` — Rust binary: CLI, HTTP/WebSocket, device drivers
 - `ui/` — Svelte + Vite, built to static files embedded in the binary
 - `schema/` — JSON Schema for show files
-- `shows/fossile/` — the real show
+- `tests/fixtures/shows/demo/` — demo show, a full example the tests and screenshots run on. Real shows live outside the repo.
 - `tests/fixtures/` — MIDI files and reference frame dumps
 - `docs/` — spec, API contract (`docs/api.md`), decisions
 
@@ -19,7 +19,7 @@ Blimey is a headless DMX lighting engine driven by Reaper over MIDI, replacing E
 - Deterministic render: no free-running oscillators, no wall clock in the engine, random effects use a fixed seed per cue.
 - Contracts first. A chunk that adds an HTTP/WebSocket endpoint or a show-file field updates `docs/api.md` and `schema/` in the same PR. UI chunks code against the contract, not engine internals.
 - Show files written by the builder go through one engine endpoint that validates, writes atomically and keeps canonical formatting. The UI never writes files itself.
-- CI must stay green: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, schema validation of `shows/`, UI Playwright tests.
+- CI must stay green: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, schema validation of `tests/fixtures/shows/`, UI Playwright tests.
 
 ## Workflow
 
