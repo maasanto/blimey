@@ -1,6 +1,7 @@
 <script>
   import { request } from './engine.svelte.js';
-  import { beatsIn, beatsPerBar, formatLength } from './duration.js';
+  import { FULL_VELOCITY, holdToAudition } from './audition.js';
+  import { beatsIn, beatsPerBar, DEFAULT_BPM, formatLength } from './duration.js';
   import ScenePads, { SCENE_DRAG_TYPE } from './ScenePads.svelte';
 
   /**
@@ -14,23 +15,24 @@
   let { songName, song, editable, isPlaying, attempt, onsaved, onhold, onrelease, onaudition, onopenscene } = $props();
 
   const PLACEMENT_DRAG_TYPE = 'application/x-blimey-placement';
-  /** A press on a block held this long auditions its scene, as on a scene pad. */
-  const HOLD_MS = 250;
   /** The narrowest beat on the section editor's ruler; a short section widens its beats to fill it. */
   const MIN_BEAT_PX = 24;
   /** The lane names' column, left of the ruler. */
   const LANE_LABEL_PX = 120;
+  /** The overview: each placement's bar and name, over a thin lane per scene. */
+  const OVERVIEW_LABEL_PX = 22;
   const OVERVIEW_LANE_PX = 6;
   const NEW_SECTION_BARS = 4;
   const FULL_LEVEL = 100;
-  const MAX_VELOCITY = 127;
-  const DEFAULT_BPM = 120;
+  /** How strongly a block at 0% is drawn, so it still shows; 100% is drawn solid. */
+  const DIMMEST_SHADE = 0.35;
+  const TIME_SIGNATURE = /^[1-9][0-9]*\/[1-9][0-9]*$/;
 
   let openName = $state(null);
   let newName = $state('');
-  /** The selected block of the open section, by scene and start. */
+  /** The selected block: its section, and its scene and rank there, as `findBlock` takes them. */
   let selected = $state(null);
-  /** The block being moved or resized, as shown until it saves: `{ block, start, length }`. */
+  /** The block being moved or resized, as shown until it saves: its section, scene, rank, start and length. */
   let dragged = $state.raw(null);
   /** The press on a block, not reactive: the pointer, the block, how it moves, the audition. */
   let press = null;
@@ -41,9 +43,7 @@
   const byName = $derived(Object.fromEntries(sections.map((section) => [section.name, section])));
   const arrangement = $derived(song.arrangement ?? []);
   const openSection = $derived(byName[openName] ?? byName[arrangement[0]] ?? sections[0] ?? null);
-  const selectedBlock = $derived(
-    selected?.section === openSection?.name ? openSection?.blocks.find((block) => block.scene === selected.scene && block.start === selected.start) : undefined,
-  );
+  const selectedBlock = $derived(selected?.section === openSection?.name ? findBlock(openSection, selected) : undefined);
   const beatPx = $derived(openSection ? Math.max(MIN_BEAT_PX, Math.floor((editorWidth - LANE_LABEL_PX) / openSection.beats)) : MIN_BEAT_PX);
   const lanes = $derived(openSection ? scenesIn([openSection]) : []);
   /** Each placed section and the song's bar it starts on. */
@@ -62,18 +62,34 @@
   /** A section of the file, its blocks in beats from its first beat, in playing order. */
   function sectionOf(name, { bars, time_signature, blocks = [] }) {
     const barBeats = beatsPerBar(time_signature ?? songSignature);
-    const inBeats = ({ scene, bar, beat = 1, length, level }) => ({
-      scene,
-      start: (bar - 1) * barBeats + beat - 1,
-      length: beatsIn(length, barBeats),
-      level: level ? parseFloat(level) : FULL_LEVEL,
+    const inBeats = blocks.map((block) => blockOf(block, barBeats)).sort(inPlayingOrder);
+    return { name, bars, time_signature, barBeats, beats: bars * barBeats, blocks: ranked(inBeats) };
+  }
+
+  /** A block of the file in beats from its section's first beat, in bars of `barBeats` beats. */
+  function blockOf({ scene, bar, beat = 1, length, level }, barBeats) {
+    return { scene, start: (bar - 1) * barBeats + beat - 1, length: beatsIn(length, barBeats), level: level ? parseFloat(level) : FULL_LEVEL };
+  }
+
+  /**
+   * Each block with `nth`, its rank among the blocks of its scene. Blocks of one scene never
+   * overlap, so a move keeps the rank: it names the block across saves, as a key and a selection.
+   */
+  function ranked(blocks) {
+    const counts = {};
+    return blocks.map((block) => {
+      const nth = counts[block.scene] ?? 0;
+      counts[block.scene] = nth + 1;
+      return { ...block, nth };
     });
-    return { name, bars, time_signature, barBeats, beats: bars * barBeats, blocks: blocks.map(inBeats).sort(inPlayingOrder) };
   }
 
   const inPlayingOrder = (a, b) => a.start - b.start || a.scene - b.scene;
   const scenesIn = (placed) => [...new Set(placed.flatMap((section) => section.blocks.map((block) => block.scene)))].sort((a, b) => a - b);
   const clamp = (value, lowest, highest) => Math.min(Math.max(value, lowest), highest);
+  const findBlock = (section, { scene, nth }) => section?.blocks.find((block) => block.scene === scene && block.nth === nth);
+  const isDragged = (section, block) => dragged?.section === section.name && dragged.scene === block.scene && dragged.nth === block.nth;
+  const shownOf = (section, block) => (isDragged(section, block) ? dragged : block);
 
   /** As the file writes a section: keys in the order of docs/api.md, empty ones left out. */
   function sectionFile({ bars, time_signature, blocks }) {
@@ -100,7 +116,8 @@
   }
 
   const sceneName = (scene) => song.cues?.[scene]?.name ?? `scene ${scene}`;
-  const velocityOf = (level) => Math.max(1, Math.round((level / FULL_LEVEL) * MAX_VELOCITY));
+  const velocityOf = (level) => Math.max(1, Math.round((level / FULL_LEVEL) * FULL_VELOCITY));
+  const shadeOf = (level) => DIMMEST_SHADE + ((1 - DIMMEST_SHADE) * level) / FULL_LEVEL;
 
   function describe(block, section) {
     const { bar, beat = 1, length } = blockFile(block, section.barBeats);
@@ -112,35 +129,46 @@
     return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
   }
 
+  const timelineFile = (nextSections, nextArrangement) => ({
+    sections: Object.fromEntries(nextSections.map((section) => [section.name, sectionFile(section)])),
+    arrangement: [...nextArrangement],
+  });
+
+  /** Saves the timeline as given; resolves false, saving nothing, when the file holds that already. */
   async function save(nextSections, nextArrangement = arrangement) {
-    const sectionsFile = Object.fromEntries(nextSections.map((section) => [section.name, sectionFile(section)]));
-    await request('PUT', `/api/songs/${songName}/arrangement`, { sections: sectionsFile, arrangement: [...nextArrangement] });
+    const next = timelineFile(nextSections, nextArrangement);
+    if (JSON.stringify(next) === JSON.stringify(timelineFile(sections, arrangement))) return false;
+    await request('PUT', `/api/songs/${encodeURIComponent(songName)}/arrangement`, next);
     await onsaved(`Saved the timeline of ${songName}. Undo takes it back.`);
+    return true;
   }
 
   /**
-   * Runs `action` once the edit before it has saved and the song reloaded, so that each edit
-   * starts from what the file holds: edits name sections and blocks rather than hold them.
+   * Runs `action(...names)` once the edit before it has saved and the song reloaded, so that
+   * each edit starts from what the file holds. `names` are taken now, as the user meant them:
+   * sections, blocks and placements by name, found again when the edit runs.
    */
   let lastEdit = Promise.resolve();
-  function edit(action) {
-    lastEdit = lastEdit.catch(() => {}).then(action);
+  function edit(action, ...names) {
+    lastEdit = lastEdit.catch(() => {}).then(() => action(...names));
     return attempt(() => lastEdit);
   }
 
   const withSection = (name, change) => sections.map((section) => (section.name === name ? { ...section, ...change } : section));
 
-  /** Saves what a field was changed to, or puts back what it showed when that is refused. */
-  function change(event, shown, action) {
+  /** Saves what a field was changed to with `action(...names, value)`, or puts back what it showed when that is refused. */
+  function change(event, shown, action, ...names) {
     const field = event.currentTarget;
     const value = field.value.trim();
     edit(() =>
-      action(value).catch((failure) => {
+      action(...names, value).catch((failure) => {
         field.value = shown;
         throw failure;
       }),
     );
   }
+
+  const setBars = (name, text) => save(withSection(name, { bars: Number(text) }));
 
   function refuseName(name) {
     if (!name) throw new Error('Give the section a name.');
@@ -175,18 +203,63 @@
     await save(sections.filter((section) => section.name !== name));
   }
 
-  const place = (name) => save(sections, [...arrangement, name]);
-  const unplace = (index) => save(sections, arrangement.toSpliced(index, 1));
-  const movePlacement = (from, to) => from !== to && save(sections, arrangement.toSpliced(from, 1).toSpliced(to, 0, arrangement[from]));
-
-  const isBlock = (block) => (other) => other.scene === block.scene && other.start === block.start;
-  const withBlocks = (name, change) => save(withSection(name, { blocks: change(byName[name].blocks) }));
-  const deleteBlock = (name, block) => withBlocks(name, (blocks) => blocks.filter((other) => !isBlock(block)(other)));
-
-  function changeBlock(name, block, change) {
-    selected = { section: name, scene: block.scene, start: change.start ?? block.start };
-    return withBlocks(name, (blocks) => blocks.map((other) => (isBlock(block)(other) ? { ...other, ...change } : other)));
+  /**
+   * Gives section `name` the time signature `text`, or the song's for an empty one. Its blocks
+   * keep their bar, beat and length in bars, so a two-bar block stays two bars; one that no
+   * longer fits is refused, naming it.
+   */
+  async function setTimeSignature(name, text) {
+    if (text && !TIME_SIGNATURE.test(text)) throw new Error(`"${text}" is not a time signature: write beats over the note value, as in 3/4 or 6/8.`);
+    const section = byName[name];
+    const time_signature = text || undefined;
+    const signature = time_signature ?? songSignature;
+    const barBeats = beatsPerBar(signature);
+    const blocks = section.blocks.map((block) => {
+      const file = blockFile(block, section.barBeats);
+      const { start, length } = blockOf(file, barBeats);
+      if ((file.beat ?? 1) >= barBeats + 1 || start + length > section.bars * barBeats) {
+        throw new Error(
+          `${sceneName(block.scene)} (scene ${block.scene}) at bar ${file.bar} beat ${file.beat ?? 1} doesn't fit in ${section.bars} bars of ${signature}: move or shorten it first.`,
+        );
+      }
+      return { ...block, start, length };
+    });
+    await save(withSection(name, { time_signature, blocks }));
   }
+
+  const place = (name) => save(sections, [...arrangement, name]);
+  /** Takes placement `index` out, if `name` is still there: an earlier edit may have moved it. */
+  const unplace = (index, name) => arrangement[index] === name && save(sections, arrangement.toSpliced(index, 1));
+
+  /** Moves placement `from` to `to`, if both still hold the sections they did when dragged. */
+  function movePlacement(from, to) {
+    if (from.index === to.index || arrangement[from.index] !== from.name || arrangement[to.index] !== to.name) return;
+    return save(sections, arrangement.toSpliced(from.index, 1).toSpliced(to.index, 0, from.name));
+  }
+
+  const withBlocks = (name, change) => save(withSection(name, { blocks: change(byName[name].blocks) }));
+
+  async function deleteBlock(name, ref) {
+    const block = findBlock(byName[name], ref);
+    if (!block) return;
+    await withBlocks(name, (blocks) => blocks.filter((other) => other !== block));
+    if (selected?.section === name && selected.scene === ref.scene && selected.nth === ref.nth) selected = null;
+  }
+
+  /** Changes the block `ref` names, as it is when the edit runs, by what `change(block, section)` returns. */
+  async function changeBlock(name, ref, change) {
+    const section = byName[name];
+    const block = findBlock(section, ref);
+    if (!block) return;
+    const changed = { ...block, ...change(block, section) };
+    await withBlocks(name, (blocks) => blocks.map((other) => (other === block ? changed : other)));
+  }
+
+  /** A block moved or resized by `beats`, a whole beat at a time, inside its section. */
+  const GESTURES = {
+    move: (block, section, beats) => ({ start: clamp(block.start + beats, 0, section.beats - block.length), length: block.length }),
+    resize: (block, section, beats) => ({ start: block.start, length: clamp(block.length + beats, Math.min(1, block.length), section.beats - block.start) }),
+  };
 
   /** A scene dropped on the section: a bar long from the beat it landed on, or to the end. */
   function dropScene(event, section) {
@@ -196,17 +269,21 @@
     const beat = Math.floor((event.clientX - event.currentTarget.getBoundingClientRect().left) / beatPx);
     const start = clamp(beat, 0, Math.ceil(section.beats) - 1);
     const placed = { scene, start, length: Math.min(section.barBeats, section.beats - start), level: FULL_LEVEL };
-    selected = { section: section.name, scene, start };
-    edit(() => withBlocks(section.name, (blocks) => [...blocks, placed]));
+    const { name } = section;
+    edit(async () => {
+      await withBlocks(name, (blocks) => [...blocks, placed]);
+      const added = byName[name].blocks.find((block) => block.scene === scene && block.start === start);
+      selected = { section: name, scene, nth: added.nth };
+    });
   }
 
   const accepts = (event, type) => editable && event.dataTransfer.types.includes(type) && event.preventDefault();
 
-  function dropPlacement(event, index) {
+  function dropPlacement(event, to) {
     if (!editable || !event.dataTransfer.types.includes(PLACEMENT_DRAG_TYPE)) return;
     event.preventDefault();
-    const from = Number(event.dataTransfer.getData(PLACEMENT_DRAG_TYPE));
-    edit(() => movePlacement(from, index));
+    const from = JSON.parse(event.dataTransfer.getData(PLACEMENT_DRAG_TYPE));
+    edit(() => movePlacement(from, to));
   }
 
   /** `mode` is `move` for the block's body, `resize` for its end. */
@@ -214,36 +291,34 @@
     if (!editable || press !== null || event.button !== 0) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    selected = { section: section.name, scene: block.scene, start: block.start };
-    press = { pointer: event.pointerId, x: event.clientX, section, block, mode, started: null };
-    press.timer = setTimeout(() => {
-      // A scene already playing, from Reaper or a pad, is left to play.
-      if (!isPlaying(block.scene)) press.started = onhold(block.scene, velocityOf(block.level));
-    }, HOLD_MS);
+    selected = { section: section.name, scene: block.scene, nth: block.nth };
+    dragged = null;
+    const hold = holdToAudition({ isPlaying: () => isPlaying(block.scene), onhold: () => onhold(block.scene, velocityOf(block.level)) });
+    press = { pointer: event.pointerId, x: event.clientX, section, block, mode, hold };
   }
 
-  /** Moves or resizes the pressed block a whole beat at a time, inside its section. */
   function slide(event) {
     if (press?.pointer !== event.pointerId) return;
-    const { x, section, block, mode } = press;
-    const beats = Math.round((event.clientX - x) / beatPx);
-    const start = mode === 'move' ? clamp(block.start + beats, 0, section.beats - block.length) : block.start;
-    const length = mode === 'resize' ? clamp(block.length + beats, Math.min(1, block.length), section.beats - block.start) : block.length;
+    const { x, section, block, mode, hold } = press;
+    const { start, length } = GESTURES[mode](block, section, Math.round((event.clientX - x) / beatPx));
     if (!dragged && start === block.start && length === block.length) return;
-    clearTimeout(press.timer);
-    dragged = { block, start, length };
+    hold.cancel();
+    dragged = { section: section.name, scene: block.scene, nth: block.nth, start, length };
   }
 
   async function letGo(event) {
     if (press?.pointer !== event.pointerId) return;
-    const { section, block, started, timer } = press;
-    clearTimeout(timer);
+    const { section, block, hold } = press;
     press = null;
-    started?.then(() => onrelease(block.scene));
+    hold.release(() => onrelease(block.scene));
     const moved = dragged;
-    if (!moved) return;
-    await edit(() => changeBlock(section.name, block, { start: moved.start, length: moved.length }));
-    dragged = null;
+    if (!moved || (moved.start === block.start && moved.length === block.length)) {
+      dragged = null;
+      return;
+    }
+    // Shown where it was dropped until the save reloads, unless a new press has started since.
+    await edit(() => changeBlock(section.name, block, () => ({ start: moved.start, length: moved.length })));
+    if (dragged === moved) dragged = null;
   }
 
   /** Delete removes the focused block; ← and → move it a beat, with Shift they resize it. */
@@ -251,12 +326,16 @@
     const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
     if (!editable || (!step && event.key !== 'Delete' && event.key !== 'Backspace')) return;
     event.preventDefault();
-    if (!step) edit(() => deleteBlock(section.name, block));
-    else if (event.shiftKey) edit(() => changeBlock(section.name, block, { length: block.length + step }));
-    else edit(() => changeBlock(section.name, block, { start: block.start + step }));
+    const ref = { scene: block.scene, nth: block.nth };
+    const gesture = GESTURES[event.shiftKey ? 'resize' : 'move'];
+    if (!step) edit(() => deleteBlock(section.name, ref));
+    else edit(() => changeBlock(section.name, ref, (current, inSection) => gesture(current, inSection, step)));
   }
 
-  const shownOf = (block) => (dragged?.block === block ? dragged : block);
+  async function setLevel(name, ref, text) {
+    if (text === '') throw new Error('Give the level as a percentage, from 0 to 100.');
+    await changeBlock(name, ref, () => ({ level: Number(text) }));
+  }
 </script>
 
 <section class="arrangement" aria-label="Arrangement">
@@ -271,30 +350,37 @@
           class="tile"
           class:open={placed.name === openSection?.name}
           draggable={editable}
-          ondragstart={(event) => event.dataTransfer.setData(PLACEMENT_DRAG_TYPE, String(placed.index))}
+          ondragstart={(event) => event.dataTransfer.setData(PLACEMENT_DRAG_TYPE, JSON.stringify({ index: placed.index, name: placed.name }))}
           ondragover={(event) => accepts(event, PLACEMENT_DRAG_TYPE)}
-          ondrop={(event) => dropPlacement(event, placed.index)}
+          ondrop={(event) => dropPlacement(event, { index: placed.index, name: placed.name })}
         >
           <button class="quiet" aria-label="{placed.name} from bar {placed.bar}" onclick={() => (openName = placed.name)}>
             {placed.name} <span class="hint">{placed.section.bars} bars</span>
           </button>
-          <button class="quiet" aria-label="Take {placed.name} at bar {placed.bar} out of the arrangement" disabled={!editable} onclick={() => edit(() => unplace(placed.index))}>×</button>
+          <button class="quiet" aria-label="Take {placed.name} at bar {placed.bar} out of the arrangement" disabled={!editable} onclick={() => edit(unplace, placed.index, placed.name)}>×</button>
         </li>
       {/each}
     </ol>
 
-    <div class="overview" role="group" aria-label="Overview" style:--lanes={overviewLanes.length}>
+    <div
+      class="overview"
+      role="group"
+      aria-label="Overview"
+      style:--lanes={overviewLanes.length}
+      style:--overview-label="{OVERVIEW_LABEL_PX}px"
+      style:--overview-lane="{OVERVIEW_LANE_PX}px"
+    >
       {#each placements as placed (placed.index)}
         <button class="placement" class:open={placed.name === openSection?.name} style:flex-grow={placed.section.beats} data-placement={placed.name} onclick={() => (openName = placed.name)}>
           <span class="at">{placed.bar} · {placed.name}</span>
-          {#each placed.section.blocks as block (`${block.scene}:${block.start}`)}
+          {#each placed.section.blocks as block (`${block.scene}:${block.nth}`)}
             <span
               class="mini"
               title={describe(block, placed.section)}
               style:left="{(block.start / placed.section.beats) * 100}%"
               style:width="{(block.length / placed.section.beats) * 100}%"
-              style:top="{overviewLanes.indexOf(block.scene) * OVERVIEW_LANE_PX}px"
-              style:opacity={0.35 + (0.65 * block.level) / FULL_LEVEL}
+              style:--row={overviewLanes.indexOf(block.scene)}
+              style:opacity={shadeOf(block.level)}
             ></span>
           {/each}
         </button>
@@ -314,7 +400,7 @@
           <button class="quiet name" onclick={() => (openName = section.name)}>
             {section.name} <span class="hint">{section.bars} bars{section.time_signature ? ` · ${section.time_signature}` : ''}</span>
           </button>
-          <button class="quiet" aria-label="Add {section.name} to the arrangement" disabled={!editable} onclick={() => edit(() => place(section.name))}>+</button>
+          <button class="quiet" aria-label="Add {section.name} to the arrangement" disabled={!editable} onclick={() => edit(place, section.name)}>+</button>
         </li>
       {/each}
     </ul>
@@ -339,26 +425,26 @@
       {@const section = openSection}
       <fieldset class="row" disabled={!editable}>
         {#key song}
-          <label>Name <input value={section.name} onchange={(event) => change(event, section.name, (name) => renameSection(section.name, name))} /></label>
+          <label>Name <input value={section.name} onchange={(event) => change(event, section.name, renameSection, section.name)} /></label>
           <label>
             Bars
-            <input type="number" min="1" value={section.bars} onchange={(event) => change(event, section.bars, (bars) => save(withSection(section.name, { bars: Number(bars) })))} />
+            <input type="number" min="1" value={section.bars} onchange={(event) => change(event, section.bars, setBars, section.name)} />
           </label>
           <label>
             Time signature
             <input
               value={section.time_signature ?? ''}
               placeholder={songSignature}
-              onchange={(event) => change(event, section.time_signature ?? '', (signature) => save(withSection(section.name, { time_signature: signature || undefined })))}
+              onchange={(event) => change(event, section.time_signature ?? '', setTimeSignature, section.name)}
             />
           </label>
         {/key}
-        <button onclick={() => edit(() => duplicateSection(section.name))}>Duplicate</button>
-        <button class="danger" onclick={() => edit(() => deleteSection(section.name))}>Delete</button>
+        <button onclick={() => edit(duplicateSection, section.name)}>Duplicate</button>
+        <button class="danger" onclick={() => edit(deleteSection, section.name)}>Delete</button>
       </fieldset>
 
       <div class="strip">
-        <ScenePads {songName} cues={song.cues} {editable} {isPlaying} draggable={editable} onopen={onopenscene} onhold={(scene) => onhold(scene, MAX_VELOCITY)} {onrelease} {onaudition} />
+        <ScenePads {songName} cues={song.cues} tempo={song.bpm} {editable} {isPlaying} draggable={editable} onopen={onopenscene} onhold={(scene) => onhold(scene, FULL_VELOCITY)} {onrelease} {onaudition} />
       </div>
 
       <div class="lanes" style:--beat="{beatPx}px" style:--bar="{beatPx * section.barBeats}px" style:--label="{LANE_LABEL_PX}px">
@@ -374,8 +460,8 @@
           <div class="lane" data-lane={scene ?? 'new'}>
             <span class="lane-name">{scene === null ? 'Drop a scene here' : `${scene} · ${sceneName(scene)}`}</span>
             <div class="track" style:width="{section.beats * beatPx}px" role="presentation" ondragover={(event) => accepts(event, SCENE_DRAG_TYPE)} ondrop={(event) => dropScene(event, section)}>
-              {#each section.blocks.filter((block) => block.scene === scene) as block (block.start)}
-                {@const shown = shownOf(block)}
+              {#each section.blocks.filter((block) => block.scene === scene) as block (block.nth)}
+                {@const shown = shownOf(section, block)}
                 <button
                   class="block"
                   class:selected={block === selectedBlock}
@@ -384,7 +470,7 @@
                   aria-label={describe(block, section)}
                   style:left="{shown.start * beatPx}px"
                   style:width="{shown.length * beatPx}px"
-                  style:--level={block.level / FULL_LEVEL}
+                  style:--shade={shadeOf(block.level)}
                   onpointerdown={(event) => pressBlock(event, section, block, 'move')}
                   onpointermove={slide}
                   onpointerup={letGo}
@@ -406,10 +492,10 @@
         <fieldset class="row" disabled={!editable}>
           <span>{describe(block, section)}</span>
           {#key song}
-            <label>Level <input type="number" min="0" max="100" value={block.level} onchange={(event) => change(event, block.level, (level) => changeBlock(section.name, block, { level: Number(level) }))} /></label>
+            <label>Level <input type="number" min="0" max="100" value={block.level} onchange={(event) => change(event, block.level, setLevel, section.name, { scene: block.scene, nth: block.nth })} /></label>
             <span class="hint">%</span>
           {/key}
-          <button class="danger" onclick={() => edit(() => deleteBlock(section.name, block))}>Delete block</button>
+          <button class="danger" onclick={() => edit(deleteBlock, section.name, { scene: block.scene, nth: block.nth })}>Delete block</button>
         </fieldset>
       {/if}
       <p class="hint">
@@ -478,7 +564,7 @@
     justify-content: flex-start;
     flex-basis: 0;
     min-width: 0;
-    height: calc(28px + var(--lanes) * 6px);
+    height: calc(var(--overview-label) + (var(--lanes) + 1) * var(--overview-lane));
     padding: 0;
     overflow: hidden;
     text-align: left;
@@ -488,6 +574,8 @@
 
   .at {
     display: block;
+    box-sizing: border-box;
+    height: var(--overview-label);
     padding: 2px 6px;
     overflow: hidden;
     font-size: 12px;
@@ -497,8 +585,8 @@
 
   .mini {
     position: absolute;
-    height: 5px;
-    margin-top: 22px;
+    top: calc(var(--overview-label) + var(--row) * var(--overview-lane));
+    height: calc(var(--overview-lane) - 1px);
     background: var(--accent);
     border-radius: 2px;
   }
@@ -606,7 +694,7 @@
     padding: 0 0 0 6px;
     overflow: hidden;
     color: var(--accent-ink);
-    background: rgb(255 190 80 / calc(0.35 + 0.65 * var(--level)));
+    background: rgb(255 190 80 / var(--shade));
     border: 1px solid var(--accent);
     border-radius: 4px;
     touch-action: none;

@@ -207,3 +207,116 @@ test('show mode is read-only', async ({ page, show, startEngine }) => {
   expect(midi.messages, 'no audition').toEqual([]);
   midi.close();
 });
+
+const undo = (page) => page.getByRole('button', { name: /^Undo/ });
+
+test('a new time signature keeps blocks in their bars and beats, and refuses what no longer fits', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await page.getByRole('button', { name: /^waltz 2 bars/ }).click();
+
+  await setField(page, 'Time signature', '4/4');
+  const inFourFour = ARRANGED.replace('    time_signature: 3/4\n', '    time_signature: 4/4\n');
+  await expect.poll(() => readFileSync(songFile(show), 'utf8'), 'one bar stays one bar, two stay two').toBe(inFourFour);
+
+  await page.getByRole('button', { name: /^verse 2 bars/ }).click();
+  await setField(page, 'Time signature', '3/4');
+  await expect(page.getByRole('alert')).toHaveText("blue (scene 37) at bar 2 beat 3 doesn't fit in 2 bars of 3/4: move or shorten it first.");
+  await setField(page, 'Time signature', '3/x');
+  await expect(page.getByRole('alert')).toHaveText('"3/x" is not a time signature: write beats over the note value, as in 3/4 or 6/8.');
+  await expect(page.getByLabel('Time signature')).toHaveValue('');
+  expect(readFileSync(songFile(show), 'utf8')).toBe(inFourFour);
+});
+
+test('arrow keys move a block a beat a press, keeping focus, and a move against the edge saves nothing', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+
+  await block(page, 37).focus();
+  for (let press = 0; press < 3; press += 1) await page.keyboard.press('ArrowLeft');
+  await expect(block(page, 37)).toHaveAccessibleName('blue, scene 37: bar 1 beat 4, 2 beats, 50%');
+  await expect(block(page, 37)).toBeFocused();
+  await expect(undo(page)).toHaveText('Undo (3)');
+  expect(readFileSync(songFile(show), 'utf8')).toBe(ARRANGED.replace('bar: 2, beat: 3, length: 2 beats', 'bar: 1, beat: 4, length: 2 beats'));
+
+  await block(page, 36).focus();
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.waitForTimeout(500);
+  await expect(undo(page), 'red fills the section already').toHaveText('Undo (3)');
+});
+
+test('a gesture that ends where it started saves nothing', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+
+  await block(page, 37).click();
+  const box = await block(page, 37).boundingBox();
+  const beatWidth = (await track(page, 37).boundingBox()).width / VERSE_BEATS;
+  await page.mouse.move(box.x + 20, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 20 - 2 * beatWidth, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.move(box.x + 20, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  await expect(undo(page)).toHaveText('Undo (0)');
+  expect(readFileSync(songFile(show), 'utf8')).toBe(ARRANGED);
+});
+
+test('a refused level keeps the block selected, and a save that leaves the scenes alone renders no thumbnails', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await expect(pad(page, 36).locator('circle').first()).not.toHaveAttribute('fill', '#000000');
+  let thumbnailLoads = 0;
+  page.on('request', (sent) => sent.url().endsWith('/thumbnails') && (thumbnailLoads += 1));
+
+  await block(page, 37).click();
+  await setField(page, 'Level', '150');
+  await expect(page.getByRole('alert')).toContainText('150%');
+  await expect(page.getByLabel('Level'), 'still selected, back to the file').toHaveValue('50');
+
+  await setField(page, 'Level', '80');
+  await expect(block(page, 37)).toHaveAccessibleName('blue, scene 37: bar 2 beat 3, 2 beats, 80%');
+  await page.waitForTimeout(500);
+  expect(thumbnailLoads).toBe(0);
+});
+
+test('a quick second click on a placement already taken out takes out nothing more', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+
+  // Both clicks land before the first save reloads the strip.
+  await page.getByRole('button', { name: 'Take waltz at bar 3 out of the arrangement' }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect(page.locator('.tile')).toHaveCount(3);
+  await page.waitForTimeout(500);
+  expect(readFileSync(songFile(show), 'utf8')).toBe(ARRANGED.replace('[verse, waltz, verse, waltz]', '[verse, verse, waltz]'));
+  await expect(undo(page)).toHaveText('Undo (1)');
+});
+
+test("switching to another song's timeline shows only its own, and an unknown song goes home", async ({ page, show, startEngine }) => {
+  const encore = 'program: 2\ncues:\n  5: { name: amber, type: scene, values: { both: { color: red } } }\nsections:\n  chorus:\n    bars: 1\n    blocks:\n      - { scene: 5, bar: 1, length: 1 bar }\narrangement: [chorus]\n';
+  writeFileSync(path.join(show, 'songs/encore.yaml'), encore);
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await expect(page.locator('.tile')).toHaveCount(4);
+  let isLoaded = null;
+  const loading = new Promise((resolve) => (isLoaded = resolve));
+  await page.route('**/api/show/songs/encore.yaml', async (route) => {
+    await loading;
+    await route.continue();
+  });
+
+  await page.evaluate(() => (location.hash = '#builder/encore/timeline'));
+  await expect(page.getByText('Song 2 · encore: timeline')).toBeVisible();
+  await expect(page.locator('.tile'), "nothing of arranged's under encore").toHaveCount(0);
+  isLoaded();
+  await expect(page.locator('.tile')).toHaveCount(1);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('chorus');
+
+  await page.evaluate(() => (location.hash = '#builder/nope/timeline'));
+  await expect(page).toHaveURL(/#builder$/);
+  await expect(page.getByRole('alert')).toHaveText('There is no song nope in the show.');
+});
