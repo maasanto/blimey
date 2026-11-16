@@ -166,6 +166,12 @@ fn song_in_schema_order(content: Value, schema: &Value) -> Value {
     if let Some(audio) = song.get_mut("audio") {
         *audio = in_order(audio.take(), &schema["properties"]["audio"]["properties"]);
     }
+    if let Some(Value::Array(markers)) = song.get_mut("markers") {
+        for marker in markers {
+            let marker_properties = &schema["properties"]["markers"]["items"]["properties"];
+            *marker = in_order(marker.take(), marker_properties);
+        }
+    }
     in_order(Value::Object(song), &schema["properties"])
 }
 
@@ -502,6 +508,37 @@ pub fn set_audio_offset(show_dir: &Path, song: &str, offset: String) -> io::Resu
                 )
             })?;
         audio.insert("offset".into(), offset.into());
+        Ok(())
+    })
+}
+
+/// Names `file` as the audio of `songs/<song>.yaml`, keeping its offset.
+pub fn set_audio_file(show_dir: &Path, song: &str, file: &str) -> io::Result<Save> {
+    edit_song(show_dir, song, |name, song| {
+        let audio = song
+            .entry("audio")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{name}: audio must be a mapping"),
+                )
+            })?;
+        audio.insert("file".into(), file.into());
+        Ok(())
+    })
+}
+
+/// Sets the `markers` of `songs/<song>.yaml`, leaving the rest of it as it is. No markers are
+/// left out of the file.
+pub fn set_markers(show_dir: &Path, song: &str, markers: Vec<Value>) -> io::Result<Save> {
+    edit_song(show_dir, song, |_, song| {
+        if markers.is_empty() {
+            song.remove("markers");
+        } else {
+            song.insert("markers".into(), markers.into());
+        }
         Ok(())
     })
 }
@@ -1276,6 +1313,51 @@ mod tests {
         let refused = set_audio_offset(&show, "tell-me", "2 bars".into()).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
         assert!(fs::read_to_string(&path).unwrap().contains("offset: 1.25s"));
+    }
+
+    #[test]
+    fn markers_round_trip_undo_and_a_refused_set_leaves_the_file_untouched() {
+        let show = fossile_copy("set-markers");
+        let path = show.join(TELL_ME);
+        let before = fs::read_to_string(&path).unwrap();
+        let markers = vec![
+            json!({ "at": "12.5s", "name": "Verse" }),
+            json!({ "name": "Chorus 2", "at": "61.25s" }),
+        ];
+        let save = set_markers(&show, "tell-me", markers.clone()).unwrap();
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.ends_with(
+            "markers:\n  - { name: Verse, at: 12.5s }\n  - { name: Chorus 2, at: 61.25s }\n"
+        ));
+        let content = read(&show, TELL_ME).unwrap();
+        assert_eq!(content["markers"][1], markers[1]);
+
+        for refused in [
+            json!({ "name": "Verse", "at": "-1s" }),
+            json!({ "name": "", "at": "1s" }),
+            json!({ "name": "Verse", "at": "2 bars" }),
+        ] {
+            let error = set_markers(&show, "tell-me", vec![refused.clone()]).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{refused}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), after, "{refused}");
+        }
+
+        save.undo(&show).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn the_audio_file_is_named_keeping_its_offset() {
+        let show = fossile_copy("set-audio-file");
+        let path = show.join(TELL_ME);
+        set_audio_file(&show, "tell-me", "audio/tell-me.wav").unwrap();
+        set_audio_offset(&show, "tell-me", "1.5s".into()).unwrap();
+        set_audio_file(&show, "tell-me", "audio/tell-me.flac").unwrap();
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("\naudio: { file: audio/tell-me.flac, offset: 1.5s }\n")
+        );
     }
 
     #[test]

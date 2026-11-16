@@ -37,6 +37,19 @@
       "description": "Section names in playing order, each as often as it plays. Without it, the song has no running order and bar lines follow time_signature throughout.",
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "markers": {
+      "description": "Named points in the audio, as set in Reaper, drawn on the timeline as flags.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "at"],
+        "properties": {
+          "name": { "type": "string", "pattern": "\\S" },
+          "at": { "description": "From the start of the audio file, in ms or s, so the marker stays on the music when the offset changes.", "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?\\s*(ms|s)$" }
+        }
+      }
     }
   },
   "$defs": {
