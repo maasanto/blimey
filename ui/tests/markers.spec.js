@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { markedWav, withAudio } from './audio.js';
+import { markedWav, steadyAudioClock, withAudio } from './audio.js';
 import { test, expect } from './engine.js';
 
 // The C20 fixture at 120 BPM: verse bars 1-2, waltz (3/4) bars 3-4, verse bars 5-6, waltz bars 7-8.
@@ -18,6 +18,8 @@ const song = (show) => readFileSync(songFile(show), 'utf8');
 const overviewFlag = (page, placement, name) => page.locator('.overview .placement').nth(placement).locator(`[data-marker="${name}"]`);
 
 test('an uploaded WAV brings its markers, drawn on their bars, and plays', async ({ page, show, startEngine }) => {
+  // Played on a clock of the test's own, not the host's audio output, which may never start.
+  await steadyAudioClock(page);
   await page.addInitScript(() => {
     window.clicks = 0;
     const start = OscillatorNode.prototype.start;
