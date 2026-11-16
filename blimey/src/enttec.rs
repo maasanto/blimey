@@ -318,18 +318,30 @@ mod tests {
         let mut device = EmulatedEnttec::plug_in().unwrap();
         let mut replugged = port_on(device.path());
 
-        let hanging = logged(&mut port_on(hung.name().unwrap()), 8);
+        // A pty's buffer is a few frames on macOS but dozens on Linux: write until it is full.
+        let mut hung_port = port_on(hung.name().unwrap());
+        let mut hanging = Vec::new();
+        for _ in 0..1000 {
+            if let Some(line) = hung_port.write(&[0; DMX_CHANNELS]) {
+                let is_timeout = line.contains("timed out");
+                hanging.push(line);
+                if is_timeout {
+                    break;
+                }
+            }
+        }
+        hanging.extend(logged(&mut hung_port, 4));
         logged(&mut replugged, 2);
         device.unplug();
         logged(&mut replugged, 2);
         device.plug_back_in().unwrap();
         let back = logged(&mut replugged, 3);
 
-        assert!(hanging.len() <= 2, "{hanging:#?}");
         assert!(
             hanging.last().unwrap().contains("timed out"),
             "{hanging:#?}"
         );
+        assert_eq!(hanging.len(), 2, "{hanging:#?}");
         assert_eq!(back, [format!("enttec: sending to {}", device.path())]);
     }
 
