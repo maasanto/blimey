@@ -53,7 +53,8 @@
 
 <script>
   import { engine, request } from './engine.svelte.js';
-  import { beatsPerBar } from './duration.js';
+  import { FULL_VELOCITY } from './audition.js';
+  import { beatsPerBar, DEFAULT_BPM } from './duration.js';
   import FrontView from './FrontView.svelte';
   import { asLayers, sceneAsPixelCue } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
@@ -67,10 +68,8 @@
   const NOTE_ON = 0x91;
   const NOTE_OFF = 0x81;
   const PROGRAM_CHANGE = 0xc1;
-  const FULL_VELOCITY = 127;
   /** The highest scene or song number the engine takes: the highest MIDI note and program. */
   const HIGHEST_NUMBER = 127;
-  const DEFAULT_BPM = 120;
   /** Well inside the engine's 5 s preview lifetime (docs/api.md), so the look never flickers off. */
   const PREVIEW_REFRESH_MS = 2000;
   /** What each type of scene is called in the builder. */
@@ -89,6 +88,8 @@
   let newSong = $state(null);
   /** The song whose timeline `#builder/<song>/timeline` opens, or null. */
   let timelineSong = $state(null);
+  /** The name of the song `song` holds: until a switch loads, `songName` names the next one. */
+  let songLoaded = $state('');
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   /** The scene's look can be edited on the stage: not a fixed look that stays one. */
@@ -192,20 +193,26 @@
   async function loadSong() {
     const name = songName;
     const loaded = name ? await request('GET', songFile(name)) : null;
-    if (name === songName) showSong(loaded);
+    if (name === songName) showSong(loaded, name);
   }
 
-  function showSong(loaded) {
+  function showSong(loaded, name) {
     song = loaded;
+    songLoaded = name;
     tempo = song?.bpm ?? DEFAULT_BPM;
+  }
+
+  /** A timeline URL naming a song the show doesn't have goes home, saying why. */
+  function refuseUnknownTimeline() {
+    if (!summary || !timelineSong || summary.songs.some((entry) => entry.name === timelineSong)) return;
+    error = `There is no song ${timelineSong} in the show.`;
+    timelineSong = null;
+    location.replace('#builder');
   }
 
   async function loadSummary() {
     summary = await request('GET', '/api/show');
-    if (timelineSong && !summary.songs.some((entry) => entry.name === timelineSong)) {
-      error = `There is no song ${timelineSong} in the show.`;
-      location.replace('#builder');
-    }
+    refuseUnknownTimeline();
     if (!summary.songs.some((entry) => entry.name === songName)) songName = summary.songs[0]?.name ?? '';
   }
 
@@ -245,6 +252,7 @@
     // A scene with unsaved edits stays on screen, and the URL goes back to it below.
     if (!isDirty()) {
       timelineSong = timelineInUrl();
+      refuseUnknownTimeline();
       if (timelineSong) songName = timelineSong;
     }
     const next = sceneInUrl();
@@ -329,7 +337,7 @@
     const loaded = await request('GET', songFile(scene.song));
     if (opened !== scene) return;
     songName = scene.song;
-    showSong(loaded);
+    showSong(loaded, scene.song);
     const cue = song.cues?.[scene.number];
     if (!cue) {
       form = { ...newForm(), number: scene.number };
@@ -651,25 +659,30 @@
   <div class="bar">
     <a class="back" href="#builder">← Scenes</a>
     <strong class="title">Song {summary?.songs.find((entry) => entry.name === timelineSong)?.program ?? ''} · {timelineSong}: timeline</strong>
-    <button disabled={!song?.arrangement?.length} onclick={() => location.assign(`/api/songs/${timelineSong}/arrangement.mid`)}>Export for Reaper</button>
+    <button disabled={!song?.arrangement?.length || songLoaded !== timelineSong} onclick={() => location.assign(`/api/songs/${encodeURIComponent(timelineSong)}/arrangement.mid`)}
+      >Export for Reaper</button
+    >
     {@render history()}
   </div>
-  {#if song && songName === timelineSong}
-    <Timeline
-      {songName}
-      {song}
-      {editable}
-      {isPlaying}
-      {attempt}
-      onsaved={async (message) => {
-        notice = message;
-        await reloadAfterSave();
-      }}
-      onhold={(number, velocity) => attempt(() => fire(number, velocity))}
-      onrelease={(number) => attempt(() => release(number))}
-      onaudition={(number) => attempt(() => audition(number))}
-      onopenscene={(number) => (location.hash = sceneHash({ song: songName, number }))}
-    />
+  <!-- Keyed by song: a switch to another song's timeline starts with nothing open or selected. -->
+  {#if song && songLoaded === timelineSong}
+    {#key timelineSong}
+      <Timeline
+        {songName}
+        {song}
+        {editable}
+        {isPlaying}
+        {attempt}
+        onsaved={async (message) => {
+          notice = message;
+          await reloadAfterSave();
+        }}
+        onhold={(number, velocity) => attempt(() => fire(number, velocity))}
+        onrelease={(number) => attempt(() => release(number))}
+        onaudition={(number) => attempt(() => audition(number))}
+        onopenscene={(number) => (location.hash = sceneHash({ song: songName, number }))}
+      />
+    {/key}
   {/if}
 {:else}
   <div class="bar">
@@ -716,6 +729,7 @@
     <ScenePads
       {songName}
       cues={song.cues}
+      tempo={song.bpm}
       {editable}
       {isPlaying}
       onopen={(number) => (location.hash = sceneHash({ song: songName, number }))}
