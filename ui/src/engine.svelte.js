@@ -50,12 +50,13 @@ function countFrame() {
 
 connect();
 
-/** Calls the HTTP API; throws the engine's error message on failure. */
+/** Calls the HTTP API with `body` as JSON, or as it is for a file; throws the engine's error message on failure. */
 export async function request(method, path, body) {
+  const isJson = body !== undefined && !(body instanceof Blob);
   const response = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: isJson ? { 'content-type': 'application/json' } : {},
+    body: isJson ? JSON.stringify(body) : body,
   });
   if (!response.ok) {
     const refusal = await response.json().catch(() => null);

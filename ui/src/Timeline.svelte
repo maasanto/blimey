@@ -29,6 +29,9 @@
   const DIMMEST_SHADE = 0.35;
   const TIME_SIGNATURE = /^[1-9][0-9]*\/[1-9][0-9]*$/;
   const WAVEFORM_PX = 40;
+  /** How far a marker must be dragged to move, so a click on it only selects it. */
+  const MARKER_DRAG_PX = 3;
+  const AUDIO_TYPES = '.wav,.mp3,.flac,audio/wav,audio/mpeg,audio/flac';
 
   let openName = $state(null);
   let newName = $state('');
@@ -95,8 +98,43 @@
   const savedOffset = $derived(secondsOf(song.audio?.offset));
   const offset = $derived(draggedOffset ?? savedOffset);
   const playheadBeat = $derived((playback.position * bpm) / 60);
-  const playingPlacement = $derived(placements.find((placed) => playheadBeat >= placed.startBeat && playheadBeat < placed.startBeat + placed.section.beats) ?? null);
+  const playingPlacement = $derived(placementAt(playheadBeat));
   const audioFile = $derived(song.audio?.file ?? null);
+  /** Bumped on each upload, so a file under the same name loads anew rather than from the cache. */
+  let audioVersion = $state(0);
+  /** The name of the file being uploaded; null otherwise. */
+  let uploading = $state(null);
+  let isDroppingFile = $state(false);
+  let audioInput = $state();
+
+  /** The placement last opened from the strip or the overview, whose markers the section editor shows. */
+  let openPlacementIndex = $state(null);
+  /** Where the section editor's ruler lies in the song: the placement playing, the one opened, or the section's first. */
+  const editorPlacement = $derived.by(() => {
+    if (playingPlacement?.name === openSection?.name) return playingPlacement;
+    const opened = placements[openPlacementIndex];
+    return opened?.name === openSection?.name ? opened : (placements.find((placed) => placed.name === openSection?.name) ?? null);
+  });
+
+  /** The song's markers as the file lists them, `at` in seconds into the audio, `index` their rank there. */
+  const markers = $derived((song.markers ?? []).map(({ name, at }, index) => ({ index, name, at: secondsOf(at) })));
+  let selectedMarkerIndex = $state(null);
+  const selectedMarker = $derived(markers[selectedMarkerIndex] ?? null);
+  /** The marker being dragged, as shown until it saves: its index and where it is, in seconds into the audio. */
+  let draggedMarker = $state.raw(null);
+  /** The press on a marker, not reactive: the pointer, the marker and the placement it is dragged in. */
+  let markerPress = null;
+  /** The markers from bar 1 to the end of the arrangement, each with the placement and bar it falls in and its beat in the song. */
+  const markerSpots = $derived(
+    markers.flatMap((marker) => {
+      const at = draggedMarker?.index === marker.index ? draggedMarker.at : marker.at;
+      const beat = ((at - offset) * bpm) / 60;
+      const placed = placementAt(beat);
+      return beat >= 0 && placed ? [{ ...marker, at, beat, placed, bar: barAt(placed, beat) }] : [];
+    }),
+  );
+  const editorSpots = $derived(markerSpots.filter((spot) => spot.placed.index === editorPlacement?.index));
+  const selectedSpot = $derived(markerSpots.find((spot) => spot.index === selectedMarkerIndex));
 
   /** Counts event loads, so a slow one that a newer one replaced is dropped. */
   let eventLoads = 0;
@@ -117,7 +155,8 @@
   });
 
   $effect(() => {
-    playback.loadAudio(audioFile && `${songPath}/audio`).catch((failure) => attempt(() => Promise.reject(failure)));
+    const url = audioFile && `${songPath}/audio${audioVersion ? `?upload=${audioVersion}` : ''}`;
+    playback.loadAudio(url).catch((failure) => attempt(() => Promise.reject(failure)));
   });
 
   $effect(() => {
@@ -149,26 +188,199 @@
     seekToBeat(placed.startBeat + clamp((event.clientX - box.left) / box.width, 0, 1) * placed.section.beats);
   }
 
-  /** Seeks to where the click landed on the section editor's ruler: in the placement playing, or the section's first. */
-  function seekInSection(event, section) {
-    const placed = playingPlacement?.name === section.name ? playingPlacement : placements.find((other) => other.name === section.name);
-    if (!placed) return;
+  /** The song's beat where the event landed on the section editor's ruler, in the placement it shows; null outside the arrangement. */
+  function rulerBeat(event) {
+    if (!editorPlacement) return null;
     const beat = (event.clientX - event.currentTarget.getBoundingClientRect().left) / beatPx;
-    seekToBeat(placed.startBeat + clamp(beat, 0, section.beats));
+    return editorPlacement.startBeat + clamp(beat, 0, editorPlacement.section.beats);
   }
 
-  /** Space plays and pauses, unless typing or on a control, which Space presses. */
-  function spaceBar(event) {
-    const isOnControl = event.target.closest?.('input, textarea, select, button, a, [role="button"], [contenteditable]');
-    if (event.key !== ' ' || event.repeat || !canPlay || isOnControl) return;
-    event.preventDefault();
-    togglePlayback();
+  function seekInSection(event) {
+    const beat = rulerBeat(event);
+    if (beat !== null) seekToBeat(beat);
   }
+
+  /**
+   * Space plays and pauses, unless typing or on a control, which Space presses; M adds a marker
+   * at the playhead, unless typing.
+   */
+  function shortcut(event) {
+    if (event.repeat || document.querySelector('dialog[open]')) return;
+    const isTyping = event.target.closest?.('input, textarea, select, [contenteditable]');
+    const isOnControl = isTyping || event.target.closest?.('button, a, [role="button"]');
+    if (event.key === ' ' && canPlay && !isOnControl) {
+      event.preventDefault();
+      togglePlayback();
+    }
+    const isPlainM = event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey && !event.altKey;
+    if (isPlainM && editable && !isTyping) {
+      event.preventDefault();
+      edit(addMarker, offset + playback.position);
+    }
+  }
+
+  const placementAt = (beat) => placements.find((placed) => beat >= placed.startBeat && beat < placed.startBeat + placed.section.beats) ?? null;
+  const barAt = ({ bar, startBeat, section }, beat) => bar + Math.floor((beat - startBeat) / section.barBeats);
 
   function whereLabel() {
     if (!playingPlacement) return `End · ${minutes(playback.position)}`;
-    const { bar, startBeat, section } = playingPlacement;
-    return `Bar ${bar + Math.floor((playheadBeat - startBeat) / section.barBeats)} · ${minutes(playback.position)}`;
+    return `Bar ${barAt(playingPlacement, playheadBeat)} · ${minutes(playback.position)}`;
+  }
+
+  function openPlacement(placed) {
+    openName = placed.name;
+    openPlacementIndex = placed.index;
+  }
+
+  const roundedSeconds = (seconds) => Math.round(seconds * 1000) / 1000;
+  const countOf = (count) => `${count} marker${count === 1 ? '' : 's'}`;
+  const markerFile = ({ name, at }) => ({ name, at: formatLength(roundedSeconds(at), 's') });
+
+  /** Saves `next` as the song's markers, in time order. */
+  async function saveMarkers(next, message) {
+    await request('PUT', `${songPath}/markers`, { markers: next.toSorted((a, b) => a.at - b.at).map(markerFile) });
+    await onsaved(`${message} Undo takes it back.`);
+  }
+
+  async function addMarker(at) {
+    const name = `Marker ${markers.length + 1}`;
+    const rounded = roundedSeconds(at);
+    await saveMarkers([...markers, { name, at: rounded }], `Added ${name}, ${rounded} s into the audio.`);
+    selectedMarkerIndex = markers.findIndex((marker) => marker.name === name && marker.at === rounded);
+  }
+
+  function addMarkerOnRuler(event) {
+    const beat = rulerBeat(event);
+    if (editable && beat !== null) edit(addMarker, offset + (beat * 60) / bpm);
+  }
+
+  async function renameMarker(index, name) {
+    if (!name) throw new Error('Give the marker a name.');
+    const marker = markers[index];
+    if (!marker || marker.name === name) return;
+    await saveMarkers(
+      markers.map((other) => (other === marker ? { ...marker, name } : other)),
+      `Renamed marker ${marker.name} to ${name}.`,
+    );
+  }
+
+  async function moveMarker(index, at) {
+    const marker = markers[index];
+    if (!marker) return;
+    const rounded = roundedSeconds(at);
+    await saveMarkers(
+      markers.map((other) => (other === marker ? { ...marker, at: rounded } : other)),
+      `Moved ${marker.name} to ${rounded} s into the audio.`,
+    );
+    selectedMarkerIndex = markers.findIndex((other) => other.name === marker.name && other.at === rounded);
+  }
+
+  async function deleteMarker(index) {
+    const marker = markers[index];
+    if (!marker) return;
+    await saveMarkers(
+      markers.filter((other) => other !== marker),
+      `Deleted marker ${marker.name}.`,
+    );
+    selectedMarkerIndex = null;
+  }
+
+  function pressMarker(event, spot) {
+    if (!editable || event.button !== 0) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    selectedMarkerIndex = spot.index;
+    markerPress = { pointer: event.pointerId, x: event.clientX, spot };
+  }
+
+  /** Moves the marker with the pointer, inside the placement it is dragged in so it stays on the ruler. */
+  function slideMarker(event) {
+    if (markerPress?.pointer !== event.pointerId) return;
+    const { x, spot } = markerPress;
+    if (!draggedMarker && Math.abs(event.clientX - x) < MARKER_DRAG_PX) return;
+    const { startBeat, section } = spot.placed;
+    const beat = clamp(spot.beat + (event.clientX - x) / beatPx, startBeat, startBeat + section.beats - 0.01);
+    draggedMarker = { index: spot.index, at: offset + (beat * 60) / bpm };
+  }
+
+  async function dropMarker(event) {
+    if (markerPress?.pointer !== event.pointerId) return;
+    markerPress = null;
+    const moved = draggedMarker;
+    if (!moved) return;
+    await edit(moveMarker, moved.index, moved.at);
+    if (draggedMarker === moved) draggedMarker = null;
+  }
+
+  function cancelMarkerDrag(event) {
+    if (markerPress?.pointer !== event.pointerId) return;
+    markerPress = null;
+    draggedMarker = null;
+  }
+
+  function markerKey(event, spot) {
+    if (!editable || (event.key !== 'Delete' && event.key !== 'Backspace')) return;
+    event.preventDefault();
+    edit(deleteMarker, spot.index);
+  }
+
+  /** Asks before markers already on the song give way to `count` from the audio; resolves true to replace them. */
+  let replacePrompt = $state();
+  let replaceQuestion = $state('');
+  function askToReplace(count) {
+    replaceQuestion = `This song has ${countOf(markers.length)}. Replace them with the ${countOf(count)} in the audio file?`;
+    replacePrompt.returnValue = '';
+    replacePrompt.showModal();
+    return new Promise((resolve) => replacePrompt.addEventListener('close', () => resolve(replacePrompt.returnValue === 'replace'), { once: true }));
+  }
+
+  /** Gives the song the markers `found` in `source`, asking first if it has some. */
+  async function takeMarkers(found, source) {
+    if (markers.length && !(await askToReplace(found.length))) return;
+    await saveMarkers(
+      found.map(({ name, at }) => ({ name, at: secondsOf(at) })),
+      `Took ${countOf(found.length)} from ${source}.`,
+    );
+  }
+
+  async function uploadAudio(file) {
+    if (!file) return;
+    uploading = file.name;
+    try {
+      const { file: stored, markers: found } = await request('PUT', `${songPath}/audio`, file);
+      audioVersion += 1;
+      await onsaved(`Uploaded ${file.name} as ${stored}. Undo takes back the song file, not the audio.`);
+      if (found.length) await takeMarkers(found, file.name);
+    } finally {
+      uploading = null;
+    }
+  }
+
+  async function importMarkers() {
+    const { markers: found } = await request('GET', `${songPath}/audio/markers`);
+    if (!found.length) throw new Error(`${audioFile} holds no markers: render it from Reaper with its markers, or add them here.`);
+    await takeMarkers(found, audioFile);
+  }
+
+  const isFileDrag = (event) => editable && event.dataTransfer.types.includes('Files');
+
+  function dragFile(event) {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    isDroppingFile = true;
+  }
+
+  function dropFile(event) {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    isDroppingFile = false;
+    edit(uploadAudio, event.dataTransfer.files[0]);
+  }
+
+  function chooseFile(event) {
+    const [file] = event.currentTarget.files;
+    event.currentTarget.value = '';
+    edit(uploadAudio, file);
   }
 
   /** Each placement with where its beats lie on the overview, from its left edge, in CSS pixels. */
@@ -518,12 +730,24 @@
   }
 </script>
 
-<svelte:window onkeydown={spaceBar} />
+<svelte:window onkeydown={shortcut} />
 
-<section class="arrangement" aria-label="Arrangement">
+<section
+  class="arrangement"
+  class:dropping={isDroppingFile}
+  aria-label="Arrangement"
+  ondragover={dragFile}
+  ondragleave={() => (isDroppingFile = false)}
+  ondrop={dropFile}
+>
   <div class="heading">
     <h2>Arrangement</h2>
     <span class="hint" data-testid="song-length">{totalBars} bars · {minutes(totalSeconds)}</span>
+    <span class="row audio-actions">
+      <button disabled={!editable || uploading} onclick={() => audioInput.click()}>Upload audio…</button>
+      <input type="file" hidden aria-label="Audio file" accept={AUDIO_TYPES} bind:this={audioInput} onchange={chooseFile} />
+      <button disabled={!editable || !audioFile || playback.isAudioMissing} onclick={() => edit(importMarkers)}>Import markers from audio</button>
+    </span>
   </div>
   {#if placements.length}
     <div class="row transport">
@@ -531,8 +755,10 @@
       <button class="primary" title="Space" disabled={!canPlay} onclick={togglePlayback}>{playback.isPlaying ? 'Pause' : 'Play'}</button>
       <span class="where" data-testid="playhead">{whereLabel()}</span>
       <span class="hint" data-testid="audio">
-        {#if !audioFile}
-          No audio for this song: it plays with a click. To play its bounce, put the file in the show's audio/ folder and name it in the song file.
+        {#if uploading}
+          Uploading {uploading}…
+        {:else if !audioFile}
+          No audio for this song: it plays with a click.{editable ? ' Upload its bounce, WAV, MP3 or FLAC, or drop the file here.' : ''}
         {:else if playback.isAudioMissing}
           No file at {audioFile}: the song plays silent, with a click.
         {:else if !playback.audio}
@@ -553,7 +779,7 @@
           ondragover={(event) => accepts(event, PLACEMENT_DRAG_TYPE)}
           ondrop={(event) => dropPlacement(event, { index: placed.index, name: placed.name })}
         >
-          <button class="quiet" aria-label="{placed.name} from bar {placed.bar}" onclick={() => (openName = placed.name)}>
+          <button class="quiet" aria-label="{placed.name} from bar {placed.bar}" onclick={() => openPlacement(placed)}>
             {placed.name} <span class="hint">{placed.section.bars} bars</span>
           </button>
           <button class="quiet" aria-label="Take {placed.name} at bar {placed.bar} out of the arrangement" disabled={!editable} onclick={() => edit(unplace, placed.index, placed.name)}>×</button>
@@ -578,7 +804,7 @@
           style:flex-grow={placed.section.beats}
           data-placement={placed.name}
           onclick={(event) => {
-            openName = placed.name;
+            openPlacement(placed);
             seekInPlacement(event, placed);
           }}
         >
@@ -586,6 +812,9 @@
           {#if placed.index === playingPlacement?.index}
             <span class="playhead" style:left="{((playheadBeat - placed.startBeat) / placed.section.beats) * 100}%"></span>
           {/if}
+          {#each markerSpots.filter((spot) => spot.placed.index === placed.index) as spot (spot.index)}
+            <span class="flag" data-marker={spot.name} title="{spot.name} · bar {spot.bar}" style:left="{((spot.beat - placed.startBeat) / placed.section.beats) * 100}%"></span>
+          {/each}
           {#each placed.section.blocks as block (`${block.scene}:${block.nth}`)}
             <span
               class="mini"
@@ -678,13 +907,42 @@
         {#if playingPlacement?.name === section.name}
           <span class="playhead" style:left="{LANE_LABEL_PX + (playheadBeat - playingPlacement.startBeat) * beatPx}px"></span>
         {/if}
+        {#each editorSpots as spot (spot.index)}
+          <span class="marker-line" style:left="{LANE_LABEL_PX + (spot.beat - spot.placed.startBeat) * beatPx}px"></span>
+        {/each}
         <div class="lane">
-          <span></span>
-          <!-- Seeking by keyboard goes through the overview's buttons. -->
+          <span class="lane-name">{editorPlacement ? `From bar ${editorPlacement.bar}` : ''}</span>
+          <!-- Seeking by keyboard goes through the overview's buttons; a marker is added at the playhead with M. -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <div class="ruler track" class:seekable={canPlay} style:width="{section.beats * beatPx}px" data-testid="ruler" role="presentation" onclick={(event) => seekInSection(event, section)}>
+          <div
+            class="ruler track"
+            class:seekable={canPlay}
+            style:width="{section.beats * beatPx}px"
+            data-testid="ruler"
+            role="presentation"
+            onclick={seekInSection}
+            ondblclick={addMarkerOnRuler}
+          >
             {#each { length: section.bars } as _, bar (bar)}
               <span class="bar-number" style:left="{bar * section.barBeats * beatPx}px">{bar + 1}</span>
+            {/each}
+            {#each editorSpots as spot (spot.index)}
+              <button
+                class="marker"
+                class:selected={spot.index === selectedMarkerIndex}
+                aria-label="Marker {spot.name}, bar {spot.bar}"
+                style:left="{(spot.beat - spot.placed.startBeat) * beatPx}px"
+                onpointerdown={(event) => pressMarker(event, spot)}
+                onpointermove={slideMarker}
+                onpointerup={dropMarker}
+                onpointercancel={cancelMarkerDrag}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  selectedMarkerIndex = spot.index;
+                }}
+                ondblclick={(event) => event.stopPropagation()}
+                onkeydown={(event) => markerKey(event, spot)}>{spot.name}</button
+              >
             {/each}
           </div>
         </div>
@@ -719,6 +977,16 @@
         {/each}
       </div>
 
+      {#if selectedMarker}
+        {@const marker = selectedMarker}
+        <fieldset class="row" disabled={!editable}>
+          {#key song}
+            <label>Marker <input aria-label="Marker name" value={marker.name} onchange={(event) => change(event, marker.name, renameMarker, marker.index)} /></label>
+          {/key}
+          <span class="hint">{roundedSeconds(marker.at)} s into the audio{selectedSpot ? `, bar ${selectedSpot.bar}` : ''}</span>
+          <button class="danger" onclick={() => edit(deleteMarker, marker.index)}>Delete marker</button>
+        </fieldset>
+      {/if}
       {#if selectedBlock}
         {@const block = selectedBlock}
         <fieldset class="row" disabled={!editable}>
@@ -732,13 +1000,21 @@
       {/if}
       <p class="hint">
         Drag a block to move it, its end to resize it, a beat at a time; hold it to audition its scene. The arrangement and the overview light up
-        everywhere this section plays.
+        everywhere this section plays. Double-click the ruler, or press M at the playhead, to add a marker; drag it to move it.
       </p>
     {:else}
       <p class="hint">Create a section, then drag scenes onto it.</p>
     {/if}
   </section>
 </div>
+
+<dialog class="ask" bind:this={replacePrompt} aria-labelledby="replace-question">
+  <p id="replace-question">{replaceQuestion}</p>
+  <form class="row" method="dialog">
+    <button class="primary" value="replace">Replace markers</button>
+    <button class="quiet" value="keep">Keep the song's</button>
+  </form>
+</dialog>
 
 <style>
   fieldset {
@@ -757,6 +1033,76 @@
 
   .heading h2 {
     margin: 0;
+  }
+
+  .audio-actions {
+    margin-left: auto;
+  }
+
+  .arrangement.dropping {
+    outline: 2px dashed var(--accent);
+    outline-offset: 6px;
+    border-radius: var(--radius);
+  }
+
+  .flag {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    pointer-events: none;
+    background: var(--marker);
+  }
+
+  .marker-line {
+    position: absolute;
+    top: 20px;
+    bottom: 0;
+    width: 1px;
+    pointer-events: none;
+    background: var(--marker);
+    opacity: 0.5;
+  }
+
+  .marker {
+    position: absolute;
+    top: 0;
+    z-index: 2;
+    max-width: 12em;
+    height: 18px;
+    padding: 0 5px;
+    overflow: hidden;
+    font: 11px var(--mono);
+    color: var(--accent-ink);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: ew-resize;
+    background: var(--marker);
+    border: 0;
+    border-radius: 0 4px 4px 0;
+    touch-action: none;
+  }
+
+  .marker.selected {
+    box-shadow: 0 0 0 2px var(--text);
+  }
+
+  .ask {
+    min-width: 24em;
+    padding: 20px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+  }
+
+  .ask::backdrop {
+    background: rgb(0 0 0 / 0.6);
+  }
+
+  .ask p {
+    margin: 0 0 14px;
   }
 
   .tiles {
