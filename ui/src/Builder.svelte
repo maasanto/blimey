@@ -60,6 +60,7 @@
   import ScenePads from './ScenePads.svelte';
   import StageComposer from './StageComposer.svelte';
   import SwellEditor from './SwellEditor.svelte';
+  import Timeline from './Timeline.svelte';
 
   // Until the Reaper control chunk, song N is channel-2 Program Change N and scene N channel-2
   // note N (docs/api.md, Scenes and songs in the builder).
@@ -86,6 +87,8 @@
   let steps = $state({ undo: 0, redo: 0 });
   /** The new-song form while it is open. */
   let newSong = $state(null);
+  /** The song whose timeline `#builder/<song>/timeline` opens, or null. */
+  let timelineSong = $state(null);
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   /** The scene's look can be edited on the stage: not a fixed look that stays one. */
@@ -178,6 +181,13 @@
     return name && /^\d+$/.test(number ?? '') ? { song: name, number: Number(number) } : null;
   }
 
+  const timelineHash = (name) => `#builder/${name}/timeline`;
+
+  function timelineInUrl() {
+    const [, name, screen] = location.hash.slice(1).split('/');
+    return name && screen === 'timeline' ? name : null;
+  }
+
   /** Loads the selected song; a response for a song switched away from meanwhile is dropped. */
   async function loadSong() {
     const name = songName;
@@ -192,6 +202,10 @@
 
   async function loadSummary() {
     summary = await request('GET', '/api/show');
+    if (timelineSong && !summary.songs.some((entry) => entry.name === timelineSong)) {
+      error = `There is no song ${timelineSong} in the show.`;
+      location.replace('#builder');
+    }
     if (!summary.songs.some((entry) => entry.name === songName)) songName = summary.songs[0]?.name ?? '';
   }
 
@@ -228,6 +242,11 @@
 
   function followUrl() {
     if (!location.hash.startsWith('#builder')) return;
+    // A scene with unsaved edits stays on screen, and the URL goes back to it below.
+    if (!isDirty()) {
+      timelineSong = timelineInUrl();
+      if (timelineSong) songName = timelineSong;
+    }
     const next = sceneInUrl();
     if (next?.song === opened?.song && next?.number === opened?.number) return;
     if (isDirty()) {
@@ -475,13 +494,13 @@
 
   const release = (number) => midi([NOTE_OFF, number, 0]);
 
-  async function fire(number) {
+  async function fire(number, velocity = FULL_VELOCITY) {
     if (engine.frame?.song !== songName) {
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
     }
     // The engine takes the preview off the output so the scene shows; editing brings it back.
     if (shown) pausedLook = JSON.stringify(shown);
-    await midi([NOTE_ON, number, FULL_VELOCITY]);
+    await midi([NOTE_ON, number, velocity]);
   }
 
   /** ⌘S / Ctrl+S saves the open scene, ⌘↩ / Ctrl+↩ auditions or releases it. */
@@ -508,6 +527,13 @@
     Show mode: the builder is read-only. Start the engine with <code>--edit</code> to build looks, save scenes and audition them.
   </p>
 {/if}
+
+{#snippet history()}
+  <span class="history">
+    <button class="quiet" disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
+    <button class="quiet" disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
+  </span>
+{/snippet}
 
 {#if opened}
   <fieldset class="scene" disabled={!editable || !song}>
@@ -621,6 +647,30 @@
       <div><FrontView overlay={preview} /></div>
     </div>
   {/if}
+{:else if timelineSong}
+  <div class="bar">
+    <a class="back" href="#builder">← Scenes</a>
+    <strong class="title">Song {summary?.songs.find((entry) => entry.name === timelineSong)?.program ?? ''} · {timelineSong}: timeline</strong>
+    <button disabled={!song?.arrangement?.length} onclick={() => location.assign(`/api/songs/${timelineSong}/arrangement.mid`)}>Export for Reaper</button>
+    {@render history()}
+  </div>
+  {#if song && songName === timelineSong}
+    <Timeline
+      {songName}
+      {song}
+      {editable}
+      {isPlaying}
+      {attempt}
+      onsaved={async (message) => {
+        notice = message;
+        await reloadAfterSave();
+      }}
+      onhold={(number, velocity) => attempt(() => fire(number, velocity))}
+      onrelease={(number) => attempt(() => release(number))}
+      onaudition={(number) => attempt(() => audition(number))}
+      onopenscene={(number) => (location.hash = sceneHash({ song: songName, number }))}
+    />
+  {/if}
 {:else}
   <div class="bar">
     <label>
@@ -640,10 +690,8 @@
       </label>
       <button onclick={() => attempt(setTempo)}>Set tempo</button>
     </fieldset>
-    <span class="history">
-      <button class="quiet" disabled={!editable || !steps.undo} onclick={() => attempt(() => step('undo'))}>Undo ({steps.undo})</button>
-      <button class="quiet" disabled={!editable || !steps.redo} onclick={() => attempt(() => step('redo'))}>Redo ({steps.redo})</button>
-    </span>
+    <button disabled={!song} onclick={() => (location.hash = timelineHash(songName))}>Timeline</button>
+    {@render history()}
   </div>
   {#if newSong}
     <fieldset class="new-song" disabled={!editable}>
