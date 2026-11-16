@@ -422,6 +422,7 @@ test('thumbnails the engine refuses are cleared, saying why', async ({ page, sho
 
   const refusal = 'songs/demo.yaml: cue 40: speed is too long to render a cycle of';
   await page.route('**/api/songs/demo/thumbnails', (route) => route.fulfill({ status: 422, json: { error: refusal } }));
+  await page.getByLabel('Metronome').fill('121');
   await page.getByRole('button', { name: 'Set tempo' }).click();
 
   await expect(page.getByRole('alert')).toHaveText(`Thumbnails: ${refusal}`);
