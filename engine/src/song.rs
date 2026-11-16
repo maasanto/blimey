@@ -151,21 +151,26 @@ fn line_in_section(yaml: &str, name: &str, block: Option<usize>) -> Option<usize
             .strip_prefix(key)
             .is_some_and(|rest| rest.starts_with(':'))
     };
-    let nested = |parent: usize| {
+    // The lines one level under `parent`: nested deeper than it, at the depth of the first.
+    let children = |parent: usize| {
         let parent_indent = indent(lines[parent]);
-        lines[parent + 1..]
+        let nested = lines[parent + 1..]
             .iter()
             .enumerate()
-            .take_while(move |(_, line)| line.trim().is_empty() || indent(line) > parent_indent)
+            .filter(|(_, line)| !line.trim().is_empty())
+            .take_while(move |(_, line)| indent(line) > parent_indent);
+        let child_indent = nested.clone().next().map(|(_, line)| indent(line));
+        nested
+            .filter(move |(_, line)| Some(indent(line)) == child_indent)
             .map(move |(offset, line)| (parent + 1 + offset, *line))
     };
     let sections = lines
         .iter()
         .position(|line| indent(line) == 0 && is_key(line, "sections"))?;
-    let (section, _) = nested(sections).find(|(_, line)| is_key(line, name))?;
+    let (section, _) = children(sections).find(|(_, line)| is_key(line, name))?;
     let block_line = block.and_then(|block| {
-        let (blocks, _) = nested(section).find(|(_, line)| is_key(line, "blocks"))?;
-        nested(blocks)
+        let (blocks, _) = children(section).find(|(_, line)| is_key(line, "blocks"))?;
+        children(blocks)
             .filter(|(_, line)| line.trim_start().starts_with('-'))
             .nth(block)
     });
@@ -603,12 +608,29 @@ mod tests {
             ),
             (
                 ("bars: 1", "bars: 0"),
-                "line 11: section bridge: bars must be 1 or more",
+                "line 11: section bridge: bars must be from 1 to 9999",
+            ),
+            (
+                ("bars: 1", "bars: 4294967295"),
+                "line 11: section bridge: bars must be from 1 to 9999",
+            ),
+            (
+                ("length: 1.5 beats", "length: 0.0001 beats"),
+                "line 10: section verse: block 2: length 0.0001 beats is too short to play: make it at least 1/960 beat",
             ),
         ];
         for ((from, to), expected) in refused {
             assert_eq!(error(&ARRANGED.replacen(from, to, 1)), expected, "{to}");
         }
+        assert_eq!(
+            error(
+                &ARRANGED
+                    .replace("bridge", "bars")
+                    .replacen("bars: 1", "bars: 0", 1)
+            ),
+            "line 11: section bars: bars must be from 1 to 9999",
+            "a section named like a key is found as a section"
+        );
     }
 
     #[test]

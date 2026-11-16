@@ -666,10 +666,11 @@ fn leading_comment(text: &str) -> &str {
 }
 
 /// Readers see the old file or the new one, never half of one, even if the engine dies mid-write.
-fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
-    let temporary = path.with_extension("yaml.tmp");
+pub(crate) fn write_atomically(path: &Path, content: impl AsRef<[u8]>) -> io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
     let mut file = fs::File::create(&temporary)?;
-    file.write_all(text.as_bytes())?;
+    file.write_all(content.as_ref())?;
     file.sync_all()?;
     fs::rename(&temporary, path)
 }

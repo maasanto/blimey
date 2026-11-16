@@ -41,7 +41,7 @@
       "additionalProperties": false,
       "required": ["bars"],
       "properties": {
-        "bars": { "description": "The section's length.", "type": "integer", "minimum": 1 },
+        "bars": { "description": "The section's length.", "type": "integer", "minimum": 1, "maximum": 9999 },
         "time_signature": { "description": "For its bar lines and its blocks' bars, when it differs from the song's.", "$ref": "#/$defs/timeSignature" },
         "blocks": { "type": "array", "items": { "$ref": "#/$defs/block" } }
       }

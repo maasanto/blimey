@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::clock_follower::{BarGrid, BarStretch};
 use crate::duration::{Length, TimeSignature};
 use crate::look::Level;
+use crate::Show;
 use crate::midi_file::MidiFile;
+use crate::show_file::write_atomically;
 use crate::song::Song;
 
 /// The show folder's subfolder for exported MIDI files, kept out of git.
@@ -22,6 +24,8 @@ pub(crate) const TICKS_PER_BEAT: u16 = 960;
 const MIDI_DATA_MAX: f32 = 127.0;
 /// Room for rounding when comparing beats worked out along different paths.
 const BEAT_EPSILON: f64 = 1e-9;
+/// Far longer than any section, and short enough that bar numbers never overflow.
+pub const MAX_BARS: u32 = 9999;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,8 +87,8 @@ impl SectionFile {
             .transpose()
             .map_err(|error| (None, error))?
             .unwrap_or(song_signature);
-        if self.bars == 0 {
-            return Err((None, "bars must be 1 or more".into()));
+        if !(1..=MAX_BARS).contains(&self.bars) {
+            return Err((None, format!("bars must be from 1 to {MAX_BARS}")));
         }
         let mut section = Section {
             bars: self.bars,
@@ -132,6 +136,12 @@ impl BlockFile {
             return Err(format!(
                 "runs {} beats past the end of the section",
                 end - section.beats()
+            ));
+        }
+        // Its note on and off would share a tick, where the off plays first: the scene would stick.
+        if tick(start) == tick(end) {
+            return Err(format!(
+                "length {length} beats is too short to play: make it at least 1/{TICKS_PER_BEAT} beat"
             ));
         }
         Ok(Block {
@@ -191,7 +201,7 @@ fn placements<'song>(
                 bar,
             };
             beats += section.beats();
-            bar += section.bars;
+            bar = bar.saturating_add(section.bars);
             placement
         })
         .collect()
@@ -222,7 +232,7 @@ pub(crate) fn bar_grid(
     let (beats, bar) = placed.last().map_or((0.0, 1), |last| {
         (
             last.beats + last.section.beats(),
-            last.bar + last.section.bars,
+            last.bar.saturating_add(last.section.bars),
         )
     });
     stretches.push(stretch(beats, bar, song_signature));
@@ -369,11 +379,46 @@ pub fn export(show_dir: &Path, song: &Song) -> io::Result<Option<PathBuf>> {
     if song.arrangement.is_empty() {
         return Ok(None);
     }
+    write_export(show_dir, &song.name, &midi_file(song)?).map(Some)
+}
+
+/// Writes `bytes` as the exported file of song `name`, atomically, so Reaper never reads half
+/// of one; returns its path.
+pub fn write_export(show_dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     let folder = show_dir.join(EXPORT_DIR);
-    let path = folder.join(format!("{}.mid", song.name));
-    let in_path =
-        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
-    fs::create_dir_all(&folder).map_err(in_path)?;
-    fs::write(&path, midi_file(song)?).map_err(in_path)?;
-    Ok(Some(path))
+    let path = folder.join(format!("{name}.mid"));
+    fs::create_dir_all(&folder)
+        .and_then(|()| write_atomically(&path, bytes))
+        .map_err(|error| in_path(&path, error))?;
+    Ok(path)
+}
+
+/// Removes the exported files of songs `show` doesn't arrange: an arrangement cleared, or a
+/// song renamed or gone.
+pub fn remove_stale_exports(show_dir: &Path, show: &Show) -> io::Result<()> {
+    let folder = show_dir.join(EXPORT_DIR);
+    let entries = match fs::read_dir(&folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(in_path(&folder, error)),
+    };
+    for entry in entries {
+        let path = entry.map_err(|error| in_path(&folder, error))?.path();
+        let is_arranged = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|name| {
+                show.songs
+                    .iter()
+                    .any(|song| song.name == name && !song.arrangement.is_empty())
+            });
+        if path.extension() == Some("mid".as_ref()) && !is_arranged {
+            fs::remove_file(&path).map_err(|error| in_path(&path, error))?;
+        }
+    }
+    Ok(())
+}
+
+fn in_path(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
