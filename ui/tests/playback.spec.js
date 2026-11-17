@@ -110,6 +110,32 @@ test('a click on the ruler seeks there, firing the scenes playing at that point'
   await page.getByRole('button', { name: 'Pause' }).click();
 });
 
+test('playback goes on while another tab is shown, the timeline follows it on return, and a scene editor pauses it', async ({ page, show, startEngine }) => {
+  withAudio(show, 'audio/arranged.wav');
+  const audioLoads = [];
+  page.on('request', (request) => request.url().includes('/audio') && audioLoads.push(request.url()));
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await expect(page.getByLabel('Waveform')).toBeVisible();
+  const posts = recordPosts(page);
+
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect.poll(() => posts.length).toBe(3);
+  await page.getByRole('link', { name: 'Monitor' }).click();
+  // Blue starts on the verse's beat 6, 3 s in; leaving used to release red instead.
+  await expect.poll(() => posts.slice(3, 4).map(({ message }) => message), { timeout: 5_000 }).toEqual([[NOTE_ON, 37, 64]]);
+
+  await page.getByRole('link', { name: 'Builder' }).click();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await expect(page.getByTestId('playhead')).not.toContainText('Bar 1 ');
+  expect(audioLoads, 'the audio plays on, not loaded again').toHaveLength(1);
+
+  await page.evaluate(() => (location.hash = '#builder/arranged/36'));
+  await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('red');
+  await page.goBack();
+  await expect(page.getByRole('button', { name: 'Play' }), 'paused by the scene editor').toBeVisible();
+});
+
 test('dragging the waveform sets where bar 1 falls in the audio, saved and undone', async ({ page, show, startEngine }) => {
   const before = withAudio(show, 'audio/arranged.wav');
   const { url } = await startEngine({ look: DARK });

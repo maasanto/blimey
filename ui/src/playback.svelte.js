@@ -1,6 +1,7 @@
 // Plays a song in the builder: its audio, decoded in the browser, and the scheduler sending its
 // events on the audio clock; a click on each beat when there is no audio (plan §17).
 
+import { request } from './engine.svelte.js';
 import { createScheduler } from './scheduler.js';
 
 /** The waveform's resolution: one peak per 10 ms of audio. */
@@ -34,16 +35,23 @@ export class Playback {
   #latency = 0;
   /** Counts audio loads, so a slow one that a newer one replaced is dropped. */
   #loads = 0;
+  /** The URL of the audio loaded or loading; undefined before the first load and after a failed one. */
+  #audioUrl;
 
-  /** `send(message)` sends one MIDI message to the engine. */
-  constructor(send) {
+  /** Why playback last stopped on its own, until the timeline shows it; null otherwise. */
+  failure = $state(null);
+  /** Counts uploads of the song's audio, so a new file under the same name loads anew rather than from the cache. */
+  uploads = $state(0);
+  #sending = Promise.resolve();
+
+  constructor() {
     this.#scheduler = createScheduler({
       clock: () => this.#context.currentTime,
       latency: () => {
         this.#latency = (this.#context.outputLatency ?? 0) + this.#context.baseLatency;
         return this.#latency;
       },
-      send,
+      send: (message) => this.#send(message),
       onstart: (seconds) => this.#start(seconds),
       onstop: () => this.#stop(),
     });
@@ -58,21 +66,30 @@ export class Playback {
 
   /** Decodes the audio at `url`, or plays with the click for none; a missing file (`404`) plays silent too. */
   async loadAudio(url) {
+    // A timeline opened again on the song playing keeps its audio, which plays on uncut; a missing file is looked for again.
+    if (url === this.#audioUrl && !this.isAudioMissing) return;
+    this.#audioUrl = url;
     const load = ++this.#loads;
     this.audio = null;
     this.isAudioMissing = false;
     if (!url) return;
-    const response = await fetch(url);
-    if (load !== this.#loads) return;
-    if (response.status === 404) {
-      this.isAudioMissing = true;
-      return;
+    try {
+      const response = await fetch(url);
+      if (load !== this.#loads) return;
+      if (response.status === 404) {
+        this.isAudioMissing = true;
+        return;
+      }
+      if (!response.ok) throw new Error(`The song's audio didn't load: ${response.status} ${response.statusText}.`);
+      const buffer = await this.#context.decodeAudioData(await response.arrayBuffer());
+      if (load !== this.#loads) return;
+      this.audio = { buffer, peaks: peaksOf(buffer) };
+      if (this.isPlaying) this.#restartAudio();
+    } catch (failure) {
+      // Opening the timeline again tries once more.
+      if (load === this.#loads) this.#audioUrl = undefined;
+      throw failure;
     }
-    if (!response.ok) throw new Error(`The song's audio didn't load: ${response.status} ${response.statusText}.`);
-    const buffer = await this.#context.decodeAudioData(await response.arrayBuffer());
-    if (load !== this.#loads) return;
-    this.audio = { buffer, peaks: peaksOf(buffer) };
-    if (this.isPlaying) this.#restartAudio();
   }
 
   set offset(seconds) {
@@ -110,6 +127,19 @@ export class Playback {
   close() {
     this.#scheduler.pause();
     this.#context.close();
+  }
+
+  /**
+   * Sends MIDI one message at a time, each once the one before is in, so the engine takes them
+   * in order: parallel requests could land a note before its song. A failure stops playback.
+   */
+  #send(message) {
+    this.#sending = this.#sending
+      .then(() => request('POST', '/api/midi', { message }))
+      .catch((failure) => {
+        this.pause();
+        this.failure = failure;
+      });
   }
 
   #start(seconds) {
@@ -171,6 +201,20 @@ export class Playback {
     }
   }
 }
+
+/** The song's playback last opened, so it plays on while another tab or screen is shown. */
+let kept = null;
+
+/** The playback of the song `songName`: the one kept when it is that song's, else a new one, which stops the other. */
+export function playbackOf(songName) {
+  if (kept?.songName === songName) return kept.playback;
+  kept?.playback.close();
+  kept = { songName, playback: new Playback() };
+  return kept.playback;
+}
+
+/** Pauses the song playing, if any: each scene it fires would clear the preview of the scene being edited. */
+export const pausePlayback = () => kept?.playback.pause();
 
 /** The loudest sample of each stretch of `PEAKS_PER_SECOND`, 0–1, over the audio's channels. */
 function peaksOf(buffer) {
