@@ -499,6 +499,31 @@ test("an area's shape plays at the layer's speed: a slow sparkle twinkles slowly
   await expect.poll(picturesIn2s, 'a 0.5 s cycle shows a new picture every 62.5 ms').toBeGreaterThanOrEqual(5);
 });
 
+test('dragging the speed slider steadily to the right only ever makes it faster', async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  writeFileSync(path.join(show, 'songs/demo.yaml'), 'program: 1\ncues:\n  40:\n    name: run\n    type: pixel\n    layers:\n      - { effect: chase, params: { speed: 16 bars } }\n');
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'white chase everywhere', exact: true }).click();
+  const speed = page.getByLabel('Speed', { exact: true });
+  const box = await speed.boundingBox();
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + 1, y);
+  await page.mouse.down();
+  const periods = [];
+  for (let x = box.x + 1; x < box.x + box.width; x += 2) {
+    await page.mouse.move(x, y);
+    periods.push(parseFloat(await speed.getAttribute('aria-valuetext')));
+  }
+  await page.mouse.up();
+
+  const slowerAgain = periods.findIndex((period, index) => index > 0 && period > periods[index - 1]);
+  expect(slowerAgain, `the period went back up during the drag: ${periods.join(', ')}`).toBe(-1);
+  expect(periods.at(-1)).toBeLessThan(1);
+});
+
 test("an area keeps its own saved rhythm to audition after a reorder, and a new one has none", async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
   const layers =

@@ -381,6 +381,13 @@
     grid-column: 1 / -1;
   }
 
+  /* Wide enough for the longest value the slider gives, "15.75 beats": a reading that changed the
+     slider's width under the pointer would move the value with it, and the drag would flicker. */
+  .speed output {
+    flex: none;
+    min-width: 11ch;
+  }
+
   .area {
     grid-template-columns: repeat(auto-fill, minmax(11em, 1fr));
     white-space: nowrap;
