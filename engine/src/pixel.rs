@@ -37,6 +37,8 @@ const REST_POSITION: f64 = 0.5;
 /// A sparkle flash lasts this fraction of a cycle, fading linearly.
 // ponytail: fixed flash length; make it a param if the preview sheet asks for denser sparkle.
 const FLASH: f64 = 0.25;
+/// The cycle `random` draws a sparkle pixel's own phase for, one no layer counts to.
+const PIXEL_PHASE_DRAW: i64 = i64::MIN;
 /// Frames often land exactly on a chase step, on the beat; time and beat arithmetic can put
 /// them a hair before it. This keeps them on the step they land on.
 const STEP_ROUNDING: f64 = 1e-9;
@@ -889,11 +891,14 @@ impl LayerFrame<'_> {
         shape_level * self.level * flash
     }
 
-    /// A sparkle pixel's level: one flash per cycle, starting at a random moment.
+    /// A sparkle pixel's level: one flash per cycle, starting at a random moment. Each pixel
+    /// counts its cycles from its own random phase, so they don't all go dark together where
+    /// the layer's cycles meet, and the glow holds steady instead of pulsing on every cycle.
     fn flash(&self, x: f32, y: f32) -> f64 {
-        let cycle = self.cycles.floor();
+        let cycles = self.cycles + random(self.seed, x, y, PIXEL_PHASE_DRAW);
+        let cycle = cycles.floor();
         let start = random(self.seed, x, y, cycle as i64) * (1.0 - FLASH);
-        let since = self.cycles - cycle - start;
+        let since = cycles - cycle - start;
         if (0.0..FLASH).contains(&since) {
             1.0 - since / FLASH
         } else {

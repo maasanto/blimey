@@ -218,7 +218,7 @@ Effects, each repeating once per `speed`, counted from the note:
 | `move` | Glides the shape along its travel |
 | `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width` |
 | `pulse` | Holds the shape mid-travel, its level following `curve` |
-| `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. `seed` fixes the pattern |
+| `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. Each pixel counts its cycles from its own random phase, so the shape glows evenly rather than going dark together between cycles. `seed` fixes the pattern |
 
 Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, `wave` is `gradient` with `move`, and `strobe` is `pulse` with a square curve such as `{ points: [[0, 1], [0.2, 1], [0.21, 0]] }`. `noise` has no equivalent; `sparkle` is the closest.
 
