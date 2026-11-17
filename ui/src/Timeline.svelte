@@ -4,6 +4,7 @@
   import { beatsIn, beatsPerBar, DEFAULT_BPM, formatLength, parseLength } from './duration.js';
   import { PEAKS_PER_SECOND, Playback } from './playback.svelte.js';
   import ScenePads, { SCENE_DRAG_TYPE } from './ScenePads.svelte';
+  import TimelineStage from './TimelineStage.svelte';
 
   /**
    * The running order of `song`, the song file `songName` as JSON (docs/api.md, Sections and
@@ -1008,6 +1009,7 @@
       <p class="hint">Create a section, then drag scenes onto it.</p>
     {/if}
   </section>
+  <div class="stage"><TimelineStage /></div>
 </div>
 
 <dialog class="ask" bind:this={replacePrompt} aria-labelledby="replace-question">
@@ -1223,9 +1225,25 @@
 
   .workspace {
     display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: 220px minmax(0, 1fr) auto;
     gap: 20px;
     align-items: start;
+  }
+
+  /* The stage column sticks within the whole workspace's height. */
+  .stage {
+    align-self: stretch;
+  }
+
+  /* Too narrow to keep the section editor usable beside it: the stage goes under the editor. */
+  @media (max-width: 1100px) {
+    .workspace {
+      grid-template-columns: 220px minmax(0, 1fr);
+    }
+
+    .stage {
+      grid-column: 2;
+    }
   }
 
   .library ul {

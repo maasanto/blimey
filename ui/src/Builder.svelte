@@ -530,9 +530,6 @@
 
 <svelte:window onpagehide={clearPreview} onhashchange={followUrl} onkeydown={shortcut} />
 
-<!-- An overlay locks the rig: these front views preview the scene, they don't move fixtures. -->
-{#snippet lockedRig()}{/snippet}
-
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notice}<p class="notice" aria-live="polite">{notice}</p>{/if}
 {#if engine.rig && !editable}
@@ -655,7 +652,7 @@
           {/if}
         {/key}
       </fieldset>
-      <div><FrontView overlay={lockedRig} /></div>
+      <div><FrontView locked /></div>
     </div>
   {/if}
 {:else if timelineSong}
@@ -743,7 +740,7 @@
     />
     <!-- Below the pads, so showing it moves no pad from under the pointer holding one. A released scene stays until its fade ends. -->
     {#if editable && engine.frame?.song === songName && engine.frame.cues.length}
-      <aside class="auditioned" aria-label="Scene on the rig"><FrontView overlay={lockedRig} /></aside>
+      <aside class="auditioned" aria-label="Scene on the rig"><FrontView locked /></aside>
     {/if}
   {/if}
 {/if}
