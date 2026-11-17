@@ -914,7 +914,7 @@ async fn render_thumbnail(
     content: JsonBody,
 ) -> Response {
     let _turn = show_load_turn().await;
-    let frames = json_body(content).and_then(|cue| {
+    let thumbnail = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
         let time_signature = match &query.song {
             Some(name) => song_named(&show, name)?.time_signature,
@@ -923,10 +923,11 @@ async fn render_thumbnail(
         pixel::thumbnail(&show, time_signature, cue)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
-    match frames {
-        Ok(frames) => Json(json!({
+    match thumbnail {
+        Ok((cycle, frames)) => Json(json!({
             "columns": pixel::THUMBNAIL_SIDE,
             "rows": pixel::THUMBNAIL_SIDE,
+            "cycle_ms": cycle.as_secs_f64() * 1000.0,
             "frames": frames
                 .iter()
                 .map(|colours| colours.iter().map(|colour| colour.to_hex()).collect())
@@ -1017,7 +1018,7 @@ fn cue_thumbnail(rig: &Rig, song: &Song, cue: &Cue) -> Result<Value, String> {
             json!({ "frames": [colours(&out)] })
         }
         Cue::Pixel(scene) => {
-            let frames = pixel::cycle(scene, rig, song.time_signature)?;
+            let (_, frames) = pixel::cycle(scene, rig, song.time_signature)?;
             json!({ "frames": frames.iter().map(colours).collect::<Vec<_>>() })
         }
         Cue::Swell(swell) => json!({ "levels": levels(&|time| swell.timing.curve.level(time)) }),
@@ -1661,6 +1662,7 @@ mod tests {
         );
         let frames = held["frames"].as_array().unwrap();
         assert_eq!(frames.len(), 8);
+        assert_eq!(held["cycle_ms"], 2000.0, "1 bar at 120 BPM, to play it at");
         let red = |frame: &Value, index: usize| frame[index] == "#ff0000";
         let top_row: Vec<usize> = (0..12).filter(|column| red(&frames[0], *column)).collect();
         assert_eq!(

@@ -626,15 +626,15 @@ pub const THUMBNAIL_FRAMES: usize = 8;
 const THUMBNAIL_BPM: f64 = 120.0;
 
 /// A pixel cue, as in a song file, rendered on a sample grid for the builder's pickers, as
-/// the preview sheet (`examples/pixel_sheet.rs`) renders it: `THUMBNAIL_FRAMES` frames evenly
-/// over one `cycle`, each the grid's colours
+/// the preview sheet (`examples/pixel_sheet.rs`) renders it: how long its `cycle` lasts, and
+/// `THUMBNAIL_FRAMES` frames evenly over it, each the grid's colours
 /// row by row from the top left as the audience sees it, at full intensity. `show` gives the
 /// palettes, `time_signature` the song's bars.
 pub fn thumbnail(
     show: &Show,
     time_signature: TimeSignature,
     cue: serde_json::Value,
-) -> Result<Vec<Vec<Rgb>>, String> {
+) -> Result<(Duration, Vec<Vec<Rgb>>), String> {
     let scene = PixelScene::parse(show, time_signature, cue)?;
     let rig = Rig::parse(
         &format!(
@@ -643,20 +643,22 @@ pub fn thumbnail(
         Path::new("."),
     )
     .expect("the sample grid fits the Enttec universe");
-    let frames = cycle(&scene, &rig, time_signature)?
+    let (length, frames) = cycle(&scene, &rig, time_signature)?;
+    let frames = frames
         .into_iter()
         .map(|out| (rig.grids[0].pixel_colours(&out.enttec, &out.artnet)).collect());
-    Ok(frames.collect())
+    Ok((length, frames.collect()))
 }
 
-/// `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames evenly over the longest
-/// of its moving layers' cycles and its layers' swells and pattern loops, 1 bar without any,
-/// beats running at `THUMBNAIL_BPM` in `time_signature`.
+/// How long `scene`'s cycle lasts, the longest of its moving layers' cycles and its layers'
+/// swells and pattern loops, 1 bar without any, beats running at `THUMBNAIL_BPM` in
+/// `time_signature`; and `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames
+/// evenly over it.
 pub fn cycle(
     scene: &PixelScene,
     rig: &Rig,
     time_signature: TimeSignature,
-) -> Result<Vec<Universes>, String> {
+) -> Result<(Duration, Vec<Universes>), String> {
     let clock = ClockFollower::new(THUMBNAIL_BPM, time_signature);
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
@@ -689,7 +691,7 @@ pub fn cycle(
         scene.draw(rig, &clock, timing, at, 1.0, &mut out);
         out
     });
-    Ok(frames.collect())
+    Ok((cycle, frames.collect()))
 }
 
 /// Whether `fixture` has colour emitters, the only channels a pixel cue lights besides a dimmer.
@@ -995,8 +997,9 @@ mod tests {
             { "effect": "chase", "params": { "color": "#ff0000", "width": 0.25, "speed": "2 bars" } },
         ] });
 
-        let frames = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+        let (length, frames) = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
 
+        assert_eq!(length, Duration::from_secs(4), "2 bars at 120 BPM");
         // The red 2-bar chase's first lit column on the top row: four steps over the 8 frames.
         let first_lit: Vec<Option<usize>> = frames
             .iter()
@@ -1021,7 +1024,7 @@ mod tests {
             red[rhythm.0] = rhythm.1;
             let silent = serde_json::json!({ "shape": "fill", "blend": "add", "pattern": { "length": "1 bar", "hits": [] } });
             let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [red, silent] });
-            let frames = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+            let (_, frames) = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
             frames
                 .iter()
                 .map(|frame| frame[0].red)
@@ -1060,7 +1063,7 @@ mod tests {
             "pattern": { "length": "1 bar", "hits": hits },
         }] });
 
-        let frames = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+        let (_, frames) = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
 
         let red: Vec<f32> = frames.iter().map(|frame| frame[0].red).collect();
         assert_eq!(
