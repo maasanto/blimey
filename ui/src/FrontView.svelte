@@ -12,11 +12,12 @@
   import { clamp, tidy } from './layers.js';
 
   /**
-   * While a look is composed on the stage: `overlay` draws above the rig and fixtures stay put;
-   * `underlay` draws on the stage beneath the rig; `caught` outlines pixels, fixture or grid name →
-   * a set of pixel indices; `crossedOut` names the fixtures and grids to cross out.
+   * `locked`: fixtures stay put, for a view that previews rather than places them. While a look is
+   * composed on the stage: `overlay` draws above the rig; `underlay` draws on the stage beneath
+   * the rig; `caught` outlines pixels, fixture or grid name → a set of pixel indices; `crossedOut`
+   * names the fixtures and grids to cross out.
    */
-  let { overlay, underlay, caught, crossedOut } = $props();
+  let { locked = false, overlay, underlay, caught, crossedOut } = $props();
 
   /** Room around the canvas, so fixtures on an edge stay whole. */
   const MARGIN = 70;
@@ -41,7 +42,7 @@
   }
 
   function grab(event, fixture) {
-    if (!editable || drag?.saving || overlay) return;
+    if (!editable || drag?.saving || locked) return;
     error = '';
     const xs = fixture.pixels.map((pixel) => pixel.x);
     const { y } = fixture.pixels[0];
@@ -117,7 +118,7 @@
 <svelte:window onpointermove={move} onpointerup={drop} />
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
-{#if !overlay}
+{#if !locked}
   <p class="hint">
     {#if editable}
       Drag a fixture to move it. It is saved to <code>rig.yaml</code> when you let go.
@@ -134,7 +135,7 @@
 <svg
   bind:this={svg}
   viewBox="{-MARGIN} {-MARGIN} {WIDTH + 2 * MARGIN} {HEIGHT + 2 * MARGIN}"
-  class:editable={editable && !overlay}
+  class:editable={editable && !locked}
   role="img"
   aria-label="Front view"
 >

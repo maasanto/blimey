@@ -346,7 +346,7 @@
     {#if tray.error}<p class="error" role="alert">Thumbnails: {tray.error}</p>{/if}
     {#if layerShapes.error}<p class="error" role="alert">Area shapes: {layerShapes.error}</p>{/if}
 
-    <FrontView bind:this={frontView} overlay={areas} underlay={shapes} {caught} {crossedOut} />
+    <FrontView bind:this={frontView} locked overlay={areas} underlay={shapes} {caught} {crossedOut} />
 
     <p class="sentence" class:hint={!cue.layers.length} aria-live="polite">{describeLook(cue.layers)}</p>
     {#if caught && !caught.size}
