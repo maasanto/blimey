@@ -11,9 +11,10 @@
    * `onsaved(message)` reloads the song; `attempt(action)` shows why an action failed.
    * `onhold(scene, velocity)` starts an audition and resolves once it is sent, `onrelease(scene)`
    * ends it, `onaudition(scene)` starts or ends one from the keyboard; `onopenscene(scene)` opens
-   * a scene's editor. `editable`: false in show mode, where the timeline is read-only.
+   * a scene's editor. `editable`: false in show mode, where the timeline is read-only. `stage`
+   * renders beside the section editor.
    */
-  let { songName, song, editable, isPlaying, attempt, onsaved, onhold, onrelease, onaudition, onopenscene } = $props();
+  let { songName, song, editable, isPlaying, attempt, onsaved, onhold, onrelease, onaudition, onopenscene, stage } = $props();
 
   const PLACEMENT_DRAG_TYPE = 'application/x-blimey-placement';
   /** The narrowest beat on the section editor's ruler; a short section widens its beats to fill it. */
@@ -1008,6 +1009,7 @@
       <p class="hint">Create a section, then drag scenes onto it.</p>
     {/if}
   </section>
+  {@render stage?.()}
 </div>
 
 <dialog class="ask" bind:this={replacePrompt} aria-labelledby="replace-question">
@@ -1223,7 +1225,7 @@
 
   .workspace {
     display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: 220px minmax(0, 1fr) auto;
     gap: 20px;
     align-items: start;
   }

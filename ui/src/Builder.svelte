@@ -85,6 +85,8 @@
   let timelineSong = $state(null);
   /** The name of the song `song` holds: until a switch loads, `songName` names the next one. */
   let songLoaded = $state('');
+  /** The stage view on the timeline: `small`, `large` or `hidden`. */
+  let stageSize = $state('small');
 
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
   /** The scene's look can be edited on the stage: not a fixed look that stays one. */
@@ -684,7 +686,21 @@
         onrelease={(number) => attempt(() => release(number))}
         onaudition={(number) => attempt(() => audition(number))}
         onopenscene={(number) => (location.hash = sceneHash({ song: songName, number }))}
-      />
+      >
+        {#snippet stage()}
+          <aside class="stage-view" class:large={stageSize === 'large'} aria-label="Stage">
+            <div class="row">
+              {#if stageSize === 'hidden'}
+                <button class="quiet" onclick={() => (stageSize = 'small')}>Show stage</button>
+              {:else}
+                <button class="quiet" onclick={() => (stageSize = stageSize === 'large' ? 'small' : 'large')}>{stageSize === 'large' ? 'Smaller' : 'Larger'}</button>
+                <button class="quiet" onclick={() => (stageSize = 'hidden')}>Hide stage</button>
+              {/if}
+            </div>
+            {#if stageSize !== 'hidden'}<FrontView overlay={lockedRig} />{/if}
+          </aside>
+        {/snippet}
+      </Timeline>
     {/key}
   {/if}
 {:else}
@@ -881,6 +897,25 @@
     border: 1px solid var(--line-strong);
     border-radius: var(--radius);
     box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  }
+
+  /* Beside the section editor, in sight while the page scrolls. */
+  .stage-view {
+    position: sticky;
+    top: 20px;
+  }
+
+  .stage-view :global(svg) {
+    width: 320px;
+  }
+
+  .stage-view.large :global(svg) {
+    width: min(560px, 45vw);
+  }
+
+  .stage-view .row {
+    justify-content: flex-end;
+    gap: 4px;
   }
 
   .new-song {
