@@ -608,6 +608,7 @@ Tempo changes within a song, per-placement overrides of a section, legacy channe
 | C21 | Builder: song timeline | C20 | — |
 | C22 | Builder: playback with audio | C21 | — |
 | C23 | Builder: audio upload and markers | C22 | — |
+| C24 | Builder: stage view on the timeline | C22 | — |
 
 ### C20 — Arrangement, bar grid and MIDI export
 
@@ -636,6 +637,13 @@ Tempo changes within a song, per-placement overrides of a section, legacy channe
 - **Build:** `PUT /api/songs/{song}/audio` takes the file as the body (WAV, MP3 or FLAC, up to 1 GB), writes it atomically to `audio/<song>.<ext>`, removes that song's previous audio file, sets `audio.file` and keeps `offset`; refused in show mode. The response lists the markers found in the file. Marker import from WAV: cue points with their `labl` names (unnamed ones become "Marker N"), and `ltxt` regions as a marker at their start, converted to seconds with the file's sample rate; a hand-written RIFF reader in the engine, no new crate, and a damaged file gives an error, never a panic. `GET /api/songs/{song}/audio/markers` re-reads them. `markers` in the song model, schema and `docs/api.md`: a list of `{ name, at }`, with `at` a time in the audio file, so markers stay on the music when the offset changes. `PUT /api/songs/{song}/markers` goes through the show-file writer (validated, atomic, undoable). On the timeline: an upload button and drop zone; markers drawn as flags on the overview and the section editor, placed with the offset and the tempo (markers before bar 1 aren't drawn); on upload, a song with no markers takes the file's markers, and one with markers asks before replacing them; "Import markers from audio" does the same later; add a marker at the playhead (M key) or by double-clicking the ruler, rename, drag to move, delete. Undo restores the song file, not a replaced audio file.
 - **Acceptance:** Rust tests on WAVs generated in the test: named and unnamed cue points, a region, odd-sized chunks with their padding byte, 48 kHz, a truncated file and a non-WAV file. Upload: atomic write, a previous file with another extension removed, `audio.file` set with the offset kept, show mode, an unsupported type and an oversized body refused, a song name that can't reach outside the show. Markers: round trip, refusal of a negative `at` or an empty name with the file untouched, undo. Playwright with a generated WAV holding two markers: upload, the markers drawn on the expected bars, playback of the uploaded file; add, rename, move and delete each write the expected YAML; replacing existing markers asks first; show mode is read-only.
 - **Human check:** render `tell-me` from Reaper with markers in the WAV, upload it, and check the markers land on the song's sections.
+
+### C24 — Builder: stage view on the timeline
+
+- **Goal:** watch the lights follow the music while building a song, without leaving the timeline.
+- **Build:** the front view, driven by the engine's output stream as on the Front view tab, pinned on the Timeline screen so it stays in sight while playing and editing: it shows playback, held blocks and scene pads. It reuses the front view and its locked-rig preview from the scenes home, so fixtures don't move there; the user can enlarge, shrink or hide it. No engine, API or schema change.
+- **Acceptance:** Playwright against the engine with `FakeDmx` and the steady audio clock: the stage view is on the timeline; playing from bar 1 lights it with the colours the engine sends for the first block's scene; holding a block or a scene pad shows that scene on it; it stays mounted across section switches and during playback; show mode still shows it.
+- **Human check:** play a real song on the timeline with its audio, edit a section meanwhile, and judge whether the stage view is big enough to read the look without getting in the way.
 
 ### Open questions
 
