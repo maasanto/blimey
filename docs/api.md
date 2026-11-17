@@ -587,10 +587,11 @@ It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, s
 Renders a pixel cue, as in its song file, on a sample grid, for the builder's shape and effect pickers. The engine renders it as a song would, so the pickers never re-implement an effect. Colours come from the show's palettes; nothing is saved, and it works in show mode.
 
 ```json
-{ "columns": 12, "rows": 12, "frames": [["#000000", "#ff0000", "… 144 colours"], "… 8 frames"] }
+{ "columns": 12, "rows": 12, "cycle_ms": 2000, "frames": [["#000000", "#ff0000", "… 144 colours"], "… 8 frames"] }
 ```
 
 - The grid is RGB and fills the canvas.
+- `cycle_ms` is how long the frames span, in milliseconds at 120 BPM: the builder plays them over that time, so a faster `speed` plays faster.
 - `?song=demo-song` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
 - `frames` are 8 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note, with beats at 120 BPM. Layer rhythms play from the note too, a pattern's loop starting at once.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.

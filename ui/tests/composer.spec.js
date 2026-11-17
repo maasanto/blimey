@@ -470,6 +470,35 @@ test('the speed slider runs slow to fast, left to right, and saves the period as
   expect(readFileSync(songFile, 'utf8')).toContain('params: { speed: 0.25 bars }');
 });
 
+test("an area's shape plays at the layer's speed: a slow sparkle twinkles slowly, a fast one quickly", async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  writeFileSync(path.join(show, 'songs/demo.yaml'), 'program: 1\ncues:\n  40:\n    name: twinkle\n    type: pixel\n    layers:\n      - { shape: fill, effect: sparkle, params: { speed: 1 bar } }\n');
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'white sparkle everywhere', exact: true }).click();
+  await expect(page.locator('[data-shape="0"] rect')).toHaveCount(144);
+  /** How many different pictures the area shows over 2 s. */
+  const picturesIn2s = () =>
+    page.evaluate(async () => {
+      const pictures = new Set();
+      for (let sample = 0; sample < 40; sample += 1) {
+        pictures.add([...document.querySelectorAll('[data-shape="0"] rect')].map((cell) => cell.getAttribute('fill')).join());
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return pictures.size;
+    });
+  const speed = page.getByLabel('Speed', { exact: true });
+
+  await speed.press('Home');
+  await expect(speed).toHaveAttribute('aria-valuetext', '16 bars');
+  await expect.poll(picturesIn2s, '16 bars at 120 BPM is 4 s a frame').toBeLessThanOrEqual(2);
+  await speed.press('End');
+  await expect(speed).toHaveAttribute('aria-valuetext', '0.25 bars');
+  await expect.poll(picturesIn2s, 'a 0.5 s cycle shows a new picture every 62.5 ms').toBeGreaterThanOrEqual(5);
+});
+
 test('dragging the speed slider steadily to the right only ever makes it faster', async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
   writeFileSync(path.join(show, 'songs/demo.yaml'), 'program: 1\ncues:\n  40:\n    name: run\n    type: pixel\n    layers:\n      - { effect: chase, params: { speed: 16 bars } }\n');

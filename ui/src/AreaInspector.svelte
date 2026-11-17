@@ -9,18 +9,18 @@
   import { FULL_STAGE, grooves, isSameRhythm, mutedBy, withAreaField } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
   import SwellEditor from './SwellEditor.svelte';
-  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, paint } from './thumbnails.svelte.js';
+  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, frameAt, paint } from './thumbnails.svelte.js';
 
   /**
    * `layer`: the selected layer of the pixel cue, as in the song file. `palettes`: name → #rrggbb.
    * `groups`: the rig's groups. `caught`: what its area catches, fixture or grid name → pixel
-   * indices, or null before the rig is known. `seed`: the cue's. `tick`: the thumbnails' frame.
-   * `editable`: false shows the recipe without changing it. `barBeats`: beats in the song's bar.
+   * indices, or null before the rig is known. `seed`: the cue's. `now`: how long the thumbnails
+   * have played, in ms. `song`: the song whose bars they are rendered in. `editable`: false shows the recipe without changing it. `barBeats`: beats in the song's bar.
    * `saved`: this layer as saved, which an audition plays, or null. `audition`: the saved cue's
    * `beats` and `loopBeats` while it plays (see the stream's `cues`), and `onaudition` and
    * `onrestart`, as the swell and pattern editors take them.
    */
-  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, tick, editable, barBeats, saved, audition } = $props();
+  let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, now, song, editable, barBeats, saved, audition } = $props();
 
   // docs/api.md, Pixel cues.
   const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one'];
@@ -62,7 +62,7 @@
       ...SHAPES.map((shape) => [`shape:${shape}`, { ...own, shape }]),
       ...EFFECTS.map((effect) => [`effect:${effect}`, { ...own, effect }]),
     ];
-    const timer = setTimeout(() => thumbnails.load(variants, seed), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => thumbnails.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
@@ -118,13 +118,15 @@
 {#snippet picker(label, kind, options)}
   <div class="picker" role="group" aria-label={label}>
     {#each options as option (option)}
+      {@const thumbnail = thumbnails.byKey[`${kind}:${option}`]}
+      {@const frame = frameAt(thumbnail, now)}
       <button
         class="choice"
         aria-label="{label}: {option}"
         aria-pressed={(layer[kind] ?? (kind === 'shape' ? 'bar' : 'static')) === option}
         onclick={() => (layer[kind] = option)}
       >
-        <canvas width="12" height="12" {@attach (canvas) => paint(canvas, thumbnails.byKey[`${kind}:${option}`], tick)}></canvas>
+        <canvas width="12" height="12" {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
         <span>{option}</span>
       </button>
     {/each}

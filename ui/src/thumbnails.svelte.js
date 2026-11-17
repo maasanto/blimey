@@ -3,8 +3,6 @@
 
 import { request } from './engine.svelte.js';
 
-/** Thumbnails are 8 frames over one cycle: about a second a loop. */
-export const THUMBNAIL_FRAME_MS = 125;
 /** Waits for a slider to settle before rendering a picker's worth of thumbnails. */
 export const THUMBNAIL_DEBOUNCE_MS = 150;
 
@@ -38,11 +36,21 @@ export class Thumbnails {
   }
 }
 
-/** Draws frame `tick` of `thumbnail` on `canvas`, one canvas pixel per thumbnail pixel. */
-export function paint(canvas, thumbnail, tick) {
+/**
+ * The frame of `thumbnail` showing `now` ms into its loop, played over its `cycle_ms`, or
+ * undefined without one. The same array until the next frame is due, so a `{@const}` of it
+ * redraws only then.
+ */
+export function frameAt(thumbnail, now) {
+  if (!thumbnail) return undefined;
+  const { frames } = thumbnail;
+  return frames[Math.floor((now * frames.length) / thumbnail.cycle_ms) % frames.length];
+}
+
+/** Draws `frame` of `thumbnail` on `canvas`, one canvas pixel per thumbnail pixel. */
+export function paint(canvas, thumbnail, frame) {
   const context = canvas.getContext('2d');
-  if (!thumbnail) return context.clearRect(0, 0, canvas.width, canvas.height);
-  const frame = thumbnail.frames[tick % thumbnail.frames.length];
+  if (!frame) return context.clearRect(0, 0, canvas.width, canvas.height);
   frame.forEach((colour, index) => {
     context.fillStyle = colour;
     context.fillRect(index % thumbnail.columns, Math.floor(index / thumbnail.columns), 1, 1);
