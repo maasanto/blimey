@@ -4,6 +4,7 @@
   import { beatsIn, beatsPerBar, DEFAULT_BPM, formatLength, parseLength } from './duration.js';
   import { PEAKS_PER_SECOND, Playback } from './playback.svelte.js';
   import ScenePads, { SCENE_DRAG_TYPE } from './ScenePads.svelte';
+  import TimelineStage from './TimelineStage.svelte';
 
   /**
    * The running order of `song`, the song file `songName` as JSON (docs/api.md, Sections and
@@ -11,10 +12,9 @@
    * `onsaved(message)` reloads the song; `attempt(action)` shows why an action failed.
    * `onhold(scene, velocity)` starts an audition and resolves once it is sent, `onrelease(scene)`
    * ends it, `onaudition(scene)` starts or ends one from the keyboard; `onopenscene(scene)` opens
-   * a scene's editor. `editable`: false in show mode, where the timeline is read-only. `stage`
-   * renders beside the section editor.
+   * a scene's editor. `editable`: false in show mode, where the timeline is read-only.
    */
-  let { songName, song, editable, isPlaying, attempt, onsaved, onhold, onrelease, onaudition, onopenscene, stage } = $props();
+  let { songName, song, editable, isPlaying, attempt, onsaved, onhold, onrelease, onaudition, onopenscene } = $props();
 
   const PLACEMENT_DRAG_TYPE = 'application/x-blimey-placement';
   /** The narrowest beat on the section editor's ruler; a short section widens its beats to fill it. */
@@ -1009,7 +1009,7 @@
       <p class="hint">Create a section, then drag scenes onto it.</p>
     {/if}
   </section>
-  {@render stage?.()}
+  <div class="stage"><TimelineStage /></div>
 </div>
 
 <dialog class="ask" bind:this={replacePrompt} aria-labelledby="replace-question">
@@ -1228,6 +1228,22 @@
     grid-template-columns: 220px minmax(0, 1fr) auto;
     gap: 20px;
     align-items: start;
+  }
+
+  /* The stage column sticks within the whole workspace's height. */
+  .stage {
+    align-self: stretch;
+  }
+
+  /* Too narrow to keep the section editor usable beside it: the stage goes under the editor. */
+  @media (max-width: 1100px) {
+    .workspace {
+      grid-template-columns: 220px minmax(0, 1fr);
+    }
+
+    .stage {
+      grid-column: 2;
+    }
   }
 
   .library ul {
