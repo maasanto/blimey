@@ -443,6 +443,31 @@ fn the_same_seed_gives_the_same_frames_and_a_frame_depends_only_on_time_since_th
     }
 }
 
+#[test]
+fn a_steady_sparkle_keeps_an_even_glow_across_its_cycles() {
+    let cue = "    shape: fill\n    effect: sparkle\n    seed: 7\n    params: { color: \"#ffffff\", speed: 1 beat }\n";
+    // 4 cycles of 1 beat, 16 frames each, on 256 pixels.
+    let frames = render("pixel-grid-16x16", cue, Duration::ZERO, 64);
+    let glow: Vec<u32> = frames
+        .iter()
+        .map(|frame| {
+            frame
+                .artnet
+                .values()
+                .flatten()
+                .map(|&value| u32::from(value))
+                .sum()
+        })
+        .collect();
+
+    let mean = glow.iter().sum::<u32>() / glow.len() as u32;
+    let (dimmest, at) = glow.iter().zip(0..).min().unwrap();
+    assert!(
+        *dimmest > mean * 2 / 3,
+        "frame {at} glows {dimmest}, under two thirds of the mean {mean}: {glow:?}"
+    );
+}
+
 /// Compares `frames` with the reference dump at `name` under `dumps/pixel/`, or writes it when
 /// blessing.
 fn assert_reference(frames: &[RecordedFrame], name: &str) {
