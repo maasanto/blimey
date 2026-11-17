@@ -2,7 +2,7 @@
   import { request } from './engine.svelte.js';
   import { FULL_VELOCITY, holdToAudition } from './audition.js';
   import { beatsIn, beatsPerBar, DEFAULT_BPM, formatLength, parseLength } from './duration.js';
-  import { PEAKS_PER_SECOND, Playback } from './playback.svelte.js';
+  import { PEAKS_PER_SECOND, playbackOf } from './playback.svelte.js';
   import ScenePads, { SCENE_DRAG_TYPE } from './ScenePads.svelte';
   import TimelineStage from './TimelineStage.svelte';
 
@@ -70,22 +70,17 @@
   const totalSeconds = $derived((totalBeats * 60) / bpm);
 
   const songPath = $derived(`/api/songs/${encodeURIComponent(songName)}`);
-  const playback = new Playback(sendMidi);
-  $effect(() => () => playback.close());
-
-  /**
-   * Sends MIDI one message at a time, each once the one before is in, so the engine takes them
-   * in order: parallel requests could land a note before its song. A failure stops playback.
-   */
-  let sending = Promise.resolve();
-  function sendMidi(message) {
-    sending = sending
-      .then(() => request('POST', '/api/midi', { message }))
-      .catch((failure) => {
-        playback.pause();
-        attempt(() => Promise.reject(failure));
-      });
-  }
+  // Kept past this timeline: the song plays on in another tab and is back under its controls on return.
+  // The builder keys the timeline by song, so `songName` never changes under it.
+  // svelte-ignore state_referenced_locally
+  const playback = playbackOf(songName);
+  // Also shows, on return, why playback stopped while another tab was shown.
+  $effect(() => {
+    const { failure } = playback;
+    if (!failure) return;
+    playback.failure = null;
+    attempt(() => Promise.reject(failure));
+  });
 
   let hasEvents = $state(false);
   const canPlay = $derived(editable && hasEvents && totalSeconds > 0);
@@ -101,8 +96,6 @@
   const playheadBeat = $derived((playback.position * bpm) / 60);
   const playingPlacement = $derived(placementAt(playheadBeat));
   const audioFile = $derived(song.audio?.file ?? null);
-  /** Bumped on each upload, so a file under the same name loads anew rather than from the cache. */
-  let audioVersion = $state(0);
   /** The name of the file being uploaded; null otherwise. */
   let uploading = $state(null);
   let isDroppingFile = $state(false);
@@ -156,7 +149,7 @@
   });
 
   $effect(() => {
-    const url = audioFile && `${songPath}/audio${audioVersion ? `?upload=${audioVersion}` : ''}`;
+    const url = audioFile && `${songPath}/audio${playback.uploads ? `?upload=${playback.uploads}` : ''}`;
     playback.loadAudio(url).catch((failure) => attempt(() => Promise.reject(failure)));
   });
 
@@ -351,7 +344,7 @@
     uploading = file.name;
     try {
       const { file: stored, markers: found } = await request('PUT', `${songPath}/audio`, file);
-      audioVersion += 1;
+      playback.uploads += 1;
       await onsaved(`Uploaded ${file.name} as ${stored}. Undo takes back the song file, not the audio.`);
       if (found.length) await takeMarkers(found, file.name);
     } finally {

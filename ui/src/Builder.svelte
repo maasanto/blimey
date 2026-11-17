@@ -58,6 +58,7 @@
   import FrontView from './FrontView.svelte';
   import { asLayers, sceneAsPixelCue } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
+  import { pausePlayback } from './playback.svelte.js';
   import ScenePads from './ScenePads.svelte';
   import StageComposer from './StageComposer.svelte';
   import SwellEditor from './SwellEditor.svelte';
@@ -261,6 +262,7 @@
       return;
     }
     opened = next?.number > HIGHEST_NUMBER ? null : next;
+    if (opened) pausePlayback();
     form = newForm();
     isDirtyNow = false;
     if (next && !opened) {
@@ -506,6 +508,8 @@
 
   async function fire(number, velocity = FULL_VELOCITY) {
     if (engine.frame?.song !== songName) {
+      // The song playing would go on firing its scenes in this one.
+      pausePlayback();
       await midi([PROGRAM_CHANGE, summary.songs.find((entry) => entry.name === songName).program]);
     }
     // The engine takes the preview off the output so the scene shows; editing brings it back.
