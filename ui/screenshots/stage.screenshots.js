@@ -1,16 +1,8 @@
 import { steadyAudioClock, withAudio } from '../tests/audio.js';
-import { test, expect } from '../tests/engine.js';
+import { test, expect, DARK, RED, lit, rgbPar, stage } from '../tests/engine.js';
 import { capture } from './capture.js';
 
 const shoot = (page, state) => capture(page, 'c24', state);
-const DARK = ['--set', 'both', 'dimmer=0%'];
-const RED = '#ff0000';
-const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
-/** The engine-rendered thumbnail of a scene pad, lit. */
-const lit = (page, number) => expect(pad(page, number).locator('circle').first()).not.toHaveAttribute('fill', '#000000');
-const stage = (page) => page.getByRole('complementary', { name: 'Stage' });
-/** The stage view's RGB par, which the dark look leaves black, in the colour the engine sends. */
-const rgbPar = (page) => stage(page).locator('[data-fixture="rgb-par"] circle');
 
 test.use({ showSource: 'tests/fixtures/shows/arranged' });
 test.beforeEach(({ page }) => steadyAudioClock(page));
@@ -29,7 +21,7 @@ test('the stage view follows playback and auditions on the timeline', async ({ p
   await shoot(page, 'playing');
   await page.getByRole('button', { name: 'Pause' }).click();
 
-  await stage(page).getByRole('button', { name: 'Larger' }).click();
+  await stage(page).getByRole('button', { name: 'Large', exact: true }).click();
   await page.locator('.section-editor [data-block="37"]').hover();
   await page.mouse.down();
   await expect(rgbPar(page)).not.toHaveAttribute('fill', '#000000');
@@ -37,7 +29,12 @@ test('the stage view follows playback and auditions on the timeline', async ({ p
   await shoot(page, 'holding-block-large');
   await page.mouse.up();
 
-  await stage(page).getByRole('button', { name: 'Hide stage' }).click();
+  await page.setViewportSize({ width: 960, height: 800 });
+  await lit(page, 36);
+  await shoot(page, 'narrow-large');
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  await stage(page).getByRole('button', { name: 'Stage', exact: true }).click();
   await lit(page, 36);
   await shoot(page, 'hidden');
 });

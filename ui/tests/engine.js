@@ -7,7 +7,7 @@ import { cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { test as base } from '@playwright/test';
+import { test as base, expect } from '@playwright/test';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 export const BINARY = process.env.BLIMEY_BIN ?? path.join(ROOT, 'target/debug/blimey');
@@ -83,4 +83,15 @@ export const test = base.extend({
   },
 });
 
-export { expect } from '@playwright/test';
+export { expect };
+
+/** For the arranged show: its rig starts dark, so `fire` has a look to hold. */
+export const DARK = ['--set', 'both', 'dimmer=0%'];
+export const RED = '#ff0000';
+export const pad = (page, number) => page.locator(`[data-pad="${number}"]`);
+/** The engine-rendered thumbnail of a scene pad, lit. */
+export const lit = (page, number) => expect(pad(page, number).locator('circle').first()).not.toHaveAttribute('fill', '#000000');
+/** The timeline's stage view. */
+export const stage = (page) => page.getByRole('complementary', { name: 'Stage' });
+/** The arranged show's RGB par on the stage view, which has no dimmer: the dark look leaves it black. */
+export const rgbPar = (page) => stage(page).locator('[data-fixture="rgb-par"] circle');
