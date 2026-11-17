@@ -25,7 +25,7 @@
     resizeArea,
     stageEdges,
   } from './layers.js';
-  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, THUMBNAIL_FRAME_MS, paint } from './thumbnails.svelte.js';
+  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, frameAt, paint } from './thumbnails.svelte.js';
 
   /**
    * `cue`: the pixel cue being edited, in the `layers` form. `hidden`: per layer, whether it is
@@ -66,7 +66,8 @@
   /** A gesture under way: an ingredient carried to the stage, or an area moved or resized. */
   let gesture = $state(null);
   let isClickSuppressed = false;
-  let tick = $state(0);
+  /** Milliseconds the thumbnails have played for: each runs over its own cycle, as fast as its speed. */
+  let now = $state(0);
   const tray = new Thumbnails();
   /** Each layer's shape, by index, to draw in its area. */
   const layerShapes = new Thumbnails();
@@ -90,8 +91,11 @@
   const newColour = $derived(Object.keys(palettes)[0] ?? '#ffffff');
 
   $effect(() => {
-    const timer = setInterval(() => (tick += 1), THUMBNAIL_FRAME_MS);
-    return () => clearInterval(timer);
+    let request = requestAnimationFrame(function play(time) {
+      now = time;
+      request = requestAnimationFrame(play);
+    });
+    return () => cancelAnimationFrame(request);
   });
 
   $effect(() => {
@@ -272,8 +276,9 @@
     {#if thumbnail && !hidden[index]}
       {@const area = areaOf(layer)}
       {@const cell = { width: (area.width * WIDTH) / thumbnail.columns, height: (area.height * HEIGHT) / thumbnail.rows }}
+      {@const frame = frameAt(thumbnail, now)}
       <g class="shape" data-shape={index}>
-        {#each thumbnail.frames[tick % thumbnail.frames.length] as colour, cellIndex (cellIndex)}
+        {#each frame as colour, cellIndex (cellIndex)}
           <rect
             x={screenX(area.x) + (cellIndex % thumbnail.columns) * cell.width}
             y={screenY(area.y + area.height) + Math.floor(cellIndex / thumbnail.columns) * cell.height}
@@ -325,13 +330,14 @@
   <div class="column">
     <div class="tray" role="group" aria-label="Ingredients">
       {#each INGREDIENTS as ingredient (ingredient)}
+        {@const frame = frameAt(tray.byKey[ingredient], now)}
         <button
           class="ingredient"
           disabled={!editable || isFull}
           onpointerdown={(event) => carry(event, ingredient)}
           onclick={() => !isClickSuppressed && addLayer(ingredient)}
         >
-          <canvas width="12" height="12" {@attach (canvas) => paint(canvas, tray.byKey[ingredient], tick)}></canvas>
+          <canvas width="12" height="12" {@attach (canvas) => paint(canvas, tray.byKey[ingredient], frame)}></canvas>
           <span>{ingredient}</span>
         </button>
       {/each}
@@ -399,7 +405,8 @@
           groups={rig?.groups ?? {}}
           {caught}
           seed={cue.seed}
-          {tick}
+          {now}
+          {song}
           {editable}
           {barBeats}
           saved={savedOf.get(selectedLayer) ?? null}
