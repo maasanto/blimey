@@ -592,7 +592,7 @@ test.describe('on the demo show', () => {
     await page.getByRole('button', { name: 'Audition', exact: true }).click();
     await page.getByRole('button', { name: 'Release', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Audition', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Duplicate' }).click();
+    await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
     await expect(page.getByText('Duplicated scene 38 as scene 41.')).toBeVisible();
     await page.getByLabel('Number').fill('50');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
