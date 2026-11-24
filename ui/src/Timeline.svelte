@@ -30,6 +30,8 @@
   const DIMMEST_SHADE = 0.35;
   const TIME_SIGNATURE = /^[1-9][0-9]*\/[1-9][0-9]*$/;
   const WAVEFORM_PX = 40;
+  /** A hundredth of a bar: what the audio may run past the arrangement without adding a bar. */
+  const AUDIO_LENGTH_TOLERANCE_BARS = 0.01;
   /** How far a marker must be dragged to move, so a click on it only selects it. */
   const MARKER_DRAG_PX = 3;
   const AUDIO_TYPES = '.wav,.mp3,.flac,audio/wav,audio/mpeg,audio/flac';
@@ -82,8 +84,9 @@
     attempt(() => Promise.reject(failure));
   });
 
-  let hasEvents = $state(false);
-  const canPlay = $derived(editable && hasEvents && totalSeconds > 0);
+  /** The song's events, `GET /api/songs/<song>/arrangement/events`; null until they load. */
+  let events = $state.raw(null);
+  const canPlay = $derived(editable && events !== null && songSeconds > 0);
   /** Where bar 1 falls in the audio while the waveform is dragged, in seconds; null otherwise. */
   let draggedOffset = $state(null);
   /** The waveform drag, not reactive: the pointer, where it pressed and the offset then. */
@@ -93,6 +96,23 @@
   let overview = $state();
   const savedOffset = $derived(secondsOf(song.audio?.offset));
   const offset = $derived(draggedOffset ?? savedOffset);
+  /**
+   * The audio past the arrangement's end, from bar 1 at its saved offset, in whole bars of the
+   * song's signature: shown and played like a placement without a section, so a song can be heard
+   * and laid out as soon as its audio is uploaded.
+   */
+  const unplaced = $derived.by(() => {
+    const barBeats = beatsPerBar(songSignature);
+    const audioBeats = playback.audio ? ((playback.audio.buffer.duration - savedOffset) * bpm) / 60 : 0;
+    // A bounce rendered to the arrangement's length can run a sample over it: that is no extra bar.
+    const bars = Math.ceil((audioBeats - totalBeats) / barBeats - AUDIO_LENGTH_TOLERANCE_BARS);
+    if (!(bars > 0)) return null;
+    const section = { name: null, bars, barBeats, beats: bars * barBeats, blocks: [] };
+    return { index: placements.length, name: null, section, bar: totalBars + 1, startBeat: totalBeats };
+  });
+  /** The placements, then the audio left without a section: what the overview and playback span. */
+  const spans = $derived(unplaced ? [...placements, unplaced] : placements);
+  const songSeconds = $derived(((totalBeats + (unplaced?.section.beats ?? 0)) * 60) / bpm);
   const playheadBeat = $derived((playback.position * bpm) / 60);
   const playingPlacement = $derived(placementAt(playheadBeat));
   const audioFile = $derived(song.audio?.file ?? null);
@@ -118,7 +138,7 @@
   let draggedMarker = $state.raw(null);
   /** The press on a marker, not reactive: the pointer, the marker and the placement it is dragged in. */
   let markerPress = null;
-  /** The markers from bar 1 to the end of the arrangement, each with the placement and bar it falls in and its beat in the song. */
+  /** The markers from bar 1 to the end of the arrangement or of the audio past it, each with the placement and bar it falls in and its beat in the song. */
   const markerSpots = $derived(
     markers.flatMap((marker) => {
       const at = draggedMarker?.index === marker.index ? draggedMarker.at : marker.at;
@@ -136,16 +156,18 @@
   $effect(() => {
     song;
     const load = ++eventLoads;
-    const seconds = totalSeconds;
     request('GET', `${songPath}/arrangement/events`)
-      .then((events) => {
-        if (load !== eventLoads) return;
-        playback.load(events, seconds);
-        hasEvents = true;
+      .then((loaded) => {
+        if (load === eventLoads) events = loaded;
       })
       .catch((failure) => {
         if (load === eventLoads) attempt(() => Promise.reject(failure));
       });
+  });
+
+  // Again once the audio decodes, which can make the song longer.
+  $effect(() => {
+    if (events) playback.load(events, songSeconds);
   });
 
   $effect(() => {
@@ -213,7 +235,7 @@
     }
   }
 
-  const placementAt = (beat) => placements.find((placed) => beat >= placed.startBeat && beat < placed.startBeat + placed.section.beats) ?? null;
+  const placementAt = (beat) => spans.find((placed) => beat >= placed.startBeat && beat < placed.startBeat + placed.section.beats) ?? null;
   const barAt = ({ bar, startBeat, section }, beat) => bar + Math.floor((beat - startBeat) / section.barBeats);
 
   function whereLabel() {
@@ -379,11 +401,11 @@
     edit(uploadAudio, file);
   }
 
-  /** Each placement with where its beats lie on the overview, from its left edge, in CSS pixels. */
+  /** Each span with where its beats lie on the overview, from its left edge, in CSS pixels. */
   function placementBoxes() {
     const buttons = overview.querySelectorAll('.placement');
     const overviewLeft = overview.getBoundingClientRect().left;
-    return placements.map((placed, index) => {
+    return spans.map((placed, index) => {
       const button = buttons[index];
       return { ...placed, box: { left: button.getBoundingClientRect().left - overviewLeft + button.clientLeft, width: button.clientWidth } };
     });
@@ -398,7 +420,7 @@
     const context = canvas.getContext('2d');
     const { height } = canvas;
     context.clearRect(0, 0, canvas.width, height);
-    if (!peaks || !totalBeats) return;
+    if (!peaks || !spans.length) return;
     context.fillStyle = getComputedStyle(canvas).color;
     const scale = canvas.width / overviewWidth;
     for (const { startBeat, section, box } of placementBoxes()) {
@@ -745,7 +767,11 @@
       <button disabled={!editable || !audioFile || playback.isAudioMissing} onclick={() => edit(importMarkers)}>Import markers from audio</button>
     </span>
   </div>
-  {#if placements.length}
+  {#if !placements.length}
+    <p class="hint">Add sections to the arrangement with their +, in the order they play.</p>
+  {/if}
+  <!-- A missing file gives no length to play: the transport waits for a section. -->
+  {#if spans.length || (audioFile && !playback.isAudioMissing)}
     <div class="row transport">
       <button class="quiet" aria-label="Back to start" title="Back to start" disabled={!canPlay} onclick={() => playback.seek(0)}>⏮</button>
       <button class="primary" title="Space" disabled={!canPlay} onclick={togglePlayback}>{playback.isPlaying ? 'Pause' : 'Play'}</button>
@@ -793,18 +819,19 @@
       bind:clientWidth={overviewWidth}
       bind:this={overview}
     >
-      {#each placements as placed (placed.index)}
+      {#each spans as placed (placed.index)}
         <button
           class="placement"
-          class:open={placed.name === openSection?.name}
+          class:open={placed.name && placed.name === openSection?.name}
+          class:unplaced={!placed.name}
           style:flex-grow={placed.section.beats}
           data-placement={placed.name}
           onclick={(event) => {
-            openPlacement(placed);
+            if (placed.name) openPlacement(placed);
             seekInPlacement(event, placed);
           }}
         >
-          <span class="at">{placed.bar} · {placed.name}</span>
+          <span class="at">{placed.bar} · {placed.name ?? 'no section yet'}</span>
           {#if placed.index === playingPlacement?.index}
             <span class="playhead" style:left="{((playheadBeat - placed.startBeat) / placed.section.beats) * 100}%"></span>
           {/if}
@@ -824,7 +851,7 @@
         </button>
       {/each}
     </div>
-    {#if playback.audio}
+    {#if playback.audio && spans.length}
       <canvas
         class="waveform"
         class:draggable={editable}
@@ -838,8 +865,6 @@
         onpointercancel={cancelWaveformDrag}
       ></canvas>
     {/if}
-  {:else}
-    <p class="hint">Add sections to the arrangement with their +, in the order they play.</p>
   {/if}
 </section>
 
@@ -1156,6 +1181,12 @@
     text-align: left;
     background: var(--well);
     border-radius: 4px;
+  }
+
+  /* The audio no section covers yet: there to hear and seek in, waiting for sections. */
+  .placement.unplaced {
+    background: none;
+    border-style: dashed;
   }
 
   .at {
