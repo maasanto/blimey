@@ -36,6 +36,10 @@ test("the 1 / 2 / 3.5 pattern built in the grid saves as C5's reference", async 
   await expect(page.getByLabel('Target', { exact: true })).toHaveValue('all-wash');
   await expect(page.getByLabel('Drives')).toHaveValue('dimmer');
   await step(page, 1).click();
+  // Halfway through its half beat, an ease-out hit is at three quarters: a quarter down the lane.
+  await page.getByLabel('Hit shape').selectOption('ease-out');
+  await expect(page.locator('.hit-level.selected').first()).toHaveAttribute('points', /(^| )0\.25,0\.25( |$)/);
+  await page.getByLabel('Hit shape').selectOption('ramp-up');
   await step(page, 2).click();
   await page.getByLabel('Hit shape').selectOption('sine');
   await page.getByLabel('Hit level').fill('80');
