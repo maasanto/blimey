@@ -8,6 +8,7 @@
 </script>
 
 <script>
+  import { untrack } from 'svelte';
   import { engine, request } from './engine.svelte.js';
   import { clamp, tidy } from './layers.js';
 
@@ -22,17 +23,32 @@
   /** Room around the canvas, so fixtures on an edge stay whole. */
   const MARGIN = 70;
   const PIXEL_RADIUS = 18;
+  /** A fixture's body around its pixels. */
+  const BODY_PADDING = 6;
   const GRID = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
 
   let svg;
   let error = $state('');
-  /** The fixture being dragged: offset in canvas units, kept until the saved rig comes back. */
+  /** The fixtures being dragged: offset in canvas units, kept until the saved rig comes back. */
   let drag = $state(null);
+  /** The box drawn to select fixtures, in canvas units. */
+  let marquee = $state(null);
+  let selected = $state(new Set());
   const editable = $derived(engine.connected && engine.rig?.mode === 'edit');
+  const isPlacing = $derived(editable && !locked);
+  const fixtureNames = $derived(new Set(engine.rig?.fixtures.map((fixture) => fixture.name)));
+  /** Grids don't drag, so a group offers only its fixtures. */
+  const fixtureGroups = $derived(
+    Object.entries(engine.rig?.groups ?? {})
+      .map(([group, members]) => [group, members.filter((member) => fixtureNames.has(member))])
+      .filter(([, members]) => members.length),
+  );
 
   $effect(() => {
-    engine.rig;
+    const names = fixtureNames;
     drag = null;
+    // A fixture renamed or removed in rig.yaml leaves the selection.
+    untrack(() => (selected = new Set([...selected].filter((name) => names.has(name)))));
   });
 
   /** The canvas point under a pointer event, which may be off the canvas. */
@@ -41,31 +57,81 @@
     return { x: point.x / WIDTH, y: 1 - point.y / HEIGHT };
   }
 
+  const isPrimary = (event) => event.button === 0;
+
+  /** A plain press on a selected fixture keeps the selection, so it drags as one. */
   function grab(event, fixture) {
-    if (!editable || drag?.saving || locked) return;
+    if (!isPlacing || !isPrimary(event) || drag?.saving) return;
     error = '';
-    const xs = fixture.pixels.map((pixel) => pixel.x);
-    const { y } = fixture.pixels[0];
+    if (event.shiftKey && selected.has(fixture.name)) {
+      selected = new Set([...selected].filter((name) => name !== fixture.name));
+      return;
+    }
+    if (event.shiftKey) selected = new Set([...selected, fixture.name]);
+    else if (!selected.has(fixture.name)) selected = new Set([fixture.name]);
+    const pixels = engine.rig.fixtures.filter((each) => selected.has(each.name)).flatMap((each) => each.pixels);
+    const xs = pixels.map((pixel) => pixel.x);
+    const ys = pixels.map((pixel) => pixel.y);
     drag = {
-      name: fixture.name,
+      names: selected,
+      pressed: fixture.name,
+      isShifted: event.shiftKey,
       from: canvasPoint(event),
       // Keeps every pixel on the canvas.
-      limits: { left: -Math.min(...xs), right: 1 - Math.max(...xs), down: -y, up: 1 - y },
+      limits: { left: -Math.min(...xs), right: 1 - Math.max(...xs), down: -Math.min(...ys), up: 1 - Math.max(...ys) },
       dx: 0,
       dy: 0,
+      // Told apart from dx and dy, which stay 0 for a drag against an edge.
+      hasMoved: false,
       saving: false,
     };
   }
 
+  function pressStage(event) {
+    if (!isPlacing || !isPrimary(event) || drag || event.target.closest('.fixture')) return;
+    const from = canvasPoint(event);
+    marquee = { from, to: from, isShifted: event.shiftKey };
+  }
+
+  const marqueeBox = ({ from, to }) => ({
+    left: Math.min(from.x, to.x),
+    right: Math.max(from.x, to.x),
+    bottom: Math.min(from.y, to.y),
+    top: Math.max(from.y, to.y),
+  });
+
   function move(event) {
+    if (marquee) marquee.to = canvasPoint(event);
     if (!drag || drag.saving) return;
     const at = canvasPoint(event);
+    drag.hasMoved ||= at.x !== drag.from.x || at.y !== drag.from.y;
     drag.dx = clamp(at.x - drag.from.x, drag.limits.left, drag.limits.right);
     drag.dy = clamp(at.y - drag.from.y, drag.limits.down, drag.limits.up);
   }
 
+  /** A fixture is caught when the box overlaps its drawn body, not only its pixel centres. */
+  function selectInMarquee() {
+    const box = marqueeBox(marquee);
+    const [padX, padY] = [(PIXEL_RADIUS + BODY_PADDING) / WIDTH, (PIXEL_RADIUS + BODY_PADDING) / HEIGHT];
+    const isOverlapped = ({ pixels }) =>
+      pixels[0].x - padX <= box.right &&
+      pixels.at(-1).x + padX >= box.left &&
+      pixels[0].y - padY <= box.top &&
+      pixels[0].y + padY >= box.bottom;
+    const caught = engine.rig.fixtures.filter(isOverlapped).map((fixture) => fixture.name);
+    selected = new Set([...(marquee.isShifted ? selected : []), ...caught]);
+    marquee = null;
+  }
+
+  function cancel() {
+    marquee = null;
+    if (!drag?.saving) drag = null;
+  }
+
   async function drop() {
+    if (marquee) selectInMarquee();
     if (!drag || drag.saving) return;
+    if (!drag.hasMoved && !drag.isShifted) selected = new Set([drag.pressed]);
     if (drag.dx === 0 && drag.dy === 0) {
       drag = null;
       return;
@@ -73,26 +139,37 @@
     drag.saving = true;
     try {
       // An unchanged rig brings no new rig message to end the drag.
-      if (!(await save(drag.name, drag.dx, drag.dy))) drag = null;
+      if (!(await save(drag.names, drag.dx, drag.dy))) drag = null;
     } catch (failure) {
       error = failure.message;
       drag = null;
     }
   }
 
+  function selectGroup(event, members) {
+    selected = new Set([...(event.shiftKey ? selected : []), ...members]);
+  }
+
   /**
-   * Moves a fixture in rig.yaml through the engine; the stream then sends the new rig.
-   * Returns false, saving nothing, when the move rounds or clamps back to where it was.
+   * Moves fixtures in rig.yaml through the engine, in one write; the stream then sends the new rig.
+   * Returns false, saving nothing, when the move rounds or clamps back to where they were.
    */
-  async function save(name, dx, dy) {
+  async function save(names, dx, dy) {
     const rig = await request('GET', '/api/show/rig.yaml');
-    const { canvas } = rig.fixtures.find((fixture) => fixture.name === name);
-    const x = tidy(clamp(canvas.x + dx, 0, 1 - (canvas.width ?? 0)));
-    const y = tidy(clamp(canvas.y + dy, 0, 1));
-    if (x === canvas.x && y === canvas.y) return false;
-    Object.assign(canvas, { x, y });
-    await request('PUT', '/api/show/rig.yaml', rig);
-    return true;
+    const canvases = rig.fixtures.filter((fixture) => names.has(fixture.name)).map((fixture) => fixture.canvas);
+    // Clamped once for them all against the file as it is now, so they keep their spacing.
+    const [left, right] = [Math.max(...canvases.map(({ x }) => -x)), Math.min(...canvases.map(({ x, width = 0 }) => 1 - width - x))];
+    const [down, up] = [Math.max(...canvases.map(({ y }) => -y)), Math.min(...canvases.map(({ y }) => 1 - y))];
+    [dx, dy] = [clamp(dx, left, right), clamp(dy, down, up)];
+    let isMoved = false;
+    for (const canvas of canvases) {
+      const [x, y] = [tidy(canvas.x + dx), tidy(canvas.y + dy)];
+      if (x === canvas.x && y === canvas.y) continue;
+      Object.assign(canvas, { x, y });
+      isMoved = true;
+    }
+    if (isMoved) await request('PUT', '/api/show/rig.yaml', rig);
+    return isMoved;
   }
 
   /** A grid pixel's tile on screen: the spacing between its neighbours, less a gap. */
@@ -112,20 +189,32 @@
   }
 
   const offset = (fixture) =>
-    drag?.name === fixture.name ? `translate(${drag.dx * WIDTH} ${-drag.dy * HEIGHT})` : undefined;
+    drag?.names.has(fixture.name) ? `translate(${drag.dx * WIDTH} ${-drag.dy * HEIGHT})` : undefined;
 </script>
 
-<svelte:window onpointermove={move} onpointerup={drop} />
+<svelte:window onpointermove={move} onpointerup={drop} onpointercancel={cancel} />
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if !locked}
   <p class="hint">
     {#if editable}
-      Drag a fixture to move it. It is saved to <code>rig.yaml</code> when you let go.
+      Drag a fixture to move it. Shift-click fixtures, draw a box around them or pick a group to move
+      several together. Positions are saved to <code>rig.yaml</code> when you let go.
     {:else}
       Show mode: positions are locked. Start the engine with <code>--edit</code> to move fixtures.
     {/if}
   </p>
+  {#if editable && fixtureGroups.length}
+    <div class="groups" role="group" aria-label="Select a group">
+      {#each fixtureGroups as [group, members] (group)}
+        <button
+          class="quiet"
+          aria-pressed={members.length === selected.size && members.every((member) => selected.has(member))}
+          onclick={(event) => selectGroup(event, members)}>{group}</button
+        >
+      {/each}
+    </div>
+  {/if}
 {/if}
 
 {#snippet cross(left, top, right, bottom)}
@@ -135,9 +224,10 @@
 <svg
   bind:this={svg}
   viewBox="{-MARGIN} {-MARGIN} {WIDTH + 2 * MARGIN} {HEIGHT + 2 * MARGIN}"
-  class:editable={editable && !locked}
+  class:editable={isPlacing}
   role="img"
   aria-label="Front view"
+  onpointerdown={pressStage}
 >
   <rect width={WIDTH} height={HEIGHT} class="stage" />
   {#each GRID as line (line)}
@@ -156,15 +246,17 @@
     {@const first = fixture.pixels[0]}
     {@const last = fixture.pixels.at(-1)}
     {@const body = {
-      left: screenX(first.x) - PIXEL_RADIUS - 6,
-      top: screenY(first.y) - PIXEL_RADIUS - 6,
-      right: screenX(last.x) + PIXEL_RADIUS + 6,
-      bottom: screenY(first.y) + PIXEL_RADIUS + 6,
+      left: screenX(first.x) - PIXEL_RADIUS - BODY_PADDING,
+      top: screenY(first.y) - PIXEL_RADIUS - BODY_PADDING,
+      right: screenX(last.x) + PIXEL_RADIUS + BODY_PADDING,
+      bottom: screenY(first.y) + PIXEL_RADIUS + BODY_PADDING,
     }}
     {@const caughtPixels = caught?.get(fixture.name)}
     <g
       class="fixture"
+      class:selected={isPlacing && selected.has(fixture.name)}
       data-fixture={fixture.name}
+      aria-pressed={isPlacing ? selected.has(fixture.name) : undefined}
       data-crossed-out={crossedOut?.has(fixture.name) || undefined}
       transform={offset(fixture)}
       onpointerdown={(event) => grab(event, fixture)}
@@ -217,6 +309,17 @@
   {/each}
 
   {@render overlay?.()}
+
+  {#if marquee}
+    {@const box = marqueeBox(marquee)}
+    <rect
+      class="marquee"
+      x={screenX(box.left)}
+      y={screenY(box.top)}
+      width={screenX(box.right) - screenX(box.left)}
+      height={screenY(box.bottom) - screenY(box.top)}
+    />
+  {/if}
 </svg>
 
 <style>
@@ -289,5 +392,29 @@
 
   .editable .fixture:hover .body {
     stroke: var(--accent);
+  }
+
+  .fixture.selected .body {
+    stroke: var(--accent);
+    stroke-width: 4;
+  }
+
+  .marquee {
+    fill: color-mix(in srgb, var(--accent) 12%, transparent);
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-dasharray: 8 6;
+    pointer-events: none;
+  }
+
+  .groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .groups [aria-pressed='true'] {
+    color: var(--accent);
   }
 </style>
