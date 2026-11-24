@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { steadyAudioClock, withAudio } from './audio.js';
 import { test, expect, recordMidi } from './engine.js';
@@ -75,6 +75,30 @@ test('playing from bar 1 with the audio sends the arrangement in order, each wit
   expect(await page.evaluate(() => window.clicks), 'the audio plays instead').toBe(0);
 });
 
+test('a song with audio but no section in its arrangement shows the audio and plays it', async ({ page, show, startEngine }) => {
+  withAudio(show, 'audio/arranged.wav');
+  const file = readFileSync(songFile(show), 'utf8');
+  writeFileSync(songFile(show), file.replace('arrangement: [verse, waltz, verse, waltz]\n', ''));
+  await countClicks(page);
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  const unplaced = page.locator('.placement.unplaced');
+  const isWaveformDrawn = () =>
+    page.getByLabel('Waveform').evaluate((canvas) => canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0));
+
+  await expect(unplaced).toHaveText('1 · no section yet');
+  await expect.poll(isWaveformDrawn, 'the audio drawn, though no section plays').toBe(true);
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByTestId('playhead')).toContainText('Bar 2');
+  await page.getByRole('button', { name: 'Pause' }).click();
+  expect(await page.evaluate(() => window.clicks), 'the audio plays, not the click').toBe(0);
+
+  // A section placed takes the start of the audio; the rest still waits for one.
+  await page.getByRole('button', { name: 'Add verse to the arrangement' }).click();
+  await expect(page.locator('.tile')).toHaveCount(1);
+  await expect(unplaced).toHaveText('3 · no section yet');
+});
+
 test('a missing audio file plays silent with a click; pausing releases the scenes', async ({ page, show, startEngine }) => {
   withAudio(show, 'audio/missing.wav', { isMissing: true });
   await countClicks(page);
@@ -144,7 +168,8 @@ test('dragging the waveform sets where bar 1 falls in the audio, saved and undon
   await expect(waveform).toBeVisible();
 
   const box = await waveform.boundingBox();
-  const halfSecond = box.width / 28;
+  // The overview spans the 16 s of audio: the 14 s arrangement, then a bar of 4/4 no section covers.
+  const halfSecond = box.width / 32;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 - halfSecond, box.y + box.height / 2, { steps: 4 });
