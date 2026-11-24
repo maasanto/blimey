@@ -113,6 +113,61 @@ test('a drag that saves nothing leaves fixtures draggable', async ({ page, start
   await expect.poll(wash4X).toBe(0.775);
 });
 
+test('fixtures picked by a box, shift-click or a group move together', async ({ page, startEngine }) => {
+  const { url } = await startEngine();
+  await page.goto(`${url}#front`);
+  const groups = page.getByRole('group', { name: 'Select a group' });
+  // The group row arrives with the rig and moves the stage down: measure it after.
+  await expect(groups).toBeVisible();
+  const stage = await page.getByRole('img', { name: 'Front view' }).locator('rect.stage').boundingBox();
+  /** Page point of a canvas point: y grows upwards. */
+  const onStage = (x, y) => ({ x: stage.x + x * stage.width, y: stage.y + (1 - y) * stage.height });
+  const fixture = (name) => page.locator(`[data-fixture="${name}"]`);
+  const dragFrom = async (from, to) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 5 });
+    await page.mouse.up();
+  };
+  const dragFixture = async (name, up) => {
+    const from = centre(await fixture(name).locator('circle').first().boundingBox());
+    await dragFrom(from, { x: from.x, y: from.y - up * stage.height });
+  };
+  const heights = async () => {
+    const rig = await (await page.request.get(`${url}api/show/rig.yaml`)).json();
+    return Object.fromEntries(rig.fixtures.map(({ name, canvas }) => [name, canvas.y]));
+  };
+  const expectSelected = async (names) => {
+    for (const name of ['wash-1', 'wash-2', 'wash-3', 'wash-4']) {
+      await expect(fixture(name), name).toHaveAttribute('aria-pressed', String(names.includes(name)));
+    }
+  };
+
+  // A box from empty stage around wash-1 and wash-2, then a drag of one of them moves both.
+  await dragFrom(onStage(0.05, 0.35), onStage(0.5, 0.05));
+  await expectSelected(['wash-1', 'wash-2']);
+  await dragFixture('wash-1', 0.3);
+  await expect.poll(heights).toEqual({ 'wash-1': 0.5, 'wash-2': 0.5, 'wash-3': 0.2, 'wash-4': 0.2 });
+
+  // Shift-click adds a fixture to the selection and takes it out again.
+  await fixture('wash-3').locator('circle').first().click({ modifiers: ['Shift'] });
+  await expectSelected(['wash-1', 'wash-2', 'wash-3']);
+  await fixture('wash-3').locator('circle').first().click({ modifiers: ['Shift'] });
+  await expectSelected(['wash-1', 'wash-2']);
+
+  // An existing group selects its fixtures, which then drag together.
+  await groups.getByRole('button', { name: 'outer-wash' }).click();
+  await expectSelected(['wash-1', 'wash-4']);
+  await dragFixture('wash-4', 0.1);
+  await expect.poll(heights).toEqual({ 'wash-1': 0.6, 'wash-2': 0.5, 'wash-3': 0.2, 'wash-4': 0.3 });
+
+  // A plain click on a selected fixture picks it alone; a click on empty stage clears the selection.
+  await fixture('wash-4').locator('circle').first().click();
+  await expectSelected(['wash-4']);
+  await page.mouse.click(onStage(0.5, 0.9).x, onStage(0.5, 0.9).y);
+  await expectSelected([]);
+});
+
 test('a body that is not JSON gets a JSON error', async ({ page, startEngine }) => {
   const { url } = await startEngine();
 
