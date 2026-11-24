@@ -9,7 +9,7 @@
   import { FULL_STAGE, grooves, isSameRhythm, mutedBy, withAreaField } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
   import SwellEditor from './SwellEditor.svelte';
-  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, frameAt, paint } from './thumbnails.svelte.js';
+  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, frameAt, paint, thumbnailSide } from './thumbnails.svelte.js';
 
   /**
    * `layer`: the selected layer of the pixel cue, as in the song file. `palettes`: name → #rrggbb.
@@ -34,6 +34,8 @@
   /** A custom rhythm starts as an empty grid. */
   const NO_HITS = { pattern: { length: '1 bar', hits: [] } };
 
+  /** A picker thumbnail's width and height in CSS pixels, as in the styles below. */
+  const PICKER_PX = 40;
   const thumbnails = new Thumbnails();
   const speedText = $derived(layer.params?.speed ?? '1 bar');
   const speed = $derived(speedOf(speedText));
@@ -62,7 +64,7 @@
       ...SHAPES.map((shape) => [`shape:${shape}`, { ...own, shape }]),
       ...EFFECTS.map((effect) => [`effect:${effect}`, { ...own, effect }]),
     ];
-    const timer = setTimeout(() => thumbnails.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => thumbnails.load(variants, seed, song, thumbnailSide(PICKER_PX)), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
@@ -126,7 +128,7 @@
         aria-pressed={(layer[kind] ?? (kind === 'shape' ? 'bar' : 'static')) === option}
         onclick={() => (layer[kind] = option)}
       >
-        <canvas width="12" height="12" {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
+        <canvas width={thumbnail?.columns ?? 1} height={thumbnail?.rows ?? 1} {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
         <span>{option}</span>
       </button>
     {/each}
@@ -348,7 +350,6 @@
   .rhythm {
     width: 40px;
     height: 40px;
-    image-rendering: pixelated;
     background: #000;
   }
 

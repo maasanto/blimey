@@ -143,7 +143,7 @@ test("a pattern's own target picker links it to a pixel scene's intensity", asyn
 test('a thumbnail the engine refuses says why', async ({ page, show, startEngine }) => {
   addSong(show, HEADER.replace('cues:\n', ''));
   const { url } = await startEngine();
-  await page.route('**/api/pixel-thumbnail?song=demo', (route) =>
+  await page.route('**/api/pixel-thumbnail?song=demo&side=*', (route) =>
     route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'speed is too long to render a cycle of' }) }),
   );
   // A new scene starts a look, whose tray asks for thumbnails in the song's bars.

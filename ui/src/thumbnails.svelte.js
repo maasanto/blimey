@@ -6,6 +6,12 @@ import { request } from './engine.svelte.js';
 /** Waits for a slider to settle before rendering a picker's worth of thumbnails. */
 export const THUMBNAIL_DEBOUNCE_MS = 150;
 
+/**
+ * The grid side giving one thumbnail pixel per device pixel of a `cssPixels`-wide picture; the
+ * engine renders at most its finest grid and the browser scales that up.
+ */
+export const thumbnailSide = (cssPixels) => Math.ceil(cssPixels * devicePixelRatio);
+
 export class Thumbnails {
   /** Key → `POST /api/pixel-thumbnail` result, or null when it failed; replaced whole. */
   byKey = $state.raw({});
@@ -14,14 +20,15 @@ export class Thumbnails {
   #generation = 0;
 
   /**
-   * Renders each `[key, layer]` as a one-layer cue in `song`'s time signature; what an earlier
-   * call returns late is dropped.
+   * Renders each `[key, layer]` as a one-layer cue in `song`'s time signature on a
+   * `side` × `side` grid; what an earlier call returns late is dropped.
    */
-  load(variants, seed, song) {
+  load(variants, seed, song, side) {
     this.#generation += 1;
     const current = this.#generation;
     this.error = '';
-    const path = song ? `/api/pixel-thumbnail?song=${encodeURIComponent(song)}` : '/api/pixel-thumbnail';
+    const query = new URLSearchParams(song ? { song, side } : { side });
+    const path = `/api/pixel-thumbnail?${query}`;
     for (const [key, layer] of variants) {
       request('POST', path, { name: 'thumbnail', type: 'pixel', seed, layers: [layer] })
         .then((thumbnail) => {
@@ -51,8 +58,10 @@ export function frameAt(thumbnail, now) {
 export function paint(canvas, thumbnail, frame) {
   const context = canvas.getContext('2d');
   if (!frame) return context.clearRect(0, 0, canvas.width, canvas.height);
+  const image = context.createImageData(thumbnail.columns, thumbnail.rows);
   frame.forEach((colour, index) => {
-    context.fillStyle = colour;
-    context.fillRect(index % thumbnail.columns, Math.floor(index / thumbnail.columns), 1, 1);
+    const rgb = parseInt(colour.slice(1), 16);
+    image.data.set([rgb >> 16, (rgb >> 8) & 0xff, rgb & 0xff, 0xff], index * 4);
   });
+  context.putImageData(image, 0, 0);
 }

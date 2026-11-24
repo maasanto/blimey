@@ -905,6 +905,8 @@ fn song_named<'show>(show: &'show Show, name: &str) -> io::Result<&'show Song> {
 struct ThumbnailQuery {
     /// The song whose time signature places the cue's bars; 4/4 without one.
     song: Option<String>,
+    /// Columns and rows of the sample grid; `pixel::THUMBNAIL_SIDE` without one.
+    side: Option<usize>,
 }
 
 /// Works in show mode too: it renders on a sample grid and changes nothing.
@@ -914,19 +916,23 @@ async fn render_thumbnail(
     content: JsonBody,
 ) -> Response {
     let _turn = show_load_turn().await;
+    let side = query
+        .side
+        .unwrap_or(pixel::THUMBNAIL_SIDE)
+        .clamp(1, pixel::MAX_THUMBNAIL_SIDE);
     let thumbnail = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
         let time_signature = match &query.song {
             Some(name) => song_named(&show, name)?.time_signature,
             None => TimeSignature::default(),
         };
-        pixel::thumbnail(&show, time_signature, cue)
+        pixel::thumbnail(&show, time_signature, cue, side)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
     match thumbnail {
         Ok((cycle, frames)) => Json(json!({
-            "columns": pixel::THUMBNAIL_SIDE,
-            "rows": pixel::THUMBNAIL_SIDE,
+            "columns": side,
+            "rows": side,
             "cycle_ms": cycle.as_secs_f64() * 1000.0,
             "frames": frames
                 .iter()
@@ -1618,7 +1624,10 @@ mod tests {
         let cue = json!({ "name": "t", "type": "pixel" });
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let every_turn = SHOW_LOADS.acquire_many(2).await.unwrap();
-            let query = Query(ThumbnailQuery { song: None });
+            let query = Query(ThumbnailQuery {
+                song: None,
+                side: None,
+            });
             let request = render_thumbnail(State(cues_show_api()), query, Ok(Json(cue)));
             tokio::pin!(request);
 
@@ -1640,6 +1649,7 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let query = ThumbnailQuery {
                 song: song.map(str::to_owned),
+                side: None,
             };
             let response = render_thumbnail(State(api), Query(query), Ok(Json(cue))).await;
             let status = response.status();
@@ -1651,6 +1661,38 @@ mod tests {
     }
 
     #[test]
+    fn a_thumbnail_is_rendered_at_the_side_asked_for_capped_at_the_finest_grid() {
+        let render = |side: usize| {
+            let cue = json!({ "name": "t", "type": "pixel", "shape": "circle", "params": { "color": "red" } });
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let query = ThumbnailQuery {
+                    song: None,
+                    side: Some(side),
+                };
+                let response =
+                    render_thumbnail(State(cues_show_api()), Query(query), Ok(Json(cue))).await;
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, serde_json::from_slice::<Value>(&body).unwrap())
+            })
+        };
+
+        let (status, finest) = render(pixel::MAX_THUMBNAIL_SIDE);
+        assert_eq!(status, StatusCode::OK, "{finest}");
+        assert_eq!(finest["columns"], 64);
+        assert_eq!(finest["frames"][0].as_array().unwrap().len(), 64 * 64);
+
+        let (status, capped) = render(1000);
+        assert_eq!(status, StatusCode::OK, "{capped}");
+        assert_eq!(
+            capped["columns"], 64,
+            "a finer grid than the engine renders is capped"
+        );
+    }
+
+    #[test]
     fn a_thumbnail_renders_one_cycle_on_the_sample_grid_with_the_shows_palette() {
         let cue = |effect: &str| json!({ "name": "t", "type": "pixel", "effect": effect, "params": { "color": "red", "width": 0.25, "speed": "1 bar" } });
 
@@ -1658,16 +1700,16 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{held}");
         assert_eq!(
             (held["columns"].as_u64(), held["rows"].as_u64()),
-            (Some(12), Some(12))
+            (Some(32), Some(32))
         );
         let frames = held["frames"].as_array().unwrap();
         assert_eq!(frames.len(), 8);
         assert_eq!(held["cycle_ms"], 2000.0, "1 bar at 120 BPM, to play it at");
         let red = |frame: &Value, index: usize| frame[index] == "#ff0000";
-        let top_row: Vec<usize> = (0..12).filter(|column| red(&frames[0], *column)).collect();
+        let top_row: Vec<usize> = (0..32).filter(|column| red(&frames[0], *column)).collect();
         assert_eq!(
             top_row,
-            [4, 5, 6, 7],
+            (12..20).collect::<Vec<_>>(),
             "a quarter-canvas bar mid-way, in the palette's red"
         );
         assert!(
@@ -1676,7 +1718,7 @@ mod tests {
         );
 
         let (_, chased) = thumbnail(cue("chase"));
-        let first_lit = |frame: &Value| (0..12).find(|column| red(frame, *column));
+        let first_lit = |frame: &Value| (0..32).find(|column| red(frame, *column));
         let steps: Vec<Option<usize>> = chased["frames"]
             .as_array()
             .unwrap()
@@ -1688,12 +1730,12 @@ mod tests {
             [
                 Some(0),
                 Some(0),
-                Some(3),
-                Some(3),
-                Some(6),
-                Some(6),
-                Some(9),
-                Some(9)
+                Some(8),
+                Some(8),
+                Some(16),
+                Some(16),
+                Some(24),
+                Some(24)
             ],
             "four steps of a quarter over the cycle"
         );
@@ -1702,12 +1744,12 @@ mod tests {
             { "area": { "x": 0, "y": 0, "width": 0.5, "height": 1 }, "shape": "fill", "params": { "color": "red" } },
         ] }));
         assert_eq!(status, StatusCode::OK, "{layered}");
-        let lit: Vec<bool> = (0..12)
+        let lit: Vec<bool> = (0..32)
             .map(|column| red(&layered["frames"][0], column))
             .collect();
         assert_eq!(
             lit,
-            [[true; 6], [false; 6]].concat(),
+            [[true; 16], [false; 16]].concat(),
             "a layer fills its area"
         );
 

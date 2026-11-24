@@ -619,9 +619,12 @@ impl Drawn {
     }
 }
 
-/// Columns and rows of the square sample grid a thumbnail shows, filling the canvas: the most
-/// RGB pixels that fit the Enttec universe in a square.
-pub const THUMBNAIL_SIDE: usize = 12;
+/// Columns and rows of the square sample grid a thumbnail shows by default, filling the canvas.
+/// The grid is on Art-Net, as anything finer than 13 × 13 overflows the Enttec universe.
+pub const THUMBNAIL_SIDE: usize = 32;
+/// The finest sample grid a thumbnail may ask for: 4096 pixels, 25 of the grids' 32 Art-Net
+/// universes, about 330 kB of JSON over 8 frames.
+pub const MAX_THUMBNAIL_SIDE: usize = 64;
 /// Frames in a thumbnail, evenly over one cycle, as in the preview sheet.
 pub const THUMBNAIL_FRAMES: usize = 8;
 /// The tempo beats and bars run at in a thumbnail: it shows one cycle whatever the speed.
@@ -631,20 +634,26 @@ const THUMBNAIL_BPM: f64 = 120.0;
 /// the preview sheet (`examples/pixel_sheet.rs`) renders it: how long its `cycle` lasts, and
 /// `THUMBNAIL_FRAMES` frames evenly over it, each the grid's colours
 /// row by row from the top left as the audience sees it, at full intensity. `show` gives the
-/// palettes, `time_signature` the song's bars.
+/// palettes, `time_signature` the song's bars, `side` the grid's columns
+/// and rows, 1 to `MAX_THUMBNAIL_SIDE`.
 pub fn thumbnail(
     show: &Show,
     time_signature: TimeSignature,
     cue: serde_json::Value,
+    side: usize,
 ) -> Result<(Duration, Vec<Vec<Rgb>>), String> {
+    debug_assert!(
+        (1..=MAX_THUMBNAIL_SIDE).contains(&side),
+        "side {side} out of range"
+    );
     let scene = PixelScene::parse(show, time_signature, cue)?;
     let rig = Rig::parse(
         &format!(
-            "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {THUMBNAIL_SIDE}, rows: {THUMBNAIL_SIDE}, colour_order: RGB, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
+            "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {side}, rows: {side}, colour_order: RGB, output: artnet, universe: 0, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
         ),
         Path::new("."),
     )
-    .expect("the sample grid fits the Enttec universe");
+    .expect("the sample grid fits the Art-Net universes");
     let (length, frames) = cycle(&scene, &rig, time_signature)?;
     let frames = frames
         .into_iter()
@@ -1002,7 +1011,13 @@ mod tests {
             { "effect": "chase", "params": { "color": "#ff0000", "width": 0.25, "speed": "2 bars" } },
         ] });
 
-        let (length, frames) = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+        let (length, frames) = thumbnail(
+            &Show::default(),
+            TimeSignature::default(),
+            cue,
+            THUMBNAIL_SIDE,
+        )
+        .unwrap();
 
         assert_eq!(length, Duration::from_secs(4), "2 bars at 120 BPM");
         // The red 2-bar chase's first lit column on the top row: four steps over the 8 frames.
@@ -1016,7 +1031,7 @@ mod tests {
             .collect();
         assert_eq!(
             first_lit,
-            [0, 0, 3, 3, 6, 6, 9, 9].map(Some),
+            [0, 0, 8, 8, 16, 16, 24, 24].map(Some),
             "the 1-bar chase leads twice as fast, the static fill doesn't count"
         );
     }
@@ -1029,7 +1044,13 @@ mod tests {
             red[rhythm.0] = rhythm.1;
             let silent = serde_json::json!({ "shape": "fill", "blend": "add", "pattern": { "length": "1 bar", "hits": [] } });
             let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [red, silent] });
-            let (_, frames) = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+            let (_, frames) = thumbnail(
+                &Show::default(),
+                TimeSignature::default(),
+                cue,
+                THUMBNAIL_SIDE,
+            )
+            .unwrap();
             frames
                 .iter()
                 .map(|frame| frame[0].red)
@@ -1068,7 +1089,13 @@ mod tests {
             "pattern": { "length": "1 bar", "hits": hits },
         }] });
 
-        let (_, frames) = thumbnail(&Show::default(), TimeSignature::default(), cue).unwrap();
+        let (_, frames) = thumbnail(
+            &Show::default(),
+            TimeSignature::default(),
+            cue,
+            THUMBNAIL_SIDE,
+        )
+        .unwrap();
 
         let red: Vec<f32> = frames.iter().map(|frame| frame[0].red).collect();
         assert_eq!(
