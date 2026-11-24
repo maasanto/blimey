@@ -148,7 +148,7 @@ impl DmxSink for StreamSink {
             return Ok(());
         }
         let rig = self.rig.rig.borrow();
-        let message = frame_message(&rig, at, frame, &self.artnet, &self.status);
+        let message = frame_message(&rig, at, frame, &self.artnet, &self.status, &self.preview);
         self.frames.send_replace(message.into());
         Ok(())
     }
@@ -370,6 +370,8 @@ struct FrameMessage<'frame> {
     at_ms: u64,
     dmx: &'frame [u8],
     pixels: PixelColours<'frame>,
+    /// How long the builder's pixel scene preview has animated, so it draws its shapes in step.
+    preview_ms: Option<f64>,
     #[serde(flatten)]
     status: &'frame Status,
 }
@@ -413,11 +415,15 @@ fn frame_message(
     frame: &Frame,
     artnet: &ArtNetFrames,
     status: &Status,
+    preview: &TimedLook,
 ) -> String {
     let message = FrameMessage {
         at_ms: at.as_millis() as u64,
         dmx: frame,
         pixels: PixelColours { rig, frame, artnet },
+        preview_ms: preview
+            .animated(at)
+            .map(|animated| animated.as_secs_f64() * 1000.0),
         status,
     };
     serde_json::to_string(&message).expect("a frame message serializes")
@@ -658,6 +664,7 @@ mod tests {
             &[0; 512],
             &ArtNetFrames::new(),
             &status,
+            &TimedLook::new(PREVIEW_LIFETIME),
         ))
         .unwrap();
 
@@ -690,6 +697,7 @@ mod tests {
             &[0; 512],
             &ArtNetFrames::from([(3, universe)]),
             &Status::default(),
+            &TimedLook::new(PREVIEW_LIFETIME),
         ))
         .unwrap();
 
