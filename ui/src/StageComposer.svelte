@@ -25,7 +25,7 @@
     resizeArea,
     stageEdges,
   } from './layers.js';
-  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, frameAt, paint } from './thumbnails.svelte.js';
+  import { Thumbnails, THUMBNAIL_DEBOUNCE_MS, frameAt, paint, thumbnailSide } from './thumbnails.svelte.js';
 
   /**
    * `cue`: the pixel cue being edited, in the `layers` form. `hidden`: per layer, whether it is
@@ -68,6 +68,10 @@
   let isClickSuppressed = false;
   /** Milliseconds the thumbnails have played for: each runs over its own cycle, as fast as its speed. */
   let now = $state(0);
+  /** A tray thumbnail's width and height in CSS pixels, as in the styles below. */
+  const TRAY_PX = 32;
+  /** Areas are the editor's largest pictures: the engine's finest grid, `MAX_THUMBNAIL_SIDE`. */
+  const FINEST_SIDE = 64;
   const tray = new Thumbnails();
   /** Each layer's shape, by index, to draw in its area. */
   const layerShapes = new Thumbnails();
@@ -101,7 +105,7 @@
   $effect(() => {
     const variants = INGREDIENTS.map((ingredient) => [ingredient, newLayer(ingredient, newColour, undefined, barBeats)]);
     const { seed } = cue;
-    const timer = setTimeout(() => tray.load(variants, seed, song), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => tray.load(variants, seed, song, thumbnailSide(TRAY_PX)), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
@@ -114,7 +118,7 @@
     const variants = JSON.parse(shapeRecipes).map((layer, index) => [index, layer]);
     const { seed } = cue;
     const shapeSong = song;
-    const timer = setTimeout(() => layerShapes.load(variants, seed, shapeSong), THUMBNAIL_DEBOUNCE_MS);
+    const timer = setTimeout(() => layerShapes.load(variants, seed, shapeSong, FINEST_SIDE), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
 
@@ -275,19 +279,11 @@
     {@const thumbnail = layerShapes.byKey[index]}
     {#if thumbnail && !hidden[index]}
       {@const area = areaOf(layer)}
-      {@const cell = { width: (area.width * WIDTH) / thumbnail.columns, height: (area.height * HEIGHT) / thumbnail.rows }}
       {@const frame = frameAt(thumbnail, now)}
-      <g class="shape" data-shape={index}>
-        {#each frame as colour, cellIndex (cellIndex)}
-          <rect
-            x={screenX(area.x) + (cellIndex % thumbnail.columns) * cell.width}
-            y={screenY(area.y + area.height) + Math.floor(cellIndex / thumbnail.columns) * cell.height}
-            width={cell.width}
-            height={cell.height}
-            fill={colour}
-          />
-        {/each}
-      </g>
+      <!-- One canvas the browser scales up smoothly, so the shape reads as a shape, not as cells. -->
+      <foreignObject class="shape" data-shape={index} x={screenX(area.x)} y={screenY(area.y + area.height)} width={area.width * WIDTH} height={area.height * HEIGHT}>
+        <canvas width={thumbnail.columns} height={thumbnail.rows} {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
+      </foreignObject>
     {/if}
   {/each}
 {/snippet}
@@ -337,7 +333,7 @@
           onpointerdown={(event) => carry(event, ingredient)}
           onclick={() => !isClickSuppressed && addLayer(ingredient)}
         >
-          <canvas width="12" height="12" {@attach (canvas) => paint(canvas, tray.byKey[ingredient], frame)}></canvas>
+          <canvas width={tray.byKey[ingredient]?.columns ?? 1} height={tray.byKey[ingredient]?.rows ?? 1} {@attach (canvas) => paint(canvas, tray.byKey[ingredient], frame)}></canvas>
           <span>{ingredient}</span>
         </button>
       {/each}
@@ -493,7 +489,6 @@
   canvas {
     width: 32px;
     height: 32px;
-    image-rendering: pixelated;
     background: #000;
     border-radius: 3px;
   }
@@ -514,8 +509,13 @@
   .shape {
     opacity: 0.4;
     mix-blend-mode: screen;
-    shape-rendering: crispEdges;
     pointer-events: none;
+  }
+
+  .shape canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 
   .empty {

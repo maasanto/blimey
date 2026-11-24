@@ -334,18 +334,21 @@ test.describe('on three rows of washes', () => {
   test("each area shows its layer's shape moving between the fixtures, and a hidden one shows none", async ({ page, startEngine }) => {
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
-    const chaseCells = page.locator('[data-shape="1"] rect');
-    await expect(chaseCells).toHaveCount(32 * 32);
-    /** The columns of the 32 × 32 picture the amber bar lights, as "12,13,14". */
+    const chase = page.locator('[data-shape="1"] canvas');
+    await expect(chase).toHaveAttribute('width', '64');
+    /** The columns of the 64 × 64 picture's top row the amber bar lights, as "24,25,26". */
     const litColumns = () =>
-      chaseCells.evaluateAll((cells) => [...new Set(cells.flatMap((cell, index) => (cell.getAttribute('fill') === '#000000' ? [] : [index % 32])))].join());
+      chase.evaluate((canvas) => {
+        const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, 1);
+        return [...Array(canvas.width).keys()].filter((column) => data[column * 4] > 0).join();
+      });
 
-    await expect.poll(litColumns, 'a bar a quarter of the area wide, not a fill').toMatch(/^\d+(,\d+){1,9}$/);
+    await expect.poll(litColumns, 'a bar a quarter of the area wide, not a fill').toMatch(/^\d+(,\d+){1,17}$/);
     const before = await litColumns();
     await expect.poll(litColumns, 'the chase steps it along').not.toBe(before);
 
     await page.getByRole('button', { name: 'Hide while editing: amber chase on the right' }).click();
-    await expect(chaseCells).toHaveCount(0);
+    await expect(chase).toHaveCount(0);
     await expect(page.locator('[data-shape]')).toHaveCount(2);
   });
 });
@@ -478,13 +481,13 @@ test("an area's shape plays at the layer's speed: a slow sparkle twinkles slowly
 
   await pad(page, 40).click();
   await page.getByRole('button', { name: 'white sparkle everywhere', exact: true }).click();
-  await expect(page.locator('[data-shape="0"] rect')).toHaveCount(32 * 32);
+  await expect(page.locator('[data-shape="0"] canvas')).toHaveAttribute('width', '64');
   /** How many different pictures the area shows over 2 s. */
   const picturesIn2s = () =>
     page.evaluate(async () => {
       const pictures = new Set();
       for (let sample = 0; sample < 40; sample += 1) {
-        pictures.add([...document.querySelectorAll('[data-shape="0"] rect')].map((cell) => cell.getAttribute('fill')).join());
+        pictures.add(document.querySelector('[data-shape="0"] canvas').toDataURL());
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       return pictures.size;

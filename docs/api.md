@@ -591,6 +591,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 ```
 
 - The grid is RGB and fills the canvas.
+- `?side=48` asks for a grid that many columns and rows, so a picture can have one cell per screen pixel; without it, 32. A side is clamped to 1–64 (64 × 64 is 4096 pixels, about 330 kB over 8 frames), and `columns` and `rows` say which was used. A side that isn't a whole number is a `400`.
 - `cycle_ms` is how long the frames span, in milliseconds at 120 BPM: the builder plays them over that time, so a faster `speed` plays faster.
 - `?song=demo-song` gives the song whose `time_signature` the cue's bars and its layers' patterns are read in, as when it is saved there; without it, 4/4. An unknown song is a `404`.
 - `frames` are 8 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note, with beats at 120 BPM. Layer rhythms play from the note too, a pattern's loop starting at once.

@@ -905,6 +905,8 @@ fn song_named<'show>(show: &'show Show, name: &str) -> io::Result<&'show Song> {
 struct ThumbnailQuery {
     /// The song whose time signature places the cue's bars; 4/4 without one.
     song: Option<String>,
+    /// Columns and rows of the sample grid; `pixel::THUMBNAIL_SIDE` without one.
+    side: Option<usize>,
 }
 
 /// Works in show mode too: it renders on a sample grid and changes nothing.
@@ -914,19 +916,23 @@ async fn render_thumbnail(
     content: JsonBody,
 ) -> Response {
     let _turn = show_load_turn().await;
+    let side = query
+        .side
+        .unwrap_or(pixel::THUMBNAIL_SIDE)
+        .clamp(1, pixel::MAX_THUMBNAIL_SIDE);
     let thumbnail = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
         let time_signature = match &query.song {
             Some(name) => song_named(&show, name)?.time_signature,
             None => TimeSignature::default(),
         };
-        pixel::thumbnail(&show, time_signature, cue)
+        pixel::thumbnail(&show, time_signature, cue, side)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
     match thumbnail {
         Ok((cycle, frames)) => Json(json!({
-            "columns": pixel::THUMBNAIL_SIDE,
-            "rows": pixel::THUMBNAIL_SIDE,
+            "columns": side,
+            "rows": side,
             "cycle_ms": cycle.as_secs_f64() * 1000.0,
             "frames": frames
                 .iter()
@@ -1618,7 +1624,10 @@ mod tests {
         let cue = json!({ "name": "t", "type": "pixel" });
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let every_turn = SHOW_LOADS.acquire_many(2).await.unwrap();
-            let query = Query(ThumbnailQuery { song: None });
+            let query = Query(ThumbnailQuery {
+                song: None,
+                side: None,
+            });
             let request = render_thumbnail(State(cues_show_api()), query, Ok(Json(cue)));
             tokio::pin!(request);
 
@@ -1640,6 +1649,7 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let query = ThumbnailQuery {
                 song: song.map(str::to_owned),
+                side: None,
             };
             let response = render_thumbnail(State(api), Query(query), Ok(Json(cue))).await;
             let status = response.status();
@@ -1648,6 +1658,38 @@ mod tests {
                 .unwrap();
             (status, serde_json::from_slice(&body).unwrap())
         })
+    }
+
+    #[test]
+    fn a_thumbnail_is_rendered_at_the_side_asked_for_capped_at_the_finest_grid() {
+        let render = |side: usize| {
+            let cue = json!({ "name": "t", "type": "pixel", "shape": "circle", "params": { "color": "red" } });
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let query = ThumbnailQuery {
+                    song: None,
+                    side: Some(side),
+                };
+                let response =
+                    render_thumbnail(State(cues_show_api()), Query(query), Ok(Json(cue))).await;
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, serde_json::from_slice::<Value>(&body).unwrap())
+            })
+        };
+
+        let (status, finest) = render(pixel::MAX_THUMBNAIL_SIDE);
+        assert_eq!(status, StatusCode::OK, "{finest}");
+        assert_eq!(finest["columns"], 64);
+        assert_eq!(finest["frames"][0].as_array().unwrap().len(), 64 * 64);
+
+        let (status, capped) = render(1000);
+        assert_eq!(status, StatusCode::OK, "{capped}");
+        assert_eq!(
+            capped["columns"], 64,
+            "a finer grid than the engine renders is capped"
+        );
     }
 
     #[test]
