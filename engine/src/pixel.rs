@@ -627,17 +627,19 @@ pub const THUMBNAIL_SIDE: usize = 32;
 pub const MAX_THUMBNAIL_SIDE: usize = 64;
 /// Frames in a thumbnail, evenly over one cycle, as in the preview sheet.
 pub const THUMBNAIL_FRAMES: usize = 8;
-/// The tempo beats and bars run at in a thumbnail: it shows one cycle whatever the speed.
-const THUMBNAIL_BPM: f64 = 120.0;
+/// The tempo beats and bars run at in a thumbnail without a song: it shows one cycle whatever
+/// the speed.
+pub const THUMBNAIL_BPM: f64 = 120.0;
 
 /// A pixel cue, as in a song file, rendered on a sample grid for the builder's pickers, as
 /// the preview sheet (`examples/pixel_sheet.rs`) renders it: how long its `cycle` lasts, and
 /// `THUMBNAIL_FRAMES` frames evenly over it, each the grid's colours
 /// row by row from the top left as the audience sees it, at full intensity. `show` gives the
-/// palettes, `time_signature` the song's bars, `side` the grid's columns
+/// palettes, `bpm` and `time_signature` the song's beats and bars, `side` the grid's columns
 /// and rows, 1 to `MAX_THUMBNAIL_SIDE`.
 pub fn thumbnail(
     show: &Show,
+    bpm: f64,
     time_signature: TimeSignature,
     cue: serde_json::Value,
     side: usize,
@@ -654,7 +656,7 @@ pub fn thumbnail(
         Path::new("."),
     )
     .expect("the sample grid fits the Art-Net universes");
-    let (length, frames) = cycle(&scene, &rig, time_signature)?;
+    let (length, frames) = cycle(&scene, &rig, bpm, time_signature)?;
     let frames = frames
         .into_iter()
         .map(|out| (rig.grids[0].pixel_colours(&out.enttec, &out.artnet)).collect());
@@ -662,15 +664,15 @@ pub fn thumbnail(
 }
 
 /// How long `scene`'s cycle lasts, the longest of its moving layers' cycles and its layers'
-/// swells and pattern loops, 1 bar without any, beats running at `THUMBNAIL_BPM` in
-/// `time_signature`; and `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames
-/// evenly over it.
+/// swells and pattern loops, 1 bar without any, beats running at `bpm` in `time_signature`;
+/// and `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames evenly over it.
 pub fn cycle(
     scene: &PixelScene,
     rig: &Rig,
+    bpm: f64,
     time_signature: TimeSignature,
 ) -> Result<(Duration, Vec<Universes>), String> {
-    let clock = ClockFollower::new(THUMBNAIL_BPM, time_signature);
+    let clock = ClockFollower::new(bpm, time_signature);
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
     let cycles_in_a_second = |speed| clock.cycles(speed, started, second);
@@ -1013,6 +1015,7 @@ mod tests {
 
         let (length, frames) = thumbnail(
             &Show::default(),
+            THUMBNAIL_BPM,
             TimeSignature::default(),
             cue,
             THUMBNAIL_SIDE,
@@ -1046,6 +1049,7 @@ mod tests {
             let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [red, silent] });
             let (_, frames) = thumbnail(
                 &Show::default(),
+                THUMBNAIL_BPM,
                 TimeSignature::default(),
                 cue,
                 THUMBNAIL_SIDE,
@@ -1091,6 +1095,7 @@ mod tests {
 
         let (_, frames) = thumbnail(
             &Show::default(),
+            THUMBNAIL_BPM,
             TimeSignature::default(),
             cue,
             THUMBNAIL_SIDE,

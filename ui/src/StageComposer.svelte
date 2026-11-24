@@ -68,6 +68,8 @@
   let isClickSuppressed = false;
   /** Milliseconds the thumbnails have played for: each runs over its own cycle, as fast as its speed. */
   let now = $state(0);
+  /** The clock the area's pictures play on: the preview's on the lights, so they stay in step with it, else `now`. */
+  const areaClock = $derived(engine.frame?.preview_ms ?? now);
   /** A tray thumbnail's width and height in CSS pixels, as in the styles below. */
   const TRAY_PX = 32;
   /** Areas are the editor's largest pictures: the engine's finest grid, `MAX_THUMBNAIL_SIDE`. */
@@ -287,7 +289,7 @@
     {@const thumbnail = layerShapes.byKey[index]}
     {#if thumbnail && !hidden[index]}
       {@const area = areaOf(layer)}
-      {@const frame = frameAt(thumbnail, now)}
+      {@const frame = frameAt(thumbnail, areaClock)}
       <!-- One canvas the browser scales up smoothly, so the shape reads as a shape, not as cells. -->
       <foreignObject class="shape" data-shape={index} x={screenX(area.x)} y={screenY(area.y + area.height)} width={area.width * WIDTH} height={area.height * HEIGHT}>
         <canvas width={thumbnail.columns} height={thumbnail.rows} {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
@@ -410,7 +412,7 @@
           groups={rig?.groups ?? {}}
           {caught}
           seed={cue.seed}
-          {now}
+          now={areaClock}
           {song}
           {editable}
           {barBeats}

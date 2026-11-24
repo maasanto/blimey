@@ -922,11 +922,14 @@ async fn render_thumbnail(
         .clamp(1, pixel::MAX_THUMBNAIL_SIDE);
     let thumbnail = json_body(content).and_then(|cue| {
         let show = Show::load(&api.show_dir)?;
-        let time_signature = match &query.song {
-            Some(name) => song_named(&show, name)?.time_signature,
-            None => TimeSignature::default(),
+        let (bpm, time_signature) = match &query.song {
+            Some(name) => {
+                let song = song_named(&show, name)?;
+                (song.tempo(), song.time_signature)
+            }
+            None => (pixel::THUMBNAIL_BPM, TimeSignature::default()),
         };
-        pixel::thumbnail(&show, time_signature, cue, side)
+        pixel::thumbnail(&show, bpm, time_signature, cue, side)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
     match thumbnail {
@@ -1024,7 +1027,7 @@ fn cue_thumbnail(rig: &Rig, song: &Song, cue: &Cue) -> Result<Value, String> {
             json!({ "frames": [colours(&out)] })
         }
         Cue::Pixel(scene) => {
-            let (_, frames) = pixel::cycle(scene, rig, song.time_signature)?;
+            let (_, frames) = pixel::cycle(scene, rig, pixel::THUMBNAIL_BPM, song.time_signature)?;
             json!({ "frames": frames.iter().map(colours).collect::<Vec<_>>() })
         }
         Cue::Swell(swell) => json!({ "levels": levels(&|time| swell.timing.curve.level(time)) }),
@@ -1209,6 +1212,19 @@ impl TimedLook {
 
     fn clear(&self) {
         *lock(&self.shown) = None;
+    }
+
+    /// How long the pixel scene shown has animated at `at`, once a frame has drawn it.
+    pub fn animated(&self, at: Duration) -> Option<Duration> {
+        let shown = lock(&self.shown);
+        match shown.as_ref()? {
+            Shown {
+                overlay: Overlay::Pixel { .. },
+                started: Some(started),
+                ..
+            } => Some(at.saturating_sub(*started)),
+            _ => None,
+        }
     }
 
     pub fn apply(&self, rig: &Rig, at: Duration, out: &mut Universes) {
@@ -1716,6 +1732,9 @@ mod tests {
             frames.iter().all(|frame| frame == &frames[0]),
             "static holds still"
         );
+        assert_eq!(held["cycle_ms"], 2000.0, "a bar at 120 BPM in 4/4");
+        let (_, in_5_4) = thumbnail_in(Some("second"), cue("move"));
+        assert_eq!(in_5_4["cycle_ms"], 2500.0, "a bar in the song's 5/4");
 
         let (_, chased) = thumbnail(cue("chase"));
         let first_lit = |frame: &Value| (0..32).find(|column| red(frame, *column));
@@ -1877,6 +1896,13 @@ mod tests {
             [2],
             "a new PUT doesn't restart it"
         );
+        assert_eq!(
+            preview.animated(millis(10_700)),
+            Some(millis(700)),
+            "the stream's preview_ms, for the builder's shapes to follow"
+        );
+        preview.clear();
+        assert_eq!(preview.animated(millis(10_700)), None);
     }
 
     #[test]
