@@ -21,8 +21,22 @@ use blimey_engine::{
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures");
-const SHAPES: [&str; 6] = ["bar", "sweep", "circle", "split", "gradient", "one-by-one"];
-const EFFECTS: [&str; 5] = ["static", "move", "pulse", "chase", "sparkle"];
+const SHAPES: [&str; 11] = [
+    "bar",
+    "sweep",
+    "circle",
+    "split",
+    "gradient",
+    "one-by-one",
+    "diamond",
+    "diagonal",
+    "stripes",
+    "checker",
+    "wedge",
+];
+const EFFECTS: [&str; 8] = [
+    "static", "move", "pulse", "chase", "sparkle", "bounce", "strobe", "noise",
+];
 /// The 4 washes are 4 RGBW pixels each; the grids are described in their `rig.yaml`.
 const RIGS: [&str; 4] = [
     "four-washes",

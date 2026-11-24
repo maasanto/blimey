@@ -209,6 +209,11 @@ Shapes, each with a position along its travel from 0 to 1, in the layer's area a
 | `gradient` | A ramp from `background` to `color` along the direction, scrolled by the position |
 | `one-by-one` | One cell at a time, in order of where its pixels sit along the direction. A profiled fixture is one cell; a grid is one cell per line across the direction: per column for `left-to-right` and `right-to-left`, per row for the vertical directions. A column grid so steps pixel by pixel going up or down. Cells at the same position along the direction, a fixture's at its centre, light together: two grids hung one above the other step left to right as one. It steps through the cells with a pixel in the layer's area, muted ones and fixtures without colour emitters left out |
 | `fill` | The whole area |
+| `diamond` | A ring as `circle`'s with straight sides, a square on its corner: at the position as a fraction of the distance to the corners, growing and shrinking as `circle` does |
+| `diagonal` | A band `width` wide lying across a diagonal of the area, travelling corner to corner: from the bottom left for `left-to-right`, the top right for `right-to-left`, the bottom right for `bottom-to-top` and the top left for `top-to-bottom` |
+| `stripes` | Bars `width` wide with gaps as wide, repeating along the direction. A cycle moves them on by one bar and one gap, so the travel loops whatever the `width` |
+| `checker` | Squares `width` of the area wide and high, every other one lit. A cycle moves them along the direction by two squares |
+| `wedge` | A wedge `width` of a turn wide about the area's centre, at the position as a fraction of a turn: clockwise as the audience sees it for `left-to-right` and `bottom-to-top`, anticlockwise for the other two |
 
 Effects, each repeating once per `speed`, counted from the note:
 
@@ -216,11 +221,14 @@ Effects, each repeating once per `speed`, counted from the note:
 | --- | --- |
 | `static` | Holds the shape mid-travel; `phase` moves it |
 | `move` | Glides the shape along its travel |
-| `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width` |
+| `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width`, and `stripes` and `checker` in 2 steps, swapping lit and dark |
 | `pulse` | Holds the shape mid-travel, its level following `curve` |
 | `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. Each pixel counts its cycles from its own random phase, so the shape glows evenly rather than going dark together between cycles. `seed` fixes the pattern |
+| `bounce` | Glides the shape along its travel and back, turning where `move` starts and ends: a bar is half off the area at each turn |
+| `strobe` | Holds the shape mid-travel, lit for the first fifth of each cycle and dark for the rest |
+| `noise` | Holds the shape mid-travel; each of its pixels drifts smoothly between random levels, reaching a new one every cycle, counted from its own random phase as a sparkle's. `seed` fixes the pattern |
 
-Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, `wave` is `gradient` with `move`, and `strobe` is `pulse` with a square curve such as `{ points: [[0, 1], [0.2, 1], [0.21, 0]] }`. `noise` has no equivalent; `sparkle` is the closest.
+Plan §7's other effect names map onto these: `solid` is `static` with the default width of 1, and `wave` is `gradient` with `move`. A strobe with another duty cycle is `pulse` with a square curve such as `{ points: [[0, 1], [0.5, 1], [0.51, 0]] }`.
 
 **Layers.** `layers` stacks 1 to 8 layers, bottom first. Each takes its own `shape`, `effect` and `params`, plus:
 
@@ -233,7 +241,7 @@ Plan §7's other effect names map onto these: `solid` is `static` with the defau
 | `swell` | The layer's own rhythm: `{ duration: 4 bars, curve: ease-in }`, the `duration` and `curve` of a swell cue | none |
 | `pattern` | The layer's own rhythm: `{ length: 1 bar, hits: [{ at: 1, shape: sine, length: 1 beat, level: 100% }] }`, the `length` and `hits` of a pattern cue | none |
 
-A pixel no layer draws, outside every area or muted on every layer whose area holds it, keeps the layers below the cue, as a fixture without colour emitters does; a fixture none of whose pixels is drawn keeps its dimmer channel too. A pixel some layer draws is driven, dark where the layers leave it dark. Each layer's sparkle differs from the others' under the same `seed`. Outside its area, and on what it mutes, a layer changes nothing, a `mask` included.
+A pixel no layer draws, outside every area or muted on every layer whose area holds it, keeps the layers below the cue, as a fixture without colour emitters does; a fixture none of whose pixels is drawn keeps its dimmer channel too. A pixel some layer draws is driven, dark where the layers leave it dark. Each layer's sparkle or noise differs from the others' under the same `seed`. Outside its area, and on what it mutes, a layer changes nothing, a `mask` included.
 
 **Layer rhythms.** A layer takes a `swell` or a `pattern`, not both, timed as the cue types of the same name: a swell runs along its curve from note-on, then holds; a pattern's loop starts on the bar line after note-on and repeats, dark between hits. The rhythm's level scales the layer as `level` does, so at 0 an `over` or `mask` layer lets the layers below show, and multiplies with `level`, with the cue's velocity and fades, and with any [intensity link](#intensity-links) on the cue. Each layer keeps its own rhythm. Specifics:
 
