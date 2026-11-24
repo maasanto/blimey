@@ -13,11 +13,12 @@
    * plays that scene. `onopen(number)` opens a scene in the editor, `onnew()` a new one, and
    * without it there is no New scene pad; `onhold(number)` starts an audition and resolves once
    * it is sent, `onrelease(number)` ends it; `onaudition(number)` starts or ends one from the
-   * keyboard. `editable`: false in show mode, where scenes still open, read-only, but don't
+   * keyboard; `onduplicate(number)` copies a scene, and without it pads have no Duplicate button.
+   * `editable`: false in show mode, where scenes still open, read-only, but don't
    * audition. `draggable`: pads drag out their scene's number, as `SCENE_DRAG_TYPE`. `tempo`:
    * the song's `bpm`, which thumbnails are rendered at.
    */
-  let { songName, cues = {}, tempo, editable, isPlaying, onopen, onnew, onhold, onrelease, onaudition, draggable = false } = $props();
+  let { songName, cues = {}, tempo, editable, isPlaying, onopen, onnew, onhold, onrelease, onaudition, onduplicate, draggable = false } = $props();
 
   /** Thumbnails are 8 frames over one cycle: about a second a loop, as in the pixel editor. */
   const THUMBNAIL_FRAME_MS = 125;
@@ -231,6 +232,9 @@
           disabled={!editable}
           onclick={() => onaudition(number)}>{isOn ? '■' : '▶'}</button
         >
+        {#if onduplicate}
+          <button class="duplicate" aria-label="Duplicate scene {number}" title="Duplicate" disabled={!editable} onclick={() => onduplicate(number)}>⧉</button>
+        {/if}
       </li>
     {/each}
     {#if onnew}
@@ -246,6 +250,7 @@
     {#if editable}
       {#if draggable}Drag a scene onto the section to place it.{/if}
       Click a scene to edit it. Hold it, or press its ▶, to audition it on the rig.
+      {#if onduplicate}Press its ⧉ to duplicate it.{/if}
     {:else}
       Show mode: scenes open read-only and don't audition.
     {/if}
@@ -309,7 +314,8 @@
     transform: scale(0.97);
   }
 
-  .audition {
+  .audition,
+  .duplicate {
     position: absolute;
     top: 10px;
     right: 10px;
@@ -323,8 +329,14 @@
     transition: opacity 0.15s;
   }
 
+  .duplicate {
+    right: 42px;
+  }
+
   .slot:hover .audition,
+  .slot:hover .duplicate,
   .audition:focus-visible,
+  .duplicate:focus-visible,
   .playing + .audition {
     opacity: 1;
   }

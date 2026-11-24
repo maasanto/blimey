@@ -437,14 +437,22 @@
     await reloadAfterSave();
   }
 
+  /** The duplicate under way: a second click before the song reloads would pick the same free number. */
+  let duplicating = null;
+  function duplicate(number) {
+    duplicating ??= duplicateScene(number).finally(() => (duplicating = null));
+    return duplicating;
+  }
+
   /** Copies the saved scene to the next free number above it, or the lowest free one. */
   async function duplicateScene(number) {
+    if (songLoaded !== songName) throw new Error(`${songName} is still loading: duplicate once its scenes show.`);
     const taken = sceneNumbers();
     const free = freeNumber(taken, number + 1) ?? freeNumber(taken);
     if (free === undefined) throw new Error(`Every number up to ${HIGHEST_NUMBER} is taken: delete a scene first.`);
     const original = $state.snapshot(song.cues[number]);
     await request('PUT', `/api/songs/${songName}/cues/${free}`, { cue: { ...original, name: `${original.name}-copy` }, replaces: null });
-    notice = `Duplicated scene ${number} as scene ${free}.`;
+    notice = `Duplicated scene ${number} as scene ${free}. Undo removes it.`;
     await reloadAfterSave();
   }
 
@@ -562,7 +570,7 @@
         <button class:playing={isPlaying(form.replaces.note)} title="⌘↩" onclick={() => attempt(() => audition(form.replaces.note))}>
           {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
         </button>
-        <button onclick={() => attempt(() => duplicateScene(form.replaces.note))}>Duplicate</button>
+        <button onclick={() => attempt(() => duplicate(form.replaces.note))}>Duplicate</button>
         <button class="danger" onclick={() => attempt(() => deleteScene(form.replaces.note))}>Delete</button>
       {/if}
       <button class="primary" title="⌘S" disabled={!!saveBlocker} onclick={() => attempt(save)}>Save</button>
@@ -741,6 +749,7 @@
       onhold={(number) => attempt(() => fire(number))}
       onrelease={(number) => attempt(() => release(number))}
       onaudition={(number) => attempt(() => audition(number))}
+      onduplicate={(number) => attempt(() => duplicate(number))}
     />
     <!-- Below the pads, so showing it moves no pad from under the pointer holding one. A released scene stays until its fade ends. -->
     {#if editable && engine.frame?.song === songName && engine.frame.cues.length}
