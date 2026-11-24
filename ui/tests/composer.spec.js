@@ -351,6 +351,38 @@ test.describe('on three rows of washes', () => {
     await expect(chase).toHaveCount(0);
     await expect(page.locator('[data-shape]')).toHaveCount(2);
   });
+
+  test("an area's shape steps in time with the lights it previews on", async ({ page, show, startEngine }) => {
+    // Four steps of 2.7 s at 90 BPM, one per column of fixtures, opened a while after the page:
+    // a shape looping on the page's clock, or at another tempo, lights another column.
+    writeFileSync(
+      path.join(show, 'songs/slow-chase.yaml'),
+      'program: 9\nbpm: 90\ncues:\n  50:\n    name: slow-chase\n    type: pixel\n    layers:\n' +
+        '      - { shape: bar, effect: chase, params: { color: amber, width: 0.25, speed: 4 bars } }\n',
+    );
+    const { url } = await startEngine({ look: DARK });
+    await page.goto(`${url}#builder`);
+    await page.waitForTimeout(1300);
+    await page.goto(`${url}#builder/slow-chase/50`);
+    await expect(page.locator('[data-shape="0"] canvas')).toHaveAttribute('width', '64');
+
+    /** The quarter of the stage the shape lights, and the column of fixtures lit, as "2/2". */
+    const litQuarters = () =>
+      page.evaluate(() => {
+        const canvas = document.querySelector('[data-shape="0"] canvas');
+        const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, 1);
+        const shape = [...Array(canvas.width).keys()].find((column) => data[column * 4] > 0);
+        const isLit = (column) => document.querySelector(`[data-fixture="low-${column}"] circle`).getAttribute('fill') !== '#000000';
+        const lights = [1, 2, 3, 4].find(isLit);
+        return `${Math.floor((shape * 4) / canvas.width) + 1}/${lights}`;
+      });
+
+    await expect.poll(litQuarters, 'the preview reaches the lights').toMatch(/\/\d$/);
+    for (let sample = 0; sample < 8; sample += 1) {
+      expect(await litQuarters()).toMatch(/^(\d)\/\1$/);
+      await page.waitForTimeout(700);
+    }
+  });
 });
 
 test('an old-form pixel cue opened and saved untouched saves as layers and plays the same', async ({ page, show, startEngine }) => {
