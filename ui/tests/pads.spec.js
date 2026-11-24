@@ -272,7 +272,7 @@ test('duplicate goes to the next free number and delete returns home', async ({ 
   const copy = scene(38, 'verse-copy', 'all-wash: { color: deep-blue }');
 
   await pad(page, 36).click();
-  await page.getByRole('button', { name: 'Duplicate' }).click();
+  await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
   await expect(page.getByText('Duplicated scene 36 as scene 38.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toBe(HEADER + HOUSE + VERSE + CHORUS + copy + RISE + CHASE);
 
@@ -283,6 +283,19 @@ test('duplicate goes to the next free number and delete returns home', async ({ 
   await expect(pad(page, 38)).toHaveCount(0);
   await expect(page).toHaveURL(/#builder$/);
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
+});
+
+test('a scene duplicates once from the scenes home, even double-clicked, and the home stays open with the copy among the pads', async ({ page, show, startEngine }) => {
+  const songFile = addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await page.getByRole('button', { name: 'Duplicate scene 36' }).dblclick();
+  await expect(page.getByText('Duplicated scene 36 as scene 38.')).toBeVisible();
+  await expect(pad(page, 38)).toHaveAccessibleName('Scene 38: verse-copy');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page).toHaveURL(/#builder$/);
+  expect(readFileSync(songFile, 'utf8')).toBe(HEADER + HOUSE + VERSE + CHORUS + scene(38, 'verse-copy', 'all-wash: { color: deep-blue }') + RISE + CHASE);
 });
 
 test('renumbering to a taken number is refused, leaving the file untouched; a free one moves the scene', async ({ page, show, startEngine }) => {

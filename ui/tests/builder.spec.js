@@ -278,6 +278,7 @@ test('show mode locks the builder', async ({ page, show, startEngine }) => {
     page.getByRole('button', { name: /^Undo/ }),
     page.getByRole('button', { name: 'New scene' }),
     page.getByRole('button', { name: 'Audition scene 38' }),
+    page.getByRole('button', { name: 'Duplicate scene 38' }),
   ]) {
     await expect(control).toBeDisabled();
   }
