@@ -1658,16 +1658,16 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{held}");
         assert_eq!(
             (held["columns"].as_u64(), held["rows"].as_u64()),
-            (Some(12), Some(12))
+            (Some(32), Some(32))
         );
         let frames = held["frames"].as_array().unwrap();
         assert_eq!(frames.len(), 8);
         assert_eq!(held["cycle_ms"], 2000.0, "1 bar at 120 BPM, to play it at");
         let red = |frame: &Value, index: usize| frame[index] == "#ff0000";
-        let top_row: Vec<usize> = (0..12).filter(|column| red(&frames[0], *column)).collect();
+        let top_row: Vec<usize> = (0..32).filter(|column| red(&frames[0], *column)).collect();
         assert_eq!(
             top_row,
-            [4, 5, 6, 7],
+            (12..20).collect::<Vec<_>>(),
             "a quarter-canvas bar mid-way, in the palette's red"
         );
         assert!(
@@ -1676,7 +1676,7 @@ mod tests {
         );
 
         let (_, chased) = thumbnail(cue("chase"));
-        let first_lit = |frame: &Value| (0..12).find(|column| red(frame, *column));
+        let first_lit = |frame: &Value| (0..32).find(|column| red(frame, *column));
         let steps: Vec<Option<usize>> = chased["frames"]
             .as_array()
             .unwrap()
@@ -1688,12 +1688,12 @@ mod tests {
             [
                 Some(0),
                 Some(0),
-                Some(3),
-                Some(3),
-                Some(6),
-                Some(6),
-                Some(9),
-                Some(9)
+                Some(8),
+                Some(8),
+                Some(16),
+                Some(16),
+                Some(24),
+                Some(24)
             ],
             "four steps of a quarter over the cycle"
         );
@@ -1702,12 +1702,12 @@ mod tests {
             { "area": { "x": 0, "y": 0, "width": 0.5, "height": 1 }, "shape": "fill", "params": { "color": "red" } },
         ] }));
         assert_eq!(status, StatusCode::OK, "{layered}");
-        let lit: Vec<bool> = (0..12)
+        let lit: Vec<bool> = (0..32)
             .map(|column| red(&layered["frames"][0], column))
             .collect();
         assert_eq!(
             lit,
-            [[true; 6], [false; 6]].concat(),
+            [[true; 16], [false; 16]].concat(),
             "a layer fills its area"
         );
 

@@ -126,7 +126,7 @@
         aria-pressed={(layer[kind] ?? (kind === 'shape' ? 'bar' : 'static')) === option}
         onclick={() => (layer[kind] = option)}
       >
-        <canvas width="12" height="12" {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
+        <canvas width={thumbnail?.columns ?? 1} height={thumbnail?.rows ?? 1} {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
         <span>{option}</span>
       </button>
     {/each}

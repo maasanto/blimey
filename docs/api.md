@@ -587,7 +587,7 @@ It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, s
 Renders a pixel cue, as in its song file, on a sample grid, for the builder's shape and effect pickers. The engine renders it as a song would, so the pickers never re-implement an effect. Colours come from the show's palettes; nothing is saved, and it works in show mode.
 
 ```json
-{ "columns": 12, "rows": 12, "cycle_ms": 2000, "frames": [["#000000", "#ff0000", "… 144 colours"], "… 8 frames"] }
+{ "columns": 32, "rows": 32, "cycle_ms": 2000, "frames": [["#000000", "#ff0000", "… 1024 colours"], "… 8 frames"] }
 ```
 
 - The grid is RGB and fills the canvas.

@@ -619,9 +619,10 @@ impl Drawn {
     }
 }
 
-/// Columns and rows of the square sample grid a thumbnail shows, filling the canvas: the most
-/// RGB pixels that fit the Enttec universe in a square.
-pub const THUMBNAIL_SIDE: usize = 12;
+/// Columns and rows of the square sample grid a thumbnail shows, filling the canvas: fine enough
+/// that circles and sparkles read as shapes rather than blocks, sent over Art-Net as it takes
+/// more than the Enttec universe.
+pub const THUMBNAIL_SIDE: usize = 32;
 /// Frames in a thumbnail, evenly over one cycle, as in the preview sheet.
 pub const THUMBNAIL_FRAMES: usize = 8;
 /// The tempo beats and bars run at in a thumbnail: it shows one cycle whatever the speed.
@@ -640,11 +641,11 @@ pub fn thumbnail(
     let scene = PixelScene::parse(show, time_signature, cue)?;
     let rig = Rig::parse(
         &format!(
-            "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {THUMBNAIL_SIDE}, rows: {THUMBNAIL_SIDE}, colour_order: RGB, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
+            "fixtures:\n  - {{ name: sample, type: pixel-grid, columns: {THUMBNAIL_SIDE}, rows: {THUMBNAIL_SIDE}, colour_order: RGB, output: artnet, universe: 0, address: 1, canvas: {{ x: 0, y: 0, width: 1, height: 1 }} }}\n"
         ),
         Path::new("."),
     )
-    .expect("the sample grid fits the Enttec universe");
+    .expect("the sample grid fits the Art-Net universes");
     let (length, frames) = cycle(&scene, &rig, time_signature)?;
     let frames = frames
         .into_iter()
@@ -1016,7 +1017,7 @@ mod tests {
             .collect();
         assert_eq!(
             first_lit,
-            [0, 0, 3, 3, 6, 6, 9, 9].map(Some),
+            [0, 0, 8, 8, 16, 16, 24, 24].map(Some),
             "the 1-bar chase leads twice as fast, the static fill doesn't count"
         );
     }
