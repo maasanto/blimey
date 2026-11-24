@@ -93,6 +93,32 @@ test('a two-layer pixel look plays after a restart as the engine renders its sav
   await expect.poll(() => nextDmx(second.address)).toEqual(rendered);
 });
 
+test('a checker strobe picked in the inspector saves and plays as the engine renders it', async ({ page, show, startEngine }) => {
+  const songFile = addSong(show, HEADER.replace('cues:\n', ''));
+  const { url, address } = await startEngine();
+  await page.goto(`${url}#builder/demo/40`);
+  await page.getByLabel('Name').fill('checker-strobe');
+  await ingredient(page, 'Wash').click();
+  const checker = page.getByRole('button', { name: 'Shape: checker' });
+  await expect.poll(() => isPainted(checker), 'the engine draws the new shape').toBe(true);
+  await checker.click();
+  await page.getByRole('button', { name: 'Motion: strobe' }).click();
+  await page.getByRole('button', { name: 'Colour: deep-blue' }).click();
+  await page.getByLabel('Width', { exact: true }).fill('0.25');
+  await expect(page.getByText('Deep-blue strobe everywhere.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toBe(
+    `${HEADER}  40:\n    name: checker-strobe\n    type: pixel\n    layers:\n` +
+      '      -\n        shape: checker\n        effect: strobe\n        params: { color: deep-blue, width: 0.25 }\n        blend: over\n',
+  );
+  const rendered = replayFirstFrame(show, [SELECT_SONG, FIRE_40]);
+  const litWashes = [0, 1, 2, 3].filter((wash) => rendered.slice(wash * 16, wash * 16 + 16).some((value) => value > 0));
+  expect(litWashes, 'the strobe starts lit, on every other wash').toHaveLength(2);
+  await expect.poll(() => nextDmx(address), 'dark between flashes').toEqual(new Array(512).fill(0));
+});
+
 test("linking a pattern to a pixel scene's intensity saves it as the pattern's target", async ({ page, show, startEngine }) => {
   const pattern =
     '  42:\n    name: pulse\n    type: pattern\n    length: 1 bar\n    target: { all-wash: dimmer }\n' +

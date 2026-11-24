@@ -23,8 +23,8 @@
   let { layer = $bindable(), palettes = {}, groups = {}, caught, seed, now, song, editable, barBeats, saved, audition } = $props();
 
   // docs/api.md, Pixel cues.
-  const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one'];
-  const EFFECTS = ['static', 'move', 'pulse', 'chase', 'sparkle'];
+  const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one', 'diamond', 'diagonal', 'stripes', 'checker', 'wedge'];
+  const EFFECTS = ['static', 'move', 'pulse', 'chase', 'sparkle', 'bounce', 'strobe', 'noise'];
   const DIRECTIONS = ['left-to-right', 'right-to-left', 'bottom-to-top', 'top-to-bottom'];
   const BLENDS = ['over', 'max', 'add', 'mask'];
   const DEFAULT_BLEND = 'max';
