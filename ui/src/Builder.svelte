@@ -11,13 +11,14 @@
    * takes it, so the engine can refuse the save if the file changed since. `hidden` marks the
    * look's layers left off the preview while editing. `sceneKept` says why a fixed look opened on
    * the stage stays one, read-only, or is null. `unchanged` is the form as opened or last saved,
-   * to tell unsaved edits.
+   * to tell unsaved edits. `prefilledName` is the name a new look took from its top layer, which
+   * follows that layer until the user types another or saves, then null.
    */
   let form = $state(newForm());
   let isShowing = false;
 
   function newForm() {
-    return { number: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null, unchanged: null };
+    return { number: null, replaces: null, cue: { name: '', type: 'pixel', layers: [] }, hidden: [], sceneKept: null, unchanged: null, prefilledName: '' };
   }
 
   function withoutEmptyTimes(edited) {
@@ -56,7 +57,7 @@
   import { FULL_VELOCITY, NOTE_OFF, NOTE_ON, PROGRAM_CHANGE } from './audition.js';
   import { beatsPerBar, DEFAULT_BPM } from './duration.js';
   import FrontView from './FrontView.svelte';
-  import { asLayers, sceneAsPixelCue } from './layers.js';
+  import { asLayers, describeLayer, sceneAsPixelCue } from './layers.js';
   import PatternGrid from './PatternGrid.svelte';
   import { pausePlayback } from './playback.svelte.js';
   import ScenePads from './ScenePads.svelte';
@@ -354,6 +355,13 @@
     form.unchanged = unchangedOf(form);
   });
 
+  $effect(() => {
+    if (form.replaces !== null || form.cue.name !== form.prefilledName) return;
+    const top = isPixel ? form.cue.layers.at(-1) : undefined;
+    form.cue.name = top ? describeLayer(top) : '';
+    form.prefilledName = form.cue.name;
+  });
+
   // One preview request at a time, always the latest, so the output never steps back.
   let queuedPreview;
   let isQueued = false;
@@ -401,6 +409,8 @@
     }
     // Saved as of now, not once the song reloads: leaving in between is no leave with unsaved edits.
     form.unchanged = sent;
+    // Saved under this name: a layer added while the song reloads doesn't rename it.
+    form.prefilledName = null;
     isDirtyNow = unchangedOf(form) !== sent;
     notice = `Saved scene ${number} in ${songName}.`;
     const saved = form;
