@@ -3,11 +3,12 @@
 //! and blended over the layers below it.
 //!
 //! A frame is a pure function of the cue's start, the time and the beats since then: effects
-//! count cycles of their `speed` from the note, and sparkle draws from a hash of the layer's
+//! count cycles of their `speed` from the note, and sparkle and noise draw from a hash of the layer's
 //! seed, the pixel's position and the cycle, never from running state.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::f64::consts::TAU;
 use std::path::Path;
 use std::time::Duration;
 
@@ -37,12 +38,14 @@ const REST_POSITION: f64 = 0.5;
 /// A sparkle flash lasts this fraction of a cycle, fading linearly.
 // ponytail: fixed flash length; make it a param if the preview sheet asks for denser sparkle.
 const FLASH: f64 = 0.25;
-/// The cycle `random` draws a sparkle pixel's own phase for, one no layer counts to.
+/// The share of its cycle a strobe is lit for.
+const STROBE_LIT: f64 = 0.2;
+/// The cycle `random` draws a sparkle or noise pixel's own phase for, one no layer counts to.
 const PIXEL_PHASE_DRAW: i64 = i64::MIN;
 /// Frames often land exactly on a chase step, on the beat; time and beat arithmetic can put
 /// them a hair before it. This keeps them on the step they land on.
 const STEP_ROUNDING: f64 = 1e-9;
-/// Mixed into the cue's seed once per layer up the stack, so no layer's sparkle mirrors
+/// Mixed into the cue's seed once per layer up the stack, so no layer's sparkle or noise mirrors
 /// another's. Layer 2 gets the seed two-layer cues have always given it, so they render the same.
 const LAYER_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 const WHITE: Rgb = Rgb {
@@ -73,6 +76,18 @@ pub enum Shape {
     OneByOne,
     /// The whole area.
     Fill,
+    /// A ring as `circle`'s, with straight sides: a square on its corner.
+    Diamond,
+    /// A band `width` wide lying across a diagonal of the area, travelling corner to corner.
+    Diagonal,
+    /// Bars `width` wide with gaps as wide, repeating along the direction; a cycle moves them
+    /// on by one bar and one gap.
+    Stripes,
+    /// Squares `width` of the area wide, every other one lit; a cycle moves them on by two.
+    Checker,
+    /// A wedge `width` of a turn wide, turning about the area's centre: clockwise for
+    /// left-to-right and bottom-to-top, anticlockwise for the other two.
+    Wedge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -89,6 +104,13 @@ pub enum Effect {
     Chase,
     /// Each pixel of the shape, held mid-travel, flashes once per cycle at a random moment.
     Sparkle,
+    /// The shape glides along its travel and back, once per cycle.
+    Bounce,
+    /// The shape held mid-travel, lit for the first `STROBE_LIT` of each cycle.
+    Strobe,
+    /// Each pixel of the shape, held mid-travel, drifts between random levels, a new one per
+    /// cycle.
+    Noise,
 }
 
 /// On the canvas as seen from the audience: bottom is the floor.
@@ -757,18 +779,30 @@ impl Layer {
         let position = match self.effect {
             Effect::Static => (REST_POSITION + self.phase).rem_euclid(1.0),
             Effect::Move => within,
-            Effect::Chase => {
-                // One-by-one steps a cell at a time, whatever the width.
-                let steps = match self.shape {
-                    Shape::OneByOne => lines.len().max(1) as f64,
-                    _ => (1.0 / self.travel_width()).round().max(1.0),
-                };
-                ((within * steps + STEP_ROUNDING).floor() + 0.5) / steps
-            }
-            Effect::Pulse | Effect::Sparkle => REST_POSITION,
+            Effect::Bounce => 1.0 - (2.0 * within - 1.0).abs(),
+            Effect::Chase => match self.shape {
+                // A cycle moves these on by a lit and a dark one: a step for each, from where
+                // they rest, so lit and dark swap places.
+                Shape::Stripes | Shape::Checker => {
+                    REST_POSITION + (within * 2.0 + STEP_ROUNDING).floor() / 2.0
+                }
+                _ => {
+                    // One-by-one steps a cell at a time, whatever the width.
+                    let steps = match self.shape {
+                        Shape::OneByOne => lines.len().max(1) as f64,
+                        _ => (1.0 / self.travel_width()).round().max(1.0),
+                    };
+                    ((within * steps + STEP_ROUNDING).floor() + 0.5) / steps
+                }
+            },
+            Effect::Pulse | Effect::Sparkle | Effect::Strobe | Effect::Noise => REST_POSITION,
         };
         let level = match self.effect {
             Effect::Pulse => self.curve.level(within),
+            // A frame a rounding error before the cycle starts is its first lit one.
+            Effect::Strobe => f64::from(u8::from(
+                (within + STEP_ROUNDING).rem_euclid(1.0) < STROBE_LIT,
+            )),
             _ => 1.0,
         };
         LayerFrame {
@@ -892,16 +926,61 @@ impl LayerFrame<'_> {
             }
             Shape::Gradient => (travel(direction, x, y) - position + 0.5).rem_euclid(1.0),
             Shape::OneByOne => {
-                let lit_turn = (position * self.lines.len() as f64).floor();
+                // A bounce reaches the end of the travel: the last cell's turn.
+                let last_turn = self.lines.len().saturating_sub(1) as f64;
+                let lit_turn = (position * self.lines.len() as f64).floor().min(last_turn);
                 f64::from(u8::from(self.turn(cell) as f64 == lit_turn))
             }
             Shape::Fill => 1.0,
+            Shape::Diamond => {
+                let from_centre = f64::from((x - 0.5).abs() + (y - 0.5).abs());
+                band(reverse(from_centre))
+            }
+            Shape::Diagonal => band(along_diagonal(direction, x, y)),
+            Shape::Stripes => f64::from(u8::from(self.tile(travel(direction, x, y)) % 2 == 0)),
+            Shape::Checker => f64::from(u8::from(self.checker_tile(x, y) % 2 == 0)),
+            Shape::Wedge => {
+                let anticlockwise = f64::from((y - 0.5).atan2(x - 0.5)) / TAU;
+                let from_wedge = (reverse(-anticlockwise) - position + 0.5).rem_euclid(1.0) - 0.5;
+                f64::from(u8::from(from_wedge.abs() <= half_width))
+            }
         };
-        let flash = match effect {
+        let per_pixel = match effect {
             Effect::Sparkle => self.flash(x, y),
+            Effect::Noise => self.noise(x, y),
             _ => 1.0,
         };
-        shape_level * self.level * flash
+        shape_level * self.level * per_pixel
+    }
+
+    /// Which bar of stripes, or column of a checker, `along` (0–1 along the travel) is in,
+    /// counted from where the travel position has moved them to: mid-travel, from the start
+    /// edge, so the first one is lit.
+    fn tile(&self, along: f64) -> i64 {
+        (along / self.layer.width - 2.0 * (self.position - REST_POSITION)).floor() as i64
+    }
+
+    /// A checker's column along the travel plus its row across it, at (`x`, `y`).
+    fn checker_tile(&self, x: f32, y: f32) -> i64 {
+        let across = match self.layer.direction {
+            Direction::LeftToRight | Direction::RightToLeft => y,
+            Direction::TopToBottom | Direction::BottomToTop => x,
+        };
+        let row = (f64::from(across) / self.layer.width).floor() as i64;
+        self.tile(travel(self.layer.direction, x, y)) + row
+    }
+
+    /// A noise pixel's level: eased from one random level to the next over each cycle. Each
+    /// pixel counts its cycles from its own random phase, as a sparkle's, so they don't all
+    /// settle together where the layer's cycles meet.
+    fn noise(&self, x: f32, y: f32) -> f64 {
+        let cycles = self.cycles + random(self.seed, x, y, PIXEL_PHASE_DRAW);
+        let cycle = cycles.floor();
+        let within = cycles - cycle;
+        let eased = within * within * (3.0 - 2.0 * within);
+        let from = random(self.seed, x, y, cycle as i64);
+        let to = random(self.seed, x, y, cycle as i64 + 1);
+        from + (to - from) * eased
     }
 
     /// A sparkle pixel's level: one flash per cycle, starting at a random moment. Each pixel
@@ -965,6 +1044,18 @@ fn travel(direction: Direction, x: f32, y: f32) -> f64 {
         Direction::BottomToTop => y,
         Direction::TopToBottom => 1.0 - y,
     })
+}
+
+/// 0–1 from corner to corner: from the bottom left for left-to-right, the top right for
+/// right-to-left, the bottom right for bottom-to-top and the top left for top-to-bottom.
+fn along_diagonal(direction: Direction, x: f32, y: f32) -> f64 {
+    let rising = match direction {
+        Direction::LeftToRight => y,
+        Direction::RightToLeft => 1.0 - y,
+        Direction::BottomToTop => 1.0 - x,
+        Direction::TopToBottom => x,
+    };
+    (travel(direction, x, y) + f64::from(rising)) / 2.0
 }
 
 fn mix(from: Rgb, to: Rgb, amount: f32) -> Rgb {

@@ -112,7 +112,7 @@
           }
         },
         "rgbw": { "description": "How RGBW pixels show the colour. Defaults to saturated.", "enum": ["saturated", "white-rich"] },
-        "seed": { "description": "Fixes sparkle's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 },
+        "seed": { "description": "Fixes sparkle's and noise's random pattern. Defaults to 0.", "type": "integer", "minimum": 0 },
         "layers": {
           "description": "1 to 8 layers, bottom first, each blended over the ones below it. A pixel no layer draws, outside every area or muted, keeps the layers below the cue.",
           "type": "array",
@@ -170,8 +170,8 @@
         "mute": { "description": "Fixtures, grids or groups the layer leaves to the layers below. The engine checks the names.", "type": "array", "items": { "type": "string" } }
       }
     },
-    "pixelShape": { "description": "Defaults to bar.", "enum": ["bar", "sweep", "circle", "split", "gradient", "one-by-one", "fill"] },
-    "pixelEffect": { "description": "Defaults to static.", "enum": ["static", "move", "pulse", "chase", "sparkle"] },
+    "pixelShape": { "description": "Defaults to bar.", "enum": ["bar", "sweep", "circle", "split", "gradient", "one-by-one", "fill", "diamond", "diagonal", "stripes", "checker", "wedge"] },
+    "pixelEffect": { "description": "Defaults to static.", "enum": ["static", "move", "pulse", "chase", "sparkle", "bounce", "strobe", "noise"] },
     "pixelParams": {
       "type": "object",
       "additionalProperties": false,

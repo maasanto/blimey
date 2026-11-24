@@ -18,8 +18,22 @@ use blimey_engine::{
     FakeClock, FakeDmx, MidiEvent, MidiSource, RecordedFrame, Show, Universe, run,
 };
 
-const SHAPES: [&str; 6] = ["bar", "sweep", "circle", "split", "gradient", "one-by-one"];
-const EFFECTS: [&str; 5] = ["static", "move", "pulse", "chase", "sparkle"];
+const SHAPES: [&str; 11] = [
+    "bar",
+    "sweep",
+    "circle",
+    "split",
+    "gradient",
+    "one-by-one",
+    "diamond",
+    "diagonal",
+    "stripes",
+    "checker",
+    "wedge",
+];
+const EFFECTS: [&str; 8] = [
+    "static", "move", "pulse", "chase", "sparkle", "bounce", "strobe", "noise",
+];
 const SIDE: usize = 16;
 const GRID: &str = "fixtures:\n  - { name: grid, type: pixel-grid, columns: 16, rows: 16, colour_order: RGB, output: artnet, universe: 0, address: 1, canvas: { x: 0, y: 0, width: 1, height: 1 } }\n";
 /// At 150 BPM, half a beat is 200 ms: 8 frames per cycle.
