@@ -265,6 +265,27 @@ test('a new scene takes the lowest free number and saves under it', async ({ pag
   await expect(page.locator('[data-pad]').nth(1)).toHaveAccessibleName('Scene 2: fresh');
 });
 
+test('a duplicated layer lands above its original, selected, and saves as its own layer', async ({ page, show, startEngine }) => {
+  const songFile = addSong(show);
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+  const layers = page.getByRole('list', { name: 'Layers, top first' }).getByRole('listitem');
+
+  await page.getByRole('button', { name: 'New scene' }).click();
+  await page.getByLabel('Name').fill('twin');
+  await page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name: 'Wash' }).click();
+  await page.getByRole('group', { name: 'Ingredients' }).getByRole('button', { name: 'Chase' }).click();
+  await page.getByRole('button', { name: 'Duplicate: deep-blue wash everywhere' }).click();
+
+  await expect(layers).toHaveCount(3);
+  await expect(layers.nth(1).getByRole('button', { name: 'deep-blue wash everywhere', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByLabel('Blend').selectOption('add');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 2 in demo.')).toBeVisible();
+  const wash = (blend) => `      -\n        shape: fill\n        params: { color: deep-blue }\n        blend: ${blend}\n`;
+  expect(readFileSync(songFile, 'utf8')).toContain(`  2:\n    name: twin\n    type: pixel\n    layers:\n${wash('over')}${wash('add')}      -\n        shape: bar\n        effect: chase\n`);
+});
+
 test('a new look is named after its top layer until the user names it', async ({ page, show, startEngine }) => {
   const songFile = addSong(show);
   const { url } = await startEngine();

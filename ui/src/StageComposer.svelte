@@ -125,6 +125,14 @@
     selected = cue.layers.length - 1;
   }
 
+  /** Puts a copy of layer `index` just above it and selects the copy. */
+  function duplicateLayer(index) {
+    if (isFull) return;
+    cue.layers.splice(index + 1, 0, $state.snapshot(cue.layers[index]));
+    hidden.splice(index + 1, 0, false);
+    selected = index + 1;
+  }
+
   function swapLayers(index, other) {
     for (const list of [cue.layers, hidden]) [list[index], list[other]] = [list[other], list[index]];
     if (selected === index) selected = other;
@@ -390,6 +398,7 @@
             >
               {hidden[index] ? 'Show' : 'Hide'}
             </button>
+            <button class="quiet" aria-label="Duplicate: {description}" title="Duplicate" disabled={!editable || isFull} onclick={() => duplicateLayer(index)}>⧉</button>
             <button class="quiet danger" aria-label="Delete: {description}" title="Delete" disabled={!editable} onclick={() => deleteLayer(index)}>×</button>
           </li>
         {/each}
