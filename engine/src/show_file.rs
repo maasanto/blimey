@@ -85,8 +85,7 @@ impl Writable<'_> {
 }
 
 fn canonical_song(show_dir: &Path, name: &str, content: Value) -> Result<String, String> {
-    let schema: Value = serde_json::from_str(SONG_SCHEMA).expect("schema/ files are JSON");
-    let yaml = to_yaml(&song_in_schema_order(content, &schema));
+    let yaml = to_yaml(&song_in_schema_order(content));
     load_as_written(show_dir, None, Some((name, &yaml)))?;
     Ok(yaml)
 }
@@ -130,7 +129,8 @@ fn refuse_case_twin(show_dir: &Path, file: &str, name: &str) -> io::Result<()> {
 
 /// Keys in the order the schema lists them, each cue's by its type's definition, each section's
 /// and block's by theirs, and cues by note number.
-fn song_in_schema_order(content: Value, schema: &Value) -> Value {
+pub(crate) fn song_in_schema_order(content: Value) -> Value {
+    let schema: &Value = &serde_json::from_str(SONG_SCHEMA).expect("schema/ files are JSON");
     let Value::Object(mut song) = content else {
         return content;
     };
@@ -233,7 +233,7 @@ fn in_order(value: Value, properties: &Value) -> Value {
 
 /// Block-style YAML with two-space indents, where a mapping or sequence of plain values sits on
 /// one line in flow style: `all-wash: { color: deep-blue, dimmer: 60% }`.
-fn to_yaml(value: &Value) -> String {
+pub(crate) fn to_yaml(value: &Value) -> String {
     let mut yaml = String::new();
     write_block(&mut yaml, value, 0);
     yaml
@@ -384,16 +384,21 @@ fn checked(show_dir: &Path, file: &str, content: Value) -> io::Result<String> {
         refuse_case_twin(show_dir, file, name)?;
     }
     let refused = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
-    let schema = serde_json::from_str(writable.schema()).expect("schema/ files are JSON");
-    let validator = jsonschema::validator_for(&schema).expect("schema/ files are JSON Schemas");
-    let errors: Vec<String> = validator
-        .iter_errors(&content)
-        .map(|error| format!("{}: {error}", error.instance_path()))
-        .collect();
+    let errors = schema_errors(writable.schema(), &content);
     if !errors.is_empty() {
         return Err(refused(format!("{file}: {}", errors.join("; "))));
     }
     writable.canonical(show_dir, content).map_err(refused)
+}
+
+/// Where `content` breaks `schema`, one `<path>: <error>` each.
+pub(crate) fn schema_errors(schema: &str, content: &Value) -> Vec<String> {
+    let schema = serde_json::from_str(schema).expect("schema/ files are JSON");
+    let validator = jsonschema::validator_for(&schema).expect("schema/ files are JSON Schemas");
+    validator
+        .iter_errors(content)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect()
 }
 
 /// Saves `cue` on `note` in `songs/<song>.yaml`, as a new cue or, when editing one, in place of
@@ -549,22 +554,29 @@ fn edit_cues(
     edit: impl FnOnce(&str, &mut Map<String, Value>) -> io::Result<()>,
 ) -> io::Result<Save> {
     edit_song(show_dir, song, |file, song| {
-        let cues = song
-            .entry("cues")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{file}: cues must be a mapping"),
-                )
-            })?;
-        edit(file, cues)
+        edit(file, mapping(song, "cues", file)?)
     })
 }
 
+/// The song's `key` mapping, created if it has none.
+pub(crate) fn mapping<'song>(
+    song: &'song mut Map<String, Value>,
+    key: &str,
+    file: &str,
+) -> io::Result<&'song mut Map<String, Value>> {
+    song.entry(key)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{file}: {key} must be a mapping"),
+            )
+        })
+}
+
 /// Reads, edits and writes a song under one lock, so no other write lands in between.
-fn edit_song(
+pub(crate) fn edit_song(
     show_dir: &Path,
     song: &str,
     edit: impl FnOnce(&str, &mut Map<String, Value>) -> io::Result<()>,
@@ -736,14 +748,14 @@ pub(crate) fn write_atomically(path: &Path, content: impl AsRef<[u8]>) -> io::Re
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
 
     const DEMO_SONG: &str = "songs/demo-song.yaml";
 
     /// A scratch copy of the demo show.
-    fn demo_copy(test: &str) -> PathBuf {
+    pub(crate) fn demo_copy(test: &str) -> PathBuf {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/shows/demo");
         let copy = std::env::temp_dir().join(format!("blimey-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&copy);

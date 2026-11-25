@@ -11,6 +11,7 @@ pub mod cue;
 mod dump;
 pub mod duration;
 pub mod envelope;
+pub mod export;
 pub mod fixture;
 mod legacy;
 pub mod look;
