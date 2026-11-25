@@ -364,7 +364,9 @@ test('renumbering to a taken number is refused, leaving the file untouched; a fr
   await page.getByRole('button', { name: 'Save', exact: true }).press('Enter');
   expect(readFileSync(songFile, 'utf8')).toBe(SONG);
 
-  // A number taken since the song was loaded is refused by the engine.
+  // A number taken since the song was loaded is refused by the engine. The thumbnails finish
+  // first: one reading the song file mid-write below would fail and raise an alert of its own.
+  await page.waitForLoadState('networkidle');
   await page.getByLabel('Number').fill('41');
   await expect(page.getByText('Taken by verse', { exact: true })).toHaveCount(0);
   writeFileSync(songFile, SONG.replace('  40:\n', '  41:\n    name: taken-by-hand\n    type: scene\n    values:\n      all-wash: { color: deep-blue }\n  40:\n'));
