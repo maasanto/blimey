@@ -187,6 +187,36 @@ test('Export to DAW downloads the file the engine exports', async ({ page, show,
   expect(readFileSync(await download.path())).toEqual(readFileSync(path.join(show, 'export/arranged.mid')));
 });
 
+/** Clicks `button` and returns the path of the file it downloads. */
+async function downloaded(page, button) {
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: button, exact: true }).click();
+  return (await downloading).path();
+}
+
+test('an exported section imports beside a changed scene without overwriting it, and an exported song as a new song', async ({ page, show, startEngine }) => {
+  const { url } = await startEngine({ look: DARK });
+  await page.goto(`${url}#builder/arranged/timeline`);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('verse');
+  const section = await downloaded(page, 'Export');
+  const changed = ARRANGED.replace('name: red', 'name: crimson');
+  writeFileSync(songFile(show), changed);
+
+  await page.getByRole('link', { name: '← Scenes' }).click();
+  await page.getByLabel('Export file').setInputFiles(section);
+  await expect(page.getByText('moving what was taken: section verse to verse-2, scene 36 to 38. Undo removes it.')).toBeVisible();
+  const imported = readFileSync(songFile(show), 'utf8');
+  expect(imported).toContain(changed.slice(changed.indexOf('cues:'), changed.indexOf('  42:')));
+  expect(imported).toContain('  38:\n    name: red\n');
+  expect(imported).toContain('  verse-2:\n    bars: 2\n    blocks:\n      - { scene: 38, bar: 1, length: 2 bars }\n      - { scene: 37,');
+
+  const song = await downloaded(page, 'Export song');
+  await page.getByLabel('Export file').setInputFiles(song);
+  await expect(page.getByText('Imported song 2 · arranged-2. Undo removes it.')).toBeVisible();
+  await expect(page.getByLabel('Song')).toHaveValue('arranged-2');
+  expect(readFileSync(path.join(show, 'songs/arranged-2.yaml'), 'utf8')).toBe(imported.replace('program: 1', 'program: 2'));
+});
+
 test('show mode is read-only', async ({ page, show, startEngine }) => {
   const { url, address } = await startEngine({ look: DARK, edit: false });
   await page.goto(`${url}#builder/arranged/timeline`);

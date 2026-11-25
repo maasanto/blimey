@@ -917,6 +917,7 @@
           </label>
         {/key}
         <button onclick={() => edit(duplicateSection, section.name)}>Duplicate</button>
+        <button onclick={() => location.assign(`${songPath}/sections/${encodeURIComponent(section.name)}/export`)}>Export</button>
         <button class="danger" onclick={() => edit(deleteSection, section.name)}>Delete</button>
       </fieldset>
 

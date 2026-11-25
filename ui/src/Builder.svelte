@@ -508,6 +508,33 @@
     await Promise.all([loadSummary(), loadSteps()]);
   }
 
+  const songApi = (name) => `/api/songs/${encodeURIComponent(name)}`;
+  let importInput = $state();
+
+  async function chooseImport(event) {
+    const [file] = event.target.files;
+    // Cleared, so choosing the same file again imports it again.
+    event.target.value = '';
+    if (file) await attempt(() => importFile(file));
+  }
+
+  /** Adds an export file's song to the show, or its section or scene to this song, saying what had to move. */
+  async function importFile(file) {
+    const imported = await request('POST', `/api/import${songName ? `?song=${encodeURIComponent(songName)}` : ''}`, file);
+    if (imported.program !== undefined) {
+      songName = imported.song;
+      notice = `Imported song ${imported.program} · ${imported.song}. Undo removes it.`;
+      await Promise.all([loadSummary(), loadSteps()]);
+      return;
+    }
+    const moves = [
+      ...Object.entries(imported.sections).filter(([from, to]) => from !== to).map(([from, to]) => `section ${from} to ${to}`),
+      ...Object.entries(imported.scenes).filter(([from, to]) => Number(from) !== to).map(([from, to]) => `scene ${from} to ${to}`),
+    ];
+    notice = `Imported ${file.name} into ${imported.song}${moves.length ? `, moving what was taken: ${moves.join(', ')}` : ''}. Undo removes it.`;
+    await reloadAfterSave();
+  }
+
   const isPlaying = (number) =>
     engine.frame?.song === songName && engine.frame.cues.some((cue) => cue.note === number && !cue.released);
 
@@ -581,6 +608,7 @@
           {isPlaying(form.replaces.note) ? 'Release' : 'Audition'}
         </button>
         <button onclick={() => attempt(() => duplicate(form.replaces.note))}>Duplicate</button>
+        <button title="Downloads the saved scene" onclick={() => location.assign(`${songApi(songName)}/cues/${form.replaces.note}/export`)}>Export</button>
         <button class="danger" onclick={() => attempt(() => deleteScene(form.replaces.note))}>Delete</button>
       {/if}
       <button class="primary" title="⌘S" disabled={!!saveBlocker} onclick={() => attempt(save)}>Save</button>
@@ -717,6 +745,9 @@
       </select>
     </label>
     <button disabled={!editable || newSong !== null} onclick={openNewSong}>New song</button>
+    <button disabled={!editable} title="A song, or a section or scene into this song" onclick={() => importInput.click()}>Import…</button>
+    <input type="file" hidden aria-label="Export file" accept=".yaml,.yml,.json" bind:this={importInput} onchange={chooseImport} />
+    <button disabled={!song} onclick={() => location.assign(`${songApi(songName)}/export`)}>Export song</button>
     <fieldset disabled={!editable || !song}>
       <label>
         Metronome
