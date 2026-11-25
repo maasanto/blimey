@@ -21,6 +21,7 @@ use blimey_engine::colour::Rgb;
 use blimey_engine::cue::{Cue, CueTiming};
 use blimey_engine::duration::TimeSignature;
 use blimey_engine::envelope::Envelope;
+use blimey_engine::export;
 use blimey_engine::look::{self, FixtureLook, Look, VirtualDimmers};
 use blimey_engine::pattern::Pattern;
 use blimey_engine::pixel::{self, PixelScene, Rhythm};
@@ -107,6 +108,12 @@ struct Arrangement {
     arrangement: Value,
 }
 
+/// The song a section or scene is imported into.
+#[derive(Deserialize)]
+struct ImportTarget {
+    song: Option<String>,
+}
+
 /// A pixel cue to preview, animated at its song's tempo.
 #[derive(Deserialize)]
 struct PixelPreview {
@@ -146,6 +153,13 @@ pub fn routes(api: Api) -> Router {
             "/api/songs/{song}/cues/{note}",
             put(save_cue).delete(delete_cue),
         )
+        .route("/api/songs/{song}/cues/{note}/export", get(export_scene))
+        .route("/api/songs/{song}/export", get(export_song))
+        .route(
+            "/api/songs/{song}/sections/{section}/export",
+            get(export_section),
+        )
+        .route("/api/import", post(import))
         .route("/api/songs/{song}/thumbnails", get(song_thumbnails))
         .route("/api/songs", post(create_song))
         .route("/api/songs/{song}/bpm", put(set_bpm))
@@ -812,6 +826,61 @@ async fn create_song(State(api): State<Api>, content: JsonBody) -> Response {
         Ok(song) => saved(&api, || {
             show_file::create_song(&api.show_dir, &song.name, song.content.into())
         }),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// Works in show mode too: it reads the song and changes nothing.
+async fn export_song(State(api): State<Api>, Path(song): Path<String>) -> Response {
+    let file = export::export_song(&api.show_dir, &song);
+    export_file(file, &format!("{song}.yaml"))
+}
+
+async fn export_section(
+    State(api): State<Api>,
+    Path((song, section)): Path<(String, String)>,
+) -> Response {
+    let file = export::export_section(&api.show_dir, &song, &section);
+    export_file(file, &format!("{song}-{section}.yaml"))
+}
+
+async fn export_scene(State(api): State<Api>, Path((song, note)): Path<(String, u8)>) -> Response {
+    let file = export::export_scene(&api.show_dir, &song, note);
+    export_file(file, &format!("{song}-scene-{note}.yaml"))
+}
+
+fn export_file(file: io::Result<String>, file_name: &str) -> Response {
+    match file {
+        Ok(yaml) => (
+            [
+                (header::CONTENT_TYPE, "application/yaml".to_owned()),
+                (header::CONTENT_DISPOSITION, attachment(file_name)),
+            ],
+            yaml,
+        )
+            .into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// The body is the export file itself, as text.
+async fn import(
+    State(api): State<Api>,
+    Query(target): Query<ImportTarget>,
+    file: Bytes,
+) -> Response {
+    if let Some(refused) = refused_in_show_mode(api.mode) {
+        return refused;
+    }
+    let mut history = lock(&api.history);
+    let imported = std::str::from_utf8(&file)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the import file must be text"))
+        .and_then(|text| export::import(&api.show_dir, target.song.as_deref(), text));
+    match imported {
+        Ok((save, summary)) => {
+            history.record(save);
+            Json(summary).into_response()
+        }
         Err(error) => error_response(&error),
     }
 }

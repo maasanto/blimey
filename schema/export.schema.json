@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blimey.local/schema/export.schema.json",
+  "title": "Blimey export file (a song, a section or a scene)",
+  "description": "What the builder's Export writes and Import reads: a song file, or part of one, with kind on top. Its content follows song.schema.json, which checks it once imported, as the engine does.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "enum": ["song", "section", "scene"] },
+    "name": {
+      "description": "The song's name, for kind song.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "cues": {
+      "description": "Channel-2 note number → cue, as in a song.",
+      "type": "object",
+      "propertyNames": { "pattern": "^([0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$" },
+      "additionalProperties": { "type": "object" }
+    },
+    "sections": {
+      "description": "Section name → section, as in a song.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": { "blocks": { "type": "array", "items": { "type": "object" } } }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "song" } } },
+      "then": {
+        "description": "A whole song file, with its name.",
+        "required": ["name", "program"]
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "section" } } },
+      "then": {
+        "description": "One section, and the scenes its blocks play with the pixel scenes they link to.",
+        "required": ["cues", "sections"],
+        "propertyNames": { "enum": ["kind", "cues", "sections"] },
+        "properties": { "sections": { "minProperties": 1, "maxProperties": 1 } }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "scene" } } },
+      "then": {
+        "description": "One scene, with the pixel scenes it links to.",
+        "required": ["cues"],
+        "propertyNames": { "enum": ["kind", "cues"] },
+        "properties": { "cues": { "minProperties": 1 } }
+      }
+    }
+  ]
+}

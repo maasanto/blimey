@@ -567,6 +567,45 @@ Creates `songs/<name>.yaml` (`204`). The body is the name and the start of the s
 
 `bpm` and `time_signature` are optional. The song is checked and written like `PUT /api/show/<file>`, and hot reload makes it selectable from the next frame. Refused, with nothing written: a name the show already has, in any case (`409`); a name that isn't letters, digits, `-` and `_`, or a `program` another song uses (`422`). Unlike `PUT /api/show/<file>`, it never replaces a song.
 
+### Export: `GET /api/songs/<song>/export`, `.../sections/<section>/export`, `.../cues/<note>/export`
+
+Downloads a song, a section or a scene as an export file, to import into another song or show: `<song>.yaml`, `<song>-<section>.yaml` or `<song>-scene-<note>.yaml`, as `application/yaml`. Works in show mode too; `404` for an unknown song, section or scene.
+
+An export file is a song file, or part of one, in canonical form with `kind` on top (`schema/export.schema.json`):
+
+```yaml
+kind: song           # the whole song file, with its name
+name: demo-song
+program: 3
+cues: { … }
+sections: { … }
+arrangement: [verse]
+```
+
+```yaml
+kind: section        # one section, the scenes its blocks play, and the pixel scenes they link to
+cues: { 36: { … }, 40: { … }, 41: { … } }
+sections: { verse: { … } }
+```
+
+```yaml
+kind: scene          # one scene, and the pixel scenes it links to
+cues: { 41: { … }, 40: { … } }
+```
+
+A scene's [intensity links](#intensity-links) name pixel scenes, which the file carries along so it imports on its own. A song's `audio` names its file, which stays behind: on another show the song plays silent until the bounce is put there.
+
+### Import: `POST /api/import`
+
+The body is an export file as text, YAML or JSON. A song is added to the show; a section or scene is added to the song `?song=<song>` names. Nothing in the show is overwritten:
+
+- A song whose name the show has, in any case, is imported as `<name>-2` (or `-3`…); a `program` another song uses becomes the lowest free one from 1.
+- A scene keeps its number if that is free or holds the same scene, else takes the next free number above it (or the lowest from 1), and the section's blocks follow it.
+- A pixel scene that isn't the same scene on the same number, and whose name another pixel scene of the song has, is imported as `<name>-2` (or `-3`…), and the imported intensity links to it follow: a link drives every pixel scene of its name, so it would otherwise change how the song's own scenes play.
+- A section whose name the song has for a different section is imported as `<name>-2` (or `-3`…). It is not placed in the arrangement.
+
+Answers `200` with what went where: `{ "song": "demo-song-2", "program": 1 }` for a song, `{ "song": "demo-song", "scenes": { "36": 43, "41": 41 }, "sections": { "verse": "verse-2" } }` for a section or scene, keyed by the numbers and names in the file. The song is checked and written like `PUT /api/show/<file>`, under the same lock as the cue endpoints, and recorded for undo. Refused with nothing written: show mode (`403`), an unknown song (`404`), a file that isn't an export file, a section or scene without `?song=`, no free number, or content the loader refuses, such as a fixture the rig doesn't have (`422`).
+
 ### Undo and redo: `POST /api/undo`, `POST /api/redo`, `GET /api/history`
 
 The engine keeps the last 50 saves made through the API, across all show files: `PUT /api/show/<file>` and every song endpoint above. The history lives in memory only: a restart clears it.

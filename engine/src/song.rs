@@ -17,7 +17,7 @@ use crate::cue::{Cue, CueEntry, PixelCues, resolve_look};
 use crate::duration::{Length, TimeSignature};
 use crate::look::Look;
 
-const MIDI_DATA_MAX: u8 = 127;
+pub(crate) const MIDI_DATA_MAX: u8 = 127;
 /// The usual DAW default tempo, for a song without `bpm` when no MIDI clock arrives.
 const DEFAULT_BPM: f32 = 120.0;
 
