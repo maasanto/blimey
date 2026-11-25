@@ -265,9 +265,15 @@ fn repeat_spaces_copies_of_the_shape_evenly_and_moves_them_round_seamlessly() {
     );
     let moving = lit("move", ", repeat: 2", 33);
     assert_eq!(
-        [0, 8, 16, 32].map(|frame| moving[frame].clone()),
-        [[0, 3, 4, 7], [0, 1, 4, 5], [1, 2, 5, 6], [0, 3, 4, 7]],
-        "each bar crosses its half once a cycle, the one before spilling in as it leaves"
+        [0, 4, 8, 16, 32].map(|frame| moving[frame].clone()),
+        [
+            [1, 2, 5, 6],
+            [2, 3, 6, 7],
+            [0, 3, 4, 7],
+            [1, 2, 5, 6],
+            [1, 2, 5, 6]
+        ],
+        "each bar moves at a lone bar's speed, the one ahead spilling round as it leaves"
     );
 }
 

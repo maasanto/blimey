@@ -952,8 +952,7 @@ impl LayerFrame<'_> {
             Shape::Checker => f64::from(u8::from(self.checker_tile(x, y) % 2 == 0)),
             Shape::Wedge => {
                 let anticlockwise = f64::from((y - 0.5).atan2(x - 0.5)) / TAU;
-                let turn = reverse(-anticlockwise) * f64::from(self.layer.repeat);
-                lit((turn - position + 0.5).rem_euclid(1.0) - 0.5)
+                lit((self.copies_along(reverse(-anticlockwise)) + 0.5).rem_euclid(1.0) - 0.5)
             }
         };
         let per_pixel = match effect {
@@ -964,16 +963,23 @@ impl LayerFrame<'_> {
         shape_level * self.level * per_pixel
     }
 
-    /// From `u` (0–1 along the travel) to the nearest copy of the shape, in copies: the travel
-    /// splits into `repeat` equal parts, each drawing the shape at the position as the whole
-    /// travel would. Copies spill into the next part, so a moving set loops seamlessly; a lone
-    /// shape doesn't, so it enters and leaves the area.
+    /// From `u` (0–1 along the travel) to the nearest copy of the shape, in copies. Copies wrap
+    /// around the travel, so a moving set loops seamlessly; a lone shape doesn't, so it enters
+    /// and leaves the area.
     fn copy_offset(&self, u: f64) -> f64 {
-        let offset = u * f64::from(self.layer.repeat) - self.position;
+        let offset = self.copies_along(u);
         match self.layer.repeat {
             1 => offset,
             _ => offset - offset.round(),
         }
+    }
+
+    /// How many copies `u` (0–1 along the travel) is past one: `repeat` copies sit evenly
+    /// spaced and move at a single shape's speed, the set centred in the travel when the
+    /// position is mid-way, so a static set never splits a copy over the edges.
+    fn copies_along(&self, u: f64) -> f64 {
+        let repeat = f64::from(self.layer.repeat);
+        u * repeat - 0.5 - (self.position - 0.5) * repeat
     }
 
     /// Which bar of stripes, or column of a checker, `along` (0–1 along the travel) is in,
