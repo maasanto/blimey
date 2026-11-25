@@ -645,10 +645,13 @@ impl Drawn {
 /// The grid is on Art-Net, as anything finer than 13 × 13 overflows the Enttec universe.
 pub const THUMBNAIL_SIDE: usize = 32;
 /// The finest sample grid a thumbnail may ask for: 4096 pixels, 25 of the grids' 32 Art-Net
-/// universes, about 330 kB of JSON over 8 frames.
+/// universes, about 1.3 MB of JSON over `THUMBNAIL_FRAMES` frames.
 pub const MAX_THUMBNAIL_SIDE: usize = 64;
-/// Frames in a thumbnail, evenly over one cycle, as in the preview sheet.
-pub const THUMBNAIL_FRAMES: usize = 8;
+/// Frames in a builder thumbnail, evenly over one cycle: enough that a slow move or a chase
+/// plays smoothly in the builder's pictures, where 8 stuttered at a few frames a second.
+pub const THUMBNAIL_FRAMES: usize = 32;
+/// Frames in a scene pad's thumbnail, which plays them at a fixed pace rather than over the cycle.
+pub const PAD_THUMBNAIL_FRAMES: usize = 8;
 /// The tempo beats and bars run at in a thumbnail without a song: it shows one cycle whatever
 /// the speed.
 pub const THUMBNAIL_BPM: f64 = 120.0;
@@ -678,7 +681,7 @@ pub fn thumbnail(
         Path::new("."),
     )
     .expect("the sample grid fits the Art-Net universes");
-    let (length, frames) = cycle(&scene, &rig, bpm, time_signature)?;
+    let (length, frames) = cycle(&scene, &rig, bpm, time_signature, THUMBNAIL_FRAMES)?;
     let frames = frames
         .into_iter()
         .map(|out| (rig.grids[0].pixel_colours(&out.enttec, &out.artnet)).collect());
@@ -687,12 +690,13 @@ pub fn thumbnail(
 
 /// How long `scene`'s cycle lasts, the longest of its moving layers' cycles and its layers'
 /// swells and pattern loops, 1 bar without any, beats running at `bpm` in `time_signature`;
-/// and `scene` drawn on `rig` at full intensity, `THUMBNAIL_FRAMES` frames evenly over it.
+/// and `scene` drawn on `rig` at full intensity, `frame_count` frames evenly over it.
 pub fn cycle(
     scene: &PixelScene,
     rig: &Rig,
     bpm: f64,
     time_signature: TimeSignature,
+    frame_count: usize,
 ) -> Result<(Duration, Vec<Universes>), String> {
     let clock = ClockFollower::new(bpm, time_signature);
     let started = clock.moment(Duration::ZERO);
@@ -717,12 +721,12 @@ pub fn cycle(
         bar_line: Some(started),
         released: None,
     };
-    let frames = (0..THUMBNAIL_FRAMES).map(|index| {
+    let frames = (0..frame_count).map(|index| {
         let mut out = Universes {
             enttec: [0; DMX_CHANNELS],
             artnet: ArtNetFrames::new(),
         };
-        let at = cycle.mul_f64(index as f64 / THUMBNAIL_FRAMES as f64);
+        let at = cycle.mul_f64(index as f64 / frame_count as f64);
         scene.draw(rig, &clock, timing, at, 1.0, &mut out);
         out
     });
@@ -1114,9 +1118,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(length, Duration::from_secs(4), "2 bars at 120 BPM");
-        // The red 2-bar chase's first lit column on the top row: four steps over the 8 frames.
+        // The red 2-bar chase's first lit column on the top row: four steps over every fourth
+        // of the 32 frames.
         let first_lit: Vec<Option<usize>> = frames
             .iter()
+            .step_by(4)
             .map(|frame| {
                 frame[..THUMBNAIL_SIDE]
                     .iter()
@@ -1146,8 +1152,10 @@ mod tests {
                 THUMBNAIL_SIDE,
             )
             .unwrap();
+            // Every fourth frame: 8 moments over the cycle.
             frames
                 .iter()
+                .step_by(4)
                 .map(|frame| frame[0].red)
                 .collect::<Vec<f32>>()
         };
@@ -1193,11 +1201,11 @@ mod tests {
         )
         .unwrap();
 
-        let red: Vec<f32> = frames.iter().map(|frame| frame[0].red).collect();
+        let red: Vec<f32> = frames.iter().step_by(4).map(|frame| frame[0].red).collect();
         assert_eq!(
             red,
             [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
-            "on each beat, dark half a beat after"
+            "every fourth frame: on each beat, dark half a beat after"
         );
     }
 

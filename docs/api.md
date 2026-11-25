@@ -634,14 +634,14 @@ It lasts 5 s of engine time from the first frame drawn after the latest `PUT`, s
 Renders a pixel cue, as in its song file, on a sample grid, for the builder's shape and effect pickers. The engine renders it as a song would, so the pickers never re-implement an effect. Colours come from the show's palettes; nothing is saved, and it works in show mode.
 
 ```json
-{ "columns": 32, "rows": 32, "cycle_ms": 2000, "frames": [["#000000", "#ff0000", "… 1024 colours"], "… 8 frames"] }
+{ "columns": 32, "rows": 32, "cycle_ms": 2000, "frames": [["#000000", "#ff0000", "… 1024 colours"], "… 32 frames"] }
 ```
 
 - The grid is RGB and fills the canvas.
-- `?side=48` asks for a grid that many columns and rows, so a picture can have one cell per screen pixel; without it, 32. A side is clamped to 1–64 (64 × 64 is 4096 pixels, about 330 kB over 8 frames), and `columns` and `rows` say which was used. A side that isn't a whole number is a `400`.
+- `?side=48` asks for a grid that many columns and rows, so a picture can have one cell per screen pixel; without it, 32. A side is clamped to 1–64 (64 × 64 is 4096 pixels, about 1.3 MB over 32 frames), and `columns` and `rows` say which was used. A side that isn't a whole number is a `400`.
 - `?song=demo-song` gives the song whose `bpm` and `time_signature` the cue's beats, bars and its layers' patterns are read in, as when it is saved there; without it, 120 BPM in 4/4. An unknown song is a `404`.
-- `frames` are 8 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note. Layer rhythms play from the note too, a pattern's loop starting at once.
-- `cycle_ms` is how long the frames span, in milliseconds: the builder plays them over that time, so a faster `speed` plays faster. Frame `floor(8 × (t mod cycle_ms) / cycle_ms)` is the nearest to what the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel) shows `t` ms (the stream's `preview_ms`) after it started, for a layer that loops with one length. A layer's pattern, whose loop waits for a bar line on the lights, a swell, which holds once done, and a layer mixing lengths that don't divide each other, drift from it.
+- `frames` are 32 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note. Layer rhythms play from the note too, a pattern's loop starting at once.
+- `cycle_ms` is how long the frames span, in milliseconds: the builder plays them over that time, so a faster `speed` plays faster. Frame `floor(32 × (t mod cycle_ms) / cycle_ms)` is the nearest to what the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel) shows `t` ms (the stream's `preview_ms`) after it started, for a layer that loops with one length. A layer's pattern, whose loop waits for a bar line on the lights, a swell, which holds once done, and a layer mixing lengths that don't divide each other, drift from it.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
@@ -661,7 +661,7 @@ A scene or pixel cue's thumbnail is `frames`, each the colour every pixel of the
 ```
 
 - A scene is one frame: the cue drawn as playback draws it, over a dark stage with nothing below. A fixture given only a dimmer stays dark.
-- A pixel cue is 8 frames, timed as in the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail), with beats at 120 BPM.
+- A pixel cue is 8 frames evenly over the cycle the [pixel thumbnail](#pixel-thumbnail-post-apipixel-thumbnail) spans, with beats at 120 BPM.
 - Fade-in, release and velocity are left out.
 
 A swell or pattern cue's thumbnail is its envelope, `levels`: 129 levels, 0–1, evenly spaced from start to end.
