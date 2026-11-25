@@ -989,29 +989,35 @@ async fn render_thumbnail(
         .side
         .unwrap_or(pixel::THUMBNAIL_SIDE)
         .clamp(1, pixel::MAX_THUMBNAIL_SIDE);
-    let thumbnail = json_body(content).and_then(|cue| {
-        let show = Show::load(&api.show_dir)?;
-        let (bpm, time_signature) = match &query.song {
-            Some(name) => {
-                let song = song_named(&show, name)?;
-                (song.tempo(), song.time_signature)
-            }
-            None => (pixel::THUMBNAIL_BPM, TimeSignature::default()),
-        };
-        pixel::thumbnail(&show, bpm, time_signature, cue, side)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    });
+    // Blocking work off the async runtime: a 64 × 64 thumbnail's frames would otherwise hold a
+    // runtime thread, and on a two-core machine two of them stall every other request.
+    let thumbnail = tokio::task::spawn_blocking(move || {
+        json_body(content).and_then(|cue| {
+            let show = Show::load(&api.show_dir)?;
+            let (bpm, time_signature) = match &query.song {
+                Some(name) => {
+                    let song = song_named(&show, name)?;
+                    (song.tempo(), song.time_signature)
+                }
+                None => (pixel::THUMBNAIL_BPM, TimeSignature::default()),
+            };
+            let (cycle, frames) = pixel::thumbnail(&show, bpm, time_signature, cue, side)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            Ok(json!({
+                "columns": side,
+                "rows": side,
+                "cycle_ms": cycle.as_secs_f64() * 1000.0,
+                "frames": frames
+                    .iter()
+                    .map(|colours| colours.iter().map(|colour| colour.to_hex()).collect())
+                    .collect::<Vec<Vec<String>>>(),
+            }))
+        })
+    })
+    .await
+    .unwrap_or_else(|failure| Err(io::Error::other(failure.to_string())));
     match thumbnail {
-        Ok((cycle, frames)) => Json(json!({
-            "columns": side,
-            "rows": side,
-            "cycle_ms": cycle.as_secs_f64() * 1000.0,
-            "frames": frames
-                .iter()
-                .map(|colours| colours.iter().map(|colour| colour.to_hex()).collect())
-                .collect::<Vec<Vec<String>>>(),
-        }))
-        .into_response(),
+        Ok(thumbnail) => Json(thumbnail).into_response(),
         Err(error) => error_response(&error),
     }
 }
