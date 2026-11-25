@@ -24,6 +24,7 @@
 
   // docs/api.md, Pixel cues.
   const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one', 'diamond', 'diagonal', 'stripes', 'checker', 'wedge'];
+  const REPEATING_SHAPES = ['bar', 'circle', 'split', 'diamond', 'diagonal', 'wedge'];
   const EFFECTS = ['static', 'move', 'pulse', 'chase', 'sparkle', 'bounce', 'strobe', 'noise'];
   const DIRECTIONS = ['left-to-right', 'right-to-left', 'bottom-to-top', 'top-to-bottom'];
   const BLENDS = ['over', 'max', 'add', 'mask'];
@@ -223,6 +224,13 @@
       <input type="range" aria-label="Width" min="0.05" max="1" step="0.05" value={layer.params?.width ?? 1} oninput={(event) => setParam('width', Number(event.currentTarget.value))} />
       <output>{layer.params?.width ?? 1}</output>
     </label>
+    {#if REPEATING_SHAPES.includes(layer.shape ?? 'bar')}
+      <label>
+        Repeat
+        <input type="range" aria-label="Repeat" min="1" max="8" step="1" value={layer.params?.repeat ?? 1} oninput={(event) => setParam('repeat', Number(event.currentTarget.value) === 1 ? undefined : Number(event.currentTarget.value))} />
+        <output>{layer.params?.repeat ?? 1}</output>
+      </label>
+    {/if}
     <label>
       Level
       <input type="range" aria-label="Level" min="0" max="100" step="5" value={parseFloat(layer.level ?? '100')} oninput={(event) => setOptional('level', `${event.currentTarget.value}%`, '100%')} />

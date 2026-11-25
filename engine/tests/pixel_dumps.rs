@@ -241,6 +241,43 @@ fn split_mirrors_one_bar_per_half_about_the_centre() {
 }
 
 #[test]
+fn repeat_spaces_copies_of_the_shape_evenly_and_moves_them_round_seamlessly() {
+    let cue = |effect: &str, repeat: &str| {
+        format!(
+            "    shape: bar\n    effect: {effect}\n    params: {{ color: \"#ff0000\", width: 0.5, speed: 800ms{repeat} }}\n"
+        )
+    };
+    let lit = |effect: &str, repeat: &str, frames: u32| -> Vec<Vec<usize>> {
+        let frames = render(
+            "pixel-grid-8x8",
+            &cue(effect, repeat),
+            Duration::ZERO,
+            frames,
+        );
+        frames.iter().map(lit_columns).collect()
+    };
+
+    assert_eq!(lit("static", "", 1), [[2, 3, 4, 5]], "one bar by default");
+    assert_eq!(
+        lit("static", ", repeat: 2", 1),
+        [[1, 2, 5, 6]],
+        "a bar half as wide mid-way in each half"
+    );
+    let moving = lit("move", ", repeat: 2", 33);
+    assert_eq!(
+        [0, 4, 8, 16, 32].map(|frame| moving[frame].clone()),
+        [
+            [1, 2, 5, 6],
+            [2, 3, 6, 7],
+            [0, 3, 4, 7],
+            [1, 2, 5, 6],
+            [1, 2, 5, 6]
+        ],
+        "each bar moves at a lone bar's speed, the one ahead spilling round as it leaves"
+    );
+}
+
+#[test]
 fn one_by_one_chases_a_grid_column_by_column_whatever_the_width() {
     // Default params but a cycle of 8 frames: width 1.
     let cue = "    shape: one-by-one\n    effect: chase\n    params: { color: \"#ff0000\", speed: 200ms }\n";

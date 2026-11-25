@@ -204,7 +204,7 @@ test.describe('on three rows of washes', () => {
     await expect(page.getByLabel('Area height')).toHaveValue('1');
   });
 
-  test('the inspector keeps an area on the stage, sets its phase and lists every mute', async ({ page, show, startEngine }) => {
+  test('the inspector keeps an area on the stage, sets its phase and repeat and lists every mute', async ({ page, show, startEngine }) => {
     const songFile = path.join(show, 'songs/chorus-build.yaml');
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
@@ -215,6 +215,7 @@ test.describe('on three rows of washes', () => {
     await page.getByLabel('Area width').press('Enter');
     await expect(page.getByLabel('Area width'), 'the rest of the stage from x 0.5').toHaveValue('0.5');
     await page.getByLabel('Phase').fill('0.5');
+    await page.getByLabel('Repeat').fill('3');
 
     // The sparkle squeezed onto high-1 no longer catches the inner washes it mutes: still listed.
     await page.getByRole('button', { name: /^steel-blue sparkle/ }).click();
@@ -228,7 +229,7 @@ test.describe('on three rows of washes', () => {
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
     const written = readFileSync(songFile, 'utf8');
-    expect(written).toContain('        params: { color: amber, width: 0.25, speed: 1 bar, phase: 0.5 }\n');
+    expect(written).toContain('        params: { color: amber, width: 0.25, repeat: 3, speed: 1 bar, phase: 0.5 }\n');
     expect(written).toContain('        area: { x: 0, y: 0.65, width: 0.2, height: 0.35 }\n');
     expect(written).not.toContain('mute:');
   });
