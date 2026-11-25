@@ -708,16 +708,22 @@ pub fn cycle(
     let started = clock.moment(Duration::ZERO);
     let second = Duration::from_secs(1);
     let cycles_in_a_second = |speed| clock.cycles(speed, started, second);
-    let lengths = scene.layers.iter().flat_map(|layer| {
-        let speed = (layer.effect != Effect::Static).then_some(layer.speed);
+    let loops_per_second = scene.layers.iter().flat_map(|layer| {
+        // Moving or chasing copies look the same again once each reaches the next one's place,
+        // so the frames cover that loop: over a whole cycle, they'd show each copy in few places.
+        let loops_per_cycle = match layer.effect {
+            Effect::Move | Effect::Chase => layer.copies(),
+            _ => 1.0,
+        };
+        let speed = (layer.effect != Effect::Static)
+            .then(|| cycles_in_a_second(layer.speed) * loops_per_cycle);
         let rhythm = layer.rhythm.as_ref().map(|rhythm| match rhythm {
-            Rhythm::Swell(swell) => swell.duration,
-            Rhythm::Pattern(hits) => Length::Beats(hits.beats),
+            Rhythm::Swell(swell) => cycles_in_a_second(swell.duration),
+            Rhythm::Pattern(hits) => cycles_in_a_second(Length::Beats(hits.beats)),
         });
         speed.into_iter().chain(rhythm)
     });
-    let cycles_per_second = lengths
-        .map(cycles_in_a_second)
+    let cycles_per_second = loops_per_second
         .min_by(f64::total_cmp)
         .unwrap_or_else(|| cycles_in_a_second(Length::Bars(1.0)));
     let cycle = Duration::try_from_secs_f64(1.0 / cycles_per_second)
@@ -797,10 +803,11 @@ impl Layer {
                     REST_POSITION + (within * 2.0 + STEP_ROUNDING).floor() / 2.0
                 }
                 _ => {
-                    // One-by-one steps a cell at a time, whatever the width.
+                    // One-by-one steps a cell at a time, whatever the width; copies step by
+                    // their own width, as they are as many times thinner.
                     let steps = match self.shape {
                         Shape::OneByOne => lines.len().max(1) as f64,
-                        _ => (1.0 / self.travel_width()).round().max(1.0),
+                        _ => (1.0 / self.travel_width()).round().max(1.0) * self.copies(),
                     };
                     ((within * steps + STEP_ROUNDING).floor() + 0.5) / steps
                 }
@@ -832,6 +839,19 @@ impl Layer {
         match self.shape {
             Shape::Split => (2.0 * self.width).min(1.0),
             _ => self.width,
+        }
+    }
+
+    /// How many copies of the shape show at once: `repeat` for the shapes it applies to, else 1.
+    fn copies(&self) -> f64 {
+        match self.shape {
+            Shape::Bar
+            | Shape::Circle
+            | Shape::Split
+            | Shape::Diamond
+            | Shape::Diagonal
+            | Shape::Wedge => f64::from(self.repeat),
+            _ => 1.0,
         }
     }
 
@@ -1157,6 +1177,37 @@ mod tests {
             [0, 0, 8, 8, 16, 16, 24, 24].map(Some),
             "the 1-bar chase leads twice as fast, the static fill doesn't count"
         );
+    }
+
+    #[test]
+    fn a_thumbnail_of_moving_copies_spans_one_copys_move_to_the_next_in_distinct_frames() {
+        for effect in ["move", "chase"] {
+            let cue = serde_json::json!({ "name": "t", "type": "pixel", "layers": [
+                { "shape": "bar", "effect": effect, "params": { "color": "#ff0000", "width": 0.125, "repeat": 4, "speed": "1 bar" } },
+            ] });
+
+            let (length, frames) = thumbnail(
+                &Show::default(),
+                THUMBNAIL_BPM,
+                TimeSignature::default(),
+                cue,
+                THUMBNAIL_SIDE,
+            )
+            .unwrap();
+
+            assert_eq!(
+                length,
+                Duration::from_millis(500),
+                "{effect}: a quarter of 1 bar at 120 BPM"
+            );
+            let distinct: std::collections::HashSet<String> =
+                frames.iter().map(|frame| format!("{frame:?}")).collect();
+            assert_eq!(
+                distinct.len(),
+                THUMBNAIL_FRAMES,
+                "{effect}: every frame moves on"
+            );
+        }
     }
 
     #[test]
