@@ -37,8 +37,12 @@ jobs:
           cache-dependency-path: ui/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      # After the UI build, so the binary embeds it.
-      - run: cargo build
+      # After the UI build, so the binary embeds it. Release, as it runs on stage: a debug
+      # build renders the builder's thumbnails too slowly on a two-core runner for the tests'
+      # timeouts.
+      - run: cargo build --release
         working-directory: .
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test
+        env:
+          BLIMEY_BIN: ${{ github.workspace }}/target/release/blimey
