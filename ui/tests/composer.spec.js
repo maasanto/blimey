@@ -528,10 +528,10 @@ test("an area's shape plays at the layer's speed: a slow sparkle twinkles slowly
 
   await speed.press('Home');
   await expect(speed).toHaveAttribute('aria-valuetext', '16 bars');
-  await expect.poll(picturesIn2s, '16 bars at 120 BPM is 4 s a frame').toBeLessThanOrEqual(2);
+  await expect.poll(picturesIn2s, '16 bars at 120 BPM over 32 frames is 1 s a frame').toBeLessThanOrEqual(3);
   await speed.press('End');
   await expect(speed).toHaveAttribute('aria-valuetext', '0.25 bars');
-  await expect.poll(picturesIn2s, 'a 0.5 s cycle shows a new picture every 62.5 ms').toBeGreaterThanOrEqual(5);
+  await expect.poll(picturesIn2s, 'a 0.5 s cycle shows a new picture every 15.6 ms').toBeGreaterThanOrEqual(5);
 });
 
 test('dragging the speed slider steadily to the right only ever makes it faster', async ({ page, show, startEngine }) => {
