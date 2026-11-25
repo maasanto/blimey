@@ -196,6 +196,7 @@ struct ParamsEntry {
     color: Option<String>,
     background: Option<String>,
     width: Option<f64>,
+    repeat: Option<u32>,
     speed: Option<Length>,
     direction: Option<Direction>,
     phase: Option<f64>,
@@ -226,6 +227,10 @@ pub struct Layer {
     pub background: Option<Rgb>,
     /// 0–1 of the area: a bar's or ring's thickness, and a chase's step.
     pub width: f64,
+    /// How many of a bar, circle, split, diamond, diagonal or wedge show at once, at least 1:
+    /// the travel splits into as many parts, each drawing the shape as the whole travel would,
+    /// `width` and chase steps included.
+    pub repeat: u32,
     /// One cycle of the effect.
     pub speed: Length,
     pub direction: Direction,
@@ -361,6 +366,10 @@ impl LayerEntry {
         if !(width > 0.0 && width <= 1.0) {
             return Err(format!("width {width} must be above 0 and at most 1"));
         }
+        let repeat = params.repeat.unwrap_or(1);
+        if repeat == 0 {
+            return Err("repeat must be at least 1".into());
+        }
         let speed = params.speed.unwrap_or(Length::Bars(1.0));
         let is_zero = match speed {
             Length::Time(time) => time.is_zero(),
@@ -379,6 +388,7 @@ impl LayerEntry {
                 .map(|name| colour(show, &name))
                 .transpose()?,
             width,
+            repeat,
             speed,
             direction: params.direction.unwrap_or_default(),
             phase: params.phase.unwrap_or(0.0),
@@ -909,7 +919,8 @@ impl LayerFrame<'_> {
         let reversed = matches!(direction, Direction::RightToLeft | Direction::TopToBottom);
         let reverse = |u: f64| if reversed { 1.0 - u } else { u };
         let half_width = self.layer.travel_width() / 2.0;
-        let band = |u: f64| f64::from(u8::from((u - position).abs() <= half_width));
+        let lit = |offset: f64| f64::from(u8::from(offset.abs() <= half_width));
+        let band = |u: f64| lit(self.copy_offset(u));
         let shape_level = match shape {
             Shape::Bar => band(travel(direction, x, y)),
             Shape::Sweep => f64::from(u8::from(travel(direction, x, y) <= position)),
@@ -941,8 +952,8 @@ impl LayerFrame<'_> {
             Shape::Checker => f64::from(u8::from(self.checker_tile(x, y) % 2 == 0)),
             Shape::Wedge => {
                 let anticlockwise = f64::from((y - 0.5).atan2(x - 0.5)) / TAU;
-                let from_wedge = (reverse(-anticlockwise) - position + 0.5).rem_euclid(1.0) - 0.5;
-                f64::from(u8::from(from_wedge.abs() <= half_width))
+                let turn = reverse(-anticlockwise) * f64::from(self.layer.repeat);
+                lit((turn - position + 0.5).rem_euclid(1.0) - 0.5)
             }
         };
         let per_pixel = match effect {
@@ -951,6 +962,18 @@ impl LayerFrame<'_> {
             _ => 1.0,
         };
         shape_level * self.level * per_pixel
+    }
+
+    /// From `u` (0–1 along the travel) to the nearest copy of the shape, in copies: the travel
+    /// splits into `repeat` equal parts, each drawing the shape at the position as the whole
+    /// travel would. Copies spill into the next part, so a moving set loops seamlessly; a lone
+    /// shape doesn't, so it enters and leaves the area.
+    fn copy_offset(&self, u: f64) -> f64 {
+        let offset = u * f64::from(self.layer.repeat) - self.position;
+        match self.layer.repeat {
+            1 => offset,
+            _ => offset - offset.round(),
+        }
     }
 
     /// Which bar of stripes, or column of a checker, `along` (0–1 along the travel) is in,

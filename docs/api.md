@@ -193,6 +193,7 @@ The effect is worked out in RGB at each pixel's canvas position, then converted 
 | `color` | Palette name or `#rrggbb`: the lit colour | white |
 | `background` | Palette name or `#rrggbb`: where the shape isn't lit | black |
 | `width` | Above 0, up to 1, of the layer's area: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
+| `repeat` | A whole number from 1: how many of a `bar`, `circle`, `split`, `diamond`, `diagonal` or `wedge` show at once. The travel (a turn for a wedge) splits into that many equal parts, each drawing the shape at the position as the whole travel would, `width` and chase steps included: more copies sit closer together and thinner. A copy leaving its part spills into the next one, so `move` loops seamlessly. Other shapes ignore it | 1 |
 | `speed` | Duration of one cycle, any unit; beats and bars follow the tempo | `1 bar` |
 | `direction` | `left-to-right` (as seen from the audience: stage right to stage left), `right-to-left`, `bottom-to-top` (floor up), `top-to-bottom` | `left-to-right` |
 | `phase` | Offset in cycles: shifts a moving effect in time, a static shape along its travel | 0 |

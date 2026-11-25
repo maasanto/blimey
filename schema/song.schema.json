@@ -179,6 +179,7 @@
         "color": { "description": "Palette name or #rrggbb. Defaults to white.", "type": "string" },
         "background": { "description": "Where the shape isn't lit. Palette name or #rrggbb. Defaults to black.", "type": "string" },
         "width": { "description": "0-1 of the canvas, or of the layer's area: thickness of a bar or ring, step of a chase. Defaults to 1.", "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "repeat": { "description": "How many of a bar, circle, split, diamond, diagonal or wedge show at once: the travel splits into that many parts, each drawing the shape, width included, as the whole travel would. Defaults to 1.", "type": "integer", "minimum": 1 },
         "speed": { "description": "One cycle of the effect. Defaults to 1 bar.", "$ref": "#/$defs/duration" },
         "direction": { "description": "As seen from the audience; left-to-right is stage right to stage left. Defaults to left-to-right.", "enum": ["left-to-right", "right-to-left", "bottom-to-top", "top-to-bottom"] },
         "phase": { "description": "Offset in cycles. Defaults to 0.", "type": "number" },
