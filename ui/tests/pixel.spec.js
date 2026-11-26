@@ -105,7 +105,7 @@ test('a checker strobe picked in the inspector saves and plays as the engine ren
   await page.getByRole('button', { name: 'Motion: strobe' }).click();
   await page.getByRole('button', { name: 'Colour: deep-blue' }).click();
   await page.getByLabel('Width', { exact: true }).fill('0.25');
-  await expect(page.getByText('Deep-blue strobe everywhere.')).toBeVisible();
+  await expect(page.getByText('Deep-blue checker strobe everywhere.')).toBeVisible();
 
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();

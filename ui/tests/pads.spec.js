@@ -298,9 +298,13 @@ test('a new look is named after its top layer until the user names it', async ({
   await ingredient('Wash').click();
   await expect(name).toHaveValue('deep-blue wash everywhere');
   await ingredient('Chase').click();
-  await expect(name, 'the new top layer').toHaveValue('deep-blue chase everywhere');
-  await page.getByRole('button', { name: 'Delete: deep-blue chase everywhere' }).click();
-  await expect(name, 'the top layer once the chase is gone').toHaveValue('deep-blue wash everywhere');
+  await expect(name, 'the new top layer').toHaveValue('deep-blue bar chase everywhere');
+  await page.getByRole('button', { name: 'Shape: circle' }).click();
+  await expect(name, 'its shape').toHaveValue('deep-blue circle chase everywhere');
+  await page.getByRole('button', { name: 'Motion: pulse' }).click();
+  await expect(name, 'its motion').toHaveValue('deep-blue breathing circle everywhere');
+  await page.getByRole('button', { name: 'Delete: deep-blue breathing circle everywhere' }).click();
+  await expect(name, 'the top layer once the circle is gone').toHaveValue('deep-blue wash everywhere');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Saved scene 2 in demo.')).toBeVisible();
   expect(readFileSync(songFile, 'utf8')).toContain('  2:\n    name: deep-blue wash everywhere\n');

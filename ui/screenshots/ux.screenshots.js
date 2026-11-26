@@ -89,7 +89,7 @@ test.describe('on three rows of washes', () => {
     const { url } = await startEngine({ look: DARK });
 
     await page.goto(`${url}#builder/chorus-build/43`);
-    await expect(page.getByText('Warm-white wash on the left, amber chase on the right')).toBeVisible();
+    await expect(page.getByText('Warm-white wash on the left, amber bar chase on the right')).toBeVisible();
     await expect(page.locator('[data-fixture="low-1"] circle').first()).not.toHaveAttribute('fill', '#000000');
     await painted(page.getByRole('button', { name: 'Chase', exact: true }));
     await shoot(page, 'scene-editor');
