@@ -3,7 +3,7 @@
 
 import { request } from './engine.svelte.js';
 
-export const SHAPES = ['ramp-up', 'ramp-down', 'ease-in', 'ease-out', 'sine', 'hold'];
+export const SHAPES = ['ramp-up', 'ramp-down', 'ease-in', 'ease-out', 'ease-in-down', 'ease-out-down', 'sine', 'hold'];
 /** Levels per curve: index 25 is a quarter of the way through. */
 export const SAMPLES = 101;
 

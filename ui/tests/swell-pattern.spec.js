@@ -39,6 +39,9 @@ test("the 1 / 2 / 3.5 pattern built in the grid saves as C5's reference", async 
   // Halfway through its half beat, an ease-out hit is at three quarters: a quarter down the lane.
   await page.getByLabel('Hit shape').selectOption('ease-out');
   await expect(page.locator('.hit-level.selected').first()).toHaveAttribute('points', /(^| )0\.25,0\.25( |$)/);
+  // Its decreasing twin is at a quarter there: three quarters down the lane.
+  await page.getByLabel('Hit shape').selectOption('ease-out-down');
+  await expect(page.locator('.hit-level.selected').first()).toHaveAttribute('points', /(^| )0\.25,0\.75( |$)/);
   await page.getByLabel('Hit shape').selectOption('ramp-up');
   await step(page, 2).click();
   await page.getByLabel('Hit shape').selectOption('sine');
