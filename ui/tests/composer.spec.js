@@ -126,7 +126,7 @@ test.describe('on three rows of washes', () => {
     await page.getByRole('button', { name: 'Colour: warm-white' }).click();
     await page.getByLabel('Blend').selectOption('max');
 
-    // An amber chase on the right half, covering what is below.
+    // An amber bar chase on the right half, covering what is below.
     await dropIngredient(page, 'Chase', [0.75, 0.5]);
     await resize(page, 'bottom-left', [0.5, 0]);
     await resize(page, 'top-right', [1, 1]);
@@ -144,7 +144,7 @@ test.describe('on three rows of washes', () => {
     await expect(page.locator('[data-fixture="high-2"]')).toHaveAttribute('data-crossed-out');
 
     await expect(
-      page.getByText('Warm-white wash on the left, amber chase on the right, steel-blue sparkle across the top except inner-wash.'),
+      page.getByText('Warm-white wash on the left, amber bar chase on the right, steel-blue sparkle across the top except inner-wash.'),
     ).toBeVisible();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Saved scene 43 in chorus-build.')).toBeVisible();
@@ -209,7 +209,7 @@ test.describe('on three rows of washes', () => {
     const { url } = await startEngine({ look: DARK });
     await openChorusBuild(page, url);
 
-    await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.getByRole('button', { name: 'amber bar chase on the right', exact: true }).click();
     await page.getByText('Position and phase').click();
     await page.getByLabel('Area width').fill('1.5');
     await page.getByLabel('Area width').press('Enter');
@@ -240,7 +240,7 @@ test.describe('on three rows of washes', () => {
     await openChorusBuild(page, url);
 
     // Selected from the list, the focus is on its button: the keys are the button's, not the area's.
-    await page.getByRole('button', { name: 'amber chase on the right', exact: true }).click();
+    await page.getByRole('button', { name: 'amber bar chase on the right', exact: true }).click();
     await page.keyboard.press('Backspace');
     await page.keyboard.press('ArrowLeft');
     await expect(page.locator('[data-area]')).toHaveCount(3);
@@ -281,7 +281,7 @@ test.describe('on three rows of washes', () => {
   test('with the engine gone, an area still opens read-only', async ({ page, startEngine }) => {
     const engine = await startEngine({ look: DARK });
     await openChorusBuild(page, engine.url);
-    await expect(page.getByText('Warm-white wash on the left, amber chase on the right')).toBeVisible();
+    await expect(page.getByText('Warm-white wash on the left, amber bar chase on the right')).toBeVisible();
     await engine.stop();
     await expect(page.locator('.connection')).toHaveAttribute('data-connected', 'false');
 
@@ -348,7 +348,7 @@ test.describe('on three rows of washes', () => {
     const before = await litColumns();
     await expect.poll(litColumns, 'the chase steps it along').not.toBe(before);
 
-    await page.getByRole('button', { name: 'Hide while editing: amber chase on the right' }).click();
+    await page.getByRole('button', { name: 'Hide while editing: amber bar chase on the right' }).click();
     await expect(chase).toHaveCount(0);
     await expect(page.locator('[data-shape]')).toHaveCount(2);
   });
@@ -400,7 +400,7 @@ test('an old-form pixel cue opened and saved untouched saves as layers and plays
   await page.goto(`${url}#builder`);
 
   await pad(page, 40).click();
-  await expect(page.getByText('Deep-blue chase everywhere, #ff0000 breathe everywhere.')).toBeVisible();
+  await expect(page.getByText('Deep-blue bar chase everywhere, #ff0000 breathing circle everywhere.')).toBeVisible();
   // Selecting a whole-stage area with an unsteady click doesn't give it an area of its own.
   await unsteadyClick(page, await stagePoint(page, [0.5, 0.5]));
   await expect(page.locator('.area.selected')).toHaveAttribute('data-area', '1');
@@ -492,7 +492,7 @@ test('the speed slider runs slow to fast, left to right, and saves the period as
   await page.goto(`${url}#builder`);
 
   await pad(page, 40).click();
-  await page.getByRole('button', { name: 'white chase everywhere', exact: true }).click();
+  await page.getByRole('button', { name: 'white bar chase everywhere', exact: true }).click();
   const speed = page.getByLabel('Speed', { exact: true });
   const width = page.getByLabel('Width', { exact: true });
   expect((await speed.boundingBox()).width, 'the speed slider gets a row of its own').toBeGreaterThan((await width.boundingBox()).width);
@@ -542,7 +542,7 @@ test('dragging the speed slider steadily to the right only ever makes it faster'
   await page.goto(`${url}#builder`);
 
   await pad(page, 40).click();
-  await page.getByRole('button', { name: 'white chase everywhere', exact: true }).click();
+  await page.getByRole('button', { name: 'white bar chase everywhere', exact: true }).click();
   const speed = page.getByLabel('Speed', { exact: true });
   const box = await speed.boundingBox();
   const y = box.y + box.height / 2;

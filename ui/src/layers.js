@@ -214,14 +214,18 @@ export function resizeArea(area, sides, dx, dy, edges) {
   return { x: tidy(left), y: tidy(bottom), width: tidy(right - left), height: tidy(top - bottom) };
 }
 
-/** What a layer is, in a word, from its shape and effect. */
+/** Motions read before the shape they move; the others read after it. */
+const MOTION_ADJECTIVES = { move: 'moving', pulse: 'breathing' };
+
+/** What a layer is, from its shape and its motion: "bar chase", "breathing circle". */
 export function kindOf(layer) {
   const shape = layer.shape ?? 'bar';
   const effect = layer.effect ?? 'static';
-  if (effect === 'pulse') return 'breathe';
-  if (effect === 'move') return shape === 'sweep' ? 'sweep' : `moving ${shape}`;
-  if (effect !== 'static') return effect;
-  return shape === 'fill' ? 'wash' : shape;
+  const noun = shape === 'fill' ? 'wash' : shape;
+  if (effect === 'static') return noun;
+  if (Object.hasOwn(MOTION_ADJECTIVES, effect)) return `${MOTION_ADJECTIVES[effect]} ${noun}`;
+  // A fill lights its whole area: its motion alone names it, "sparkle".
+  return shape === 'fill' ? effect : `${shape} ${effect}`;
 }
 
 /** Where an area sits, as the audience sees it. */
@@ -238,7 +242,7 @@ export function whereOf(area = FULL_STAGE) {
   return side === 'centre' && height === 'middle' ? 'in the middle' : `at the ${height} ${side}`;
 }
 
-/** One layer read back: "amber chase on the right". */
+/** One layer read back: "amber bar chase on the right". */
 export function describeLayer(layer) {
   const muted = layer.mute?.length ? ` except ${layer.mute.join(' and ')}` : '';
   return `${layer.params?.color ?? 'white'} ${kindOf(layer)} ${whereOf(layer.area)}${muted}`;
