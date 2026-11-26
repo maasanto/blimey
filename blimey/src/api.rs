@@ -1308,6 +1308,23 @@ impl TimedLook {
         }
     }
 
+    /// How long the pixel scene shown has looped its layers' patterns at `at`, from the bar
+    /// line their loops start on: `None` while they wait for it.
+    pub fn looped(&self, at: Duration) -> Option<Duration> {
+        let shown = lock(&self.shown);
+        match shown.as_ref()? {
+            Shown {
+                overlay: Overlay::Pixel { clock, .. },
+                started: Some(started),
+                ..
+            } => {
+                let beats = clock.beats(at) - Pattern::start(clock, *started).beats;
+                (beats >= 0.0).then(|| Duration::from_secs_f64(beats * 60.0 / clock.bpm(at)))
+            }
+            _ => None,
+        }
+    }
+
     pub fn apply(&self, rig: &Rig, at: Duration, out: &mut Universes) {
         let mut shown = lock(&self.shown);
         let Some(active) = shown.as_mut() else {
@@ -1985,6 +2002,34 @@ mod tests {
         );
         preview.clear();
         assert_eq!(preview.animated(millis(10_700)), None);
+    }
+
+    #[test]
+    fn a_pixel_previews_pattern_loops_count_from_the_bar_line_they_wait_for() {
+        let overlay = Overlay::Pixel {
+            scene: Box::new(
+                PixelScene::parse(
+                    &Show::default(),
+                    Default::default(),
+                    json!({ "name": "hits", "type": "pixel", "layers": [{ "shape": "fill", "pattern": { "length": "1 bar", "hits": [{ "at": 1, "shape": "hold", "length": "1 beat", "level": "100%" }] } }] }),
+                )
+                .unwrap(),
+            ),
+            clock: ClockFollower::new(120.0, Default::default()),
+        };
+        let preview = TimedLook::new(PREVIEW_LIFETIME);
+        let millis = Duration::from_millis;
+        let mut out = Universes {
+            enttec: [0; 512],
+            artnet: Default::default(),
+        };
+
+        preview.show(overlay);
+        // Mid-bar: 2 s bars at 120 BPM, counted from engine start, put the next bar line at 12 s.
+        preview.apply(&Rig::default(), millis(10_500), &mut out);
+        assert_eq!(preview.looped(millis(11_000)), None);
+        assert_eq!(preview.looped(millis(12_250)), Some(millis(250)));
+        assert_eq!(preview.animated(millis(12_250)), Some(millis(1_750)));
     }
 
     #[test]

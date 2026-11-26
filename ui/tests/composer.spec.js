@@ -384,6 +384,56 @@ test.describe('on three rows of washes', () => {
       await page.waitForTimeout(700);
     }
   });
+
+  test("an area's hits light with the lights, whose loop waits for a bar line", async ({ page, show, startEngine }) => {
+    // Two beats dark, two lit, in 4 s bars counted from engine start. Opened mid-bar, the lights
+    // show the wash as it is until the next bar line, then loop: a picture looping from the
+    // preview's start is out of step, and one looping from the bar line is dark while they wait.
+    writeFileSync(
+      path.join(show, 'songs/slow-hits.yaml'),
+      'program: 9\nbpm: 60\ncues:\n  50:\n    name: slow-hits\n    type: pixel\n    layers:\n' +
+        '      - { shape: fill, params: { color: amber }, pattern: { length: 1 bar, hits: [{ at: 3, shape: hold, length: 2 beats, level: 100% }] } }\n',
+    );
+    const { address, url } = await startEngine({ look: DARK });
+    await page.goto(`${url}#builder`);
+    // Opens the scene a beat into a bar, so the lights wait three beats for the next one.
+    await page.evaluate(
+      (address) =>
+        new Promise((resolve) => {
+          const socket = new WebSocket(`ws://${address}/ws`);
+          socket.onmessage = (event) => {
+            const { type, at_ms: at } = JSON.parse(event.data);
+            if (type !== 'frame' || at % 4000 < 1000 || at % 4000 > 1200) return;
+            socket.close();
+            location.hash = '#builder/slow-hits/50';
+            resolve();
+          };
+        }),
+      address,
+    );
+    await expect(page.locator('[data-shape="0"] canvas')).toHaveAttribute('width', '64');
+
+    /** Over 8 s, the share of animation frames where the area and the fixtures disagree on being lit. */
+    const outOfStep = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          let [samples, disagreements] = [0, 0];
+          const end = performance.now() + 8000;
+          requestAnimationFrame(function sample(time) {
+            const shape = document.querySelector('[data-shape="0"]');
+            const isPainted = shape.querySelector('canvas').getContext('2d').getImageData(32, 32, 1, 1).data[0] > 0;
+            const isAreaLit = isPainted && Number(shape.getAttribute('opacity')) > 0.5;
+            const isLightLit = document.querySelector('[data-fixture="low-1"] circle').getAttribute('fill') !== '#000000';
+            samples += 1;
+            disagreements += Number(isAreaLit !== isLightLit);
+            if (time < end) requestAnimationFrame(sample);
+            else resolve(disagreements / samples);
+          });
+        }),
+    );
+    // Only the frames around each switch may disagree, while the stream catches up.
+    expect(outOfStep).toBeLessThan(0.1);
+  });
 });
 
 test('an old-form pixel cue opened and saved untouched saves as layers and plays the same', async ({ page, show, startEngine }) => {

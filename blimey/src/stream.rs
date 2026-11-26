@@ -372,6 +372,8 @@ struct FrameMessage<'frame> {
     pixels: PixelColours<'frame>,
     /// How long the builder's pixel scene preview has animated, so it draws its shapes in step.
     preview_ms: Option<f64>,
+    /// How long its layers' pattern loops have played, `None` while they wait for a bar line.
+    preview_loop_ms: Option<f64>,
     #[serde(flatten)]
     status: &'frame Status,
 }
@@ -424,6 +426,9 @@ fn frame_message(
         preview_ms: preview
             .animated(at)
             .map(|animated| animated.as_secs_f64() * 1000.0),
+        preview_loop_ms: preview
+            .looped(at)
+            .map(|looped| looped.as_secs_f64() * 1000.0),
         status,
     };
     serde_json::to_string(&message).expect("a frame message serializes")

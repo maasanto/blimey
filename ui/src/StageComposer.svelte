@@ -77,6 +77,8 @@
   const tray = new Thumbnails();
   /** Each layer's shape, by index, to draw in its area. */
   const layerShapes = new Thumbnails();
+  /** Each layer's pattern, by index, as a one-pixel picture of its level over a loop. */
+  const patternLevels = new Thumbnails();
 
   const rig = $derived(engine.rig);
   const edges = $derived(rig ? stageEdges(rig) : { x: [0, 1], y: [0, 1] });
@@ -113,8 +115,10 @@
 
   // A layer runs in its area's own 0–1 space, so rendered alone on the whole sample grid it is
   // its area's picture. Left as `max`, a mask shows where it lets the layers below through.
-  // A string, so moving an area renders nothing again.
-  const shapeRecipes = $derived(JSON.stringify(cue.layers.map(({ area, blend, ...layer }) => layer)));
+  // A string, so moving an area renders nothing again. A pattern is drawn apart, as the level
+  // it scales its layer by: on the lights its loop waits for a bar line, the layer's motion doesn't.
+  const shapeRecipes = $derived(JSON.stringify(cue.layers.map(({ area, blend, pattern, ...layer }) => layer)));
+  const patternRecipes = $derived(JSON.stringify(cue.layers.map(({ pattern }) => pattern)));
 
   $effect(() => {
     const variants = JSON.parse(shapeRecipes).map((layer, index) => [index, layer]);
@@ -123,6 +127,23 @@
     const timer = setTimeout(() => layerShapes.load(variants, seed, shapeSong, FINEST_SIDE), THUMBNAIL_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   });
+
+  $effect(() => {
+    const variants = JSON.parse(patternRecipes).flatMap((pattern, index) =>
+      pattern ? [[index, { shape: 'fill', params: { color: '#ffffff' }, pattern }]] : [],
+    );
+    const { seed } = cue;
+    const patternSong = song;
+    const timer = setTimeout(() => patternLevels.load(variants, seed, patternSong, 1), THUMBNAIL_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  /** The level, 0–1, layer `index`'s pattern gives it: full while its loop waits for a bar line, as on the lights. */
+  function patternLevel(layer, index) {
+    const loopMs = engine.frame?.preview_ms == null ? now : engine.frame.preview_loop_ms;
+    const level = layer.pattern && loopMs != null ? frameAt(patternLevels.byKey[index], loopMs) : undefined;
+    return level ? parseInt(level[0].slice(1, 3), 16) / 255 : 1;
+  }
 
   function addLayer(ingredient, area) {
     if (isFull) return;
@@ -291,7 +312,7 @@
       {@const area = areaOf(layer)}
       {@const frame = frameAt(thumbnail, areaClock)}
       <!-- One canvas the browser scales up smoothly, so the shape reads as a shape, not as cells. -->
-      <foreignObject class="shape" data-shape={index} x={screenX(area.x)} y={screenY(area.y + area.height)} width={area.width * WIDTH} height={area.height * HEIGHT}>
+      <foreignObject class="shape" data-shape={index} x={screenX(area.x)} y={screenY(area.y + area.height)} width={area.width * WIDTH} height={area.height * HEIGHT} opacity={patternLevel(layer, index)}>
         <canvas width={thumbnail.columns} height={thumbnail.rows} {@attach (canvas) => paint(canvas, thumbnail, frame)}></canvas>
       </foreignObject>
     {/if}

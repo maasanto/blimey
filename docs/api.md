@@ -642,7 +642,7 @@ Renders a pixel cue, as in its song file, on a sample grid, for the builder's sh
 - `?side=48` asks for a grid that many columns and rows, so a picture can have one cell per screen pixel; without it, 32. A side is clamped to 1–64 (64 × 64 is 4096 pixels, about 1.3 MB over 32 frames), and `columns` and `rows` say which was used. A side that isn't a whole number is a `400`.
 - `?song=demo-song` gives the song whose `bpm` and `time_signature` the cue's beats, bars and its layers' patterns are read in, as when it is saved there; without it, 120 BPM in 4/4. An unknown song is a `404`.
 - `frames` are 32 moments evenly over the longest of the moving layers' `speed` and the layers' `swell` durations and `pattern` lengths (1 bar when there are none), from the note. Layer rhythms play from the note too, a pattern's loop starting at once.
-- `cycle_ms` is how long the frames span, in milliseconds: the builder plays them over that time, so a faster `speed` plays faster. For a `move` or `chase` with `repeat`, it is the time a copy takes to reach the next one's place, a `repeat`th of the cycle, after which the picture looks the same again. Frame `floor(32 × (t mod cycle_ms) / cycle_ms)` is the nearest to what the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel) shows `t` ms (the stream's `preview_ms`) after it started, for a layer that loops with one length. A layer's pattern, whose loop waits for a bar line on the lights, a swell, which holds once done, and a layer mixing lengths that don't divide each other, drift from it.
+- `cycle_ms` is how long the frames span, in milliseconds: the builder plays them over that time, so a faster `speed` plays faster. For a `move` or `chase` with `repeat`, it is the time a copy takes to reach the next one's place, a `repeat`th of the cycle, after which the picture looks the same again. Frame `floor(32 × (t mod cycle_ms) / cycle_ms)` is the nearest to what the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel) shows `t` ms (the stream's `preview_ms`) after it started, for a layer that loops with one length. A layer's `pattern` drifts from it, as its loop waits for a bar line on the lights: the builder draws such a layer without its pattern, and scales it by the level a one-pixel `fill` with that pattern shows at the stream's `preview_loop_ms`. A swell, which holds once done, and a layer mixing lengths that don't divide each other, drift from it.
 - Either form of pixel cue is accepted. Areas sit on the sample grid as on the stage; `mute` names are checked against the show's rig but mute nothing, since the sample grid holds none of its fixtures.
 - Each frame lists the grid's colours row by row from the top left, as the audience sees it, at full intensity.
 - A cue that isn't a pixel cue, or that a song would refuse, is a `422`.
@@ -743,6 +743,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
   "dmx": [0, 10, 255, "… 512 values"],
   "pixels": { "wash-1": ["#000aff", "#000aff", "#000aff", "#000aff"] },
   "preview_ms": 3125.0,
+  "preview_loop_ms": 1625.0,
   "song": "demo-song",
   "cues": [{ "note": 36, "name": "verse-blue", "intensity": 1.0, "released": false, "beats": 2.5 }],
   "master": 1.0,
@@ -754,6 +755,7 @@ Server to client only, one JSON object per text message. Every message has a `ty
 - `dmx`: the universe as output, 512 values of 0–255. Index 0 is DMX channel 1.
 - `pixels`: per fixture and per grid, the colour each pixel shows, in the same order as the `rig` message. It is computed from the output (white added to R, G and B, then the dimmer channel applied), so the preview always matches it: from `dmx`, or for a grid on Art-Net from that universe, which the stream doesn't carry.
 - `preview_ms`: how long the [pixel scene preview](#pixel-scene-preview-put-apipreviewpixel) has animated on this frame, in milliseconds, or `null` when none is shown. It runs on without restarting where the preview does, so the builder draws its [thumbnail](#pixel-thumbnail-post-apipixel-thumbnail) frames in step with the lights.
+- `preview_loop_ms`: as `preview_ms`, counted from the bar line where the preview's layer patterns would start their loops, or `null` while they wait for it or when no preview is shown. Until the loop starts, the lights show a pattern's layer at full level.
 - `song`: the selected song's name, or `null`.
 - `cues`: the active cues, lowest layer first. `intensity` is the note-on velocity as 0–1; `released` is true while the cue fades out after its note-off. `beats` is the musical time since the cue started, at the frame's time and tempo; for a pattern it counts from the bar line its loop starts on, so it is negative while the loop waits for it. A pixel cue with a `pattern` on a layer also has `loop_beats`, counted the same way from the bar line its layers' loops start on.
 - `master`: the master dimmer, 0–1.
