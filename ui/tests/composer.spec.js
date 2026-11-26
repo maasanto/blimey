@@ -535,6 +535,29 @@ test("an area's shape plays at the layer's speed: a slow sparkle twinkles slowly
   await expect.poll(picturesIn2s, 'a 0.5 s cycle shows a new picture every 15.6 ms').toBeGreaterThanOrEqual(5);
 });
 
+test("a sparkle's width sizes its particles and its repeat makes them denser", async ({ page, show, startEngine }) => {
+  mkdirSync(path.join(show, 'songs'));
+  const songFile = path.join(show, 'songs/demo.yaml');
+  writeFileSync(songFile, 'program: 1\ncues:\n  40:\n    name: twinkle\n    type: pixel\n    layers:\n      - { shape: fill, effect: sparkle, params: { speed: 1 bar } }\n');
+  const { url } = await startEngine();
+  await page.goto(`${url}#builder`);
+
+  await pad(page, 40).click();
+  await page.getByRole('button', { name: 'white sparkle everywhere', exact: true }).click();
+  const width = page.getByLabel('Width', { exact: true });
+  await expect(width.locator('xpath=following-sibling::output'), 'each pixel its own particle until set').toHaveText('pixel');
+  await width.fill('0.25');
+  await page.getByLabel('Repeat').fill('4');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved scene 40 in demo.')).toBeVisible();
+  expect(readFileSync(songFile, 'utf8')).toContain('params: { width: 0.25, repeat: 4, speed: 1 bar }');
+
+  await width.press('Home');
+  await expect(width.locator('xpath=following-sibling::output'), 'the slider minimum goes back to a pixel each').toHaveText('pixel');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => readFileSync(songFile, 'utf8')).toContain('params: { repeat: 4, speed: 1 bar }');
+});
+
 test('dragging the speed slider steadily to the right only ever makes it faster', async ({ page, show, startEngine }) => {
   mkdirSync(path.join(show, 'songs'));
   writeFileSync(path.join(show, 'songs/demo.yaml'), 'program: 1\ncues:\n  40:\n    name: run\n    type: pixel\n    layers:\n      - { effect: chase, params: { speed: 16 bars } }\n');

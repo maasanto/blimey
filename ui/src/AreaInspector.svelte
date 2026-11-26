@@ -25,6 +25,9 @@
   // docs/api.md, Pixel cues.
   const SHAPES = ['fill', 'bar', 'sweep', 'circle', 'split', 'gradient', 'one-by-one', 'diamond', 'diagonal', 'stripes', 'checker', 'wedge'];
   const REPEATING_SHAPES = ['bar', 'circle', 'split', 'diamond', 'diagonal', 'wedge'];
+  /** Sparkling, these take width as the particles' size and repeat as their density. */
+  const PARTICLE_SHAPES = ['fill', 'sweep', 'gradient', 'one-by-one'];
+  const MIN_WIDTH = 0.05;
   const EFFECTS = ['static', 'move', 'pulse', 'chase', 'sparkle', 'bounce', 'strobe', 'noise'];
   const DIRECTIONS = ['left-to-right', 'right-to-left', 'bottom-to-top', 'top-to-bottom'];
   const BLENDS = ['over', 'max', 'add', 'mask'];
@@ -40,6 +43,7 @@
   const thumbnails = new Thumbnails();
   const speedText = $derived(layer.params?.speed ?? '1 bar');
   const speed = $derived(speedOf(speedText));
+  const hasParticles = $derived(layer.effect === 'sparkle' && PARTICLE_SHAPES.includes(layer.shape ?? 'bar'));
   const rhythm = $derived(layer.swell ? { swell: layer.swell } : layer.pattern ? { pattern: layer.pattern } : null);
   const grooveChoices = $derived(grooves(barBeats));
   const groove = $derived.by(() => {
@@ -82,6 +86,9 @@
     if (value === undefined) delete layer.params[key];
     else layer.params[key] = value;
   }
+
+  /** A sparkle's particles at the slider's minimum go back to a pixel each. */
+  const setWidth = (width) => setParam('width', hasParticles && width === MIN_WIDTH ? undefined : width);
 
   /** Sets an optional key, leaving it out of the file at its default. */
   function setOptional(key, value, defaultValue) {
@@ -221,10 +228,10 @@
     </label>
     <label>
       Width
-      <input type="range" aria-label="Width" min="0.05" max="1" step="0.05" value={layer.params?.width ?? 1} oninput={(event) => setParam('width', Number(event.currentTarget.value))} />
-      <output>{layer.params?.width ?? 1}</output>
+      <input type="range" aria-label="Width" min={MIN_WIDTH} max="1" step="0.05" value={layer.params?.width ?? (hasParticles ? MIN_WIDTH : 1)} oninput={(event) => setWidth(Number(event.currentTarget.value))} />
+      <output>{layer.params?.width ?? (hasParticles ? 'pixel' : 1)}</output>
     </label>
-    {#if REPEATING_SHAPES.includes(layer.shape ?? 'bar')}
+    {#if REPEATING_SHAPES.includes(layer.shape ?? 'bar') || hasParticles}
       <label>
         Repeat
         <input type="range" aria-label="Repeat" min="1" max="8" step="1" value={layer.params?.repeat ?? 1} oninput={(event) => setParam('repeat', Number(event.currentTarget.value) === 1 ? undefined : Number(event.currentTarget.value))} />

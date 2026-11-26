@@ -44,7 +44,7 @@ const RECIPES = {
   Wash: { shape: 'fill' },
   Chase: { shape: 'bar', effect: 'chase', params: { width: 0.25, speed: '1 bar' } },
   Sweep: { shape: 'sweep', effect: 'move', params: { speed: '1 bar' } },
-  Sparkle: { shape: 'fill', effect: 'sparkle', params: { width: 0.4, speed: '2 beats' } },
+  Sparkle: { shape: 'fill', effect: 'sparkle', params: { speed: '2 beats' } },
   Breathe: { shape: 'fill', effect: 'pulse', params: { speed: '2 bars' } },
   Swell: { shape: 'fill', groove: 'swell' },
   Hits: { shape: 'fill', groove: 'on the beat' },
