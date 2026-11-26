@@ -152,7 +152,7 @@ cues:
       - area: { x: 0, y: 0.65, width: 1, height: 0.35 }
         shape: fill
         effect: sparkle
-        params: { color: steel-blue, width: 0.4, speed: 2 beats }
+        params: { color: steel-blue, speed: 2 beats }
         level: 60%
         blend: add
         mute: [inner-wash]
@@ -192,8 +192,8 @@ The effect is worked out in RGB at each pixel's canvas position, then converted 
 | --- | --- | --- |
 | `color` | Palette name or `#rrggbb`: the lit colour | white |
 | `background` | Palette name or `#rrggbb`: where the shape isn't lit | black |
-| `width` | Above 0, up to 1, of the layer's area: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times) | 1 |
-| `repeat` | A whole number from 1: how many of a `bar`, `circle`, `split`, `diamond`, `diagonal` or `wedge` show at once. The copies sit evenly spaced along the travel (a turn for a wedge) and move at a single shape's speed, with `width` and chase steps scaled down to their spacing: more copies sit closer together and thinner. A copy leaving the area comes back in at the other side, so `move` loops seamlessly. Other shapes ignore it | 1 |
+| `width` | Above 0, up to 1, of the layer's area: a bar's or ring's thickness, a chase's step (each split bar is `width` wide, so a split chase steps half as many times). On a `fill`, `sweep`, `gradient` or `one-by-one` sparkle, the particles' size: squares `width` of the area wide, each flashing as one; without it, each pixel flashes on its own | 1 |
+| `repeat` | A whole number from 1: how many of a `bar`, `circle`, `split`, `diamond`, `diagonal` or `wedge` show at once. The copies sit evenly spaced along the travel (a turn for a wedge) and move at a single shape's speed, with `width` and chase steps scaled down to their spacing: more copies sit closer together and thinner. A copy leaving the area comes back in at the other side, so `move` loops seamlessly. On a `fill`, `sweep`, `gradient` or `one-by-one` sparkle, the density: each particle flashes `repeat` times per cycle, each flash at its own random moment. Other shapes ignore it | 1 |
 | `speed` | Duration of one cycle, any unit; beats and bars follow the tempo | `1 bar` |
 | `direction` | `left-to-right` (as seen from the audience: stage right to stage left), `right-to-left`, `bottom-to-top` (floor up), `top-to-bottom` | `left-to-right` |
 | `phase` | Offset in cycles: shifts a moving effect in time, a static shape along its travel | 0 |
@@ -224,7 +224,7 @@ Effects, each repeating once per `speed`, counted from the note:
 | `move` | Glides the shape along its travel |
 | `chase` | Steps the shape along its travel in 1 / `width` steps; `one-by-one` steps a cell at a time, whatever `width`, and `stripes` and `checker` in 2 steps, swapping lit and dark |
 | `pulse` | Holds the shape mid-travel, its level following `curve` |
-| `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. Each pixel counts its cycles from its own random phase, so the shape glows evenly rather than going dark together between cycles. `seed` fixes the pattern |
+| `sparkle` | Holds the shape mid-travel; each of its pixels flashes once per cycle at a random moment, fading over a quarter cycle. On a shape without `width` or `repeat` of its own, `width` sizes the particles and `repeat` sets how often each flashes. Each pixel counts its cycles from its own random phase, so the shape glows evenly rather than going dark together between cycles. `seed` fixes the pattern |
 | `bounce` | Glides the shape along its travel and back, turning where `move` starts and ends: a bar is half off the area at each turn |
 | `strobe` | Holds the shape mid-travel, lit for the first fifth of each cycle and dark for the rest |
 | `noise` | Holds the shape mid-travel; each of its pixels drifts smoothly between random levels, reaching a new one every cycle, counted from its own random phase as a sparkle's. `seed` fixes the pattern |
