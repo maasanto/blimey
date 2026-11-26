@@ -240,7 +240,7 @@
     "curve": {
       "description": "How much of the target shows along the duration, 0-1. Defaults to ramp-up.",
       "oneOf": [
-        { "enum": ["ramp-up", "ramp-down", "ease-in", "ease-out", "sine", "hold"] },
+        { "enum": ["ramp-up", "ramp-down", "ease-in", "ease-out", "ease-in-down", "ease-out-down", "sine", "hold"] },
         {
           "type": "object",
           "additionalProperties": false,

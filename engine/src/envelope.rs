@@ -6,8 +6,8 @@ use std::f64::consts::TAU;
 
 use serde::Deserialize;
 
-/// In show files: `ramp-up`, `ramp-down`, `ease-in`, `ease-out`, `sine`, `hold`, or
-/// `{ points: [[0, 0], [0.5, 1], [1, 0]] }`.
+/// In show files: `ramp-up`, `ramp-down`, `ease-in`, `ease-out`, `ease-in-down`,
+/// `ease-out-down`, `sine`, `hold`, or `{ points: [[0, 0], [0.5, 1], [1, 0]] }`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(try_from = "EnvelopeEntry")]
 pub enum Envelope {
@@ -17,6 +17,10 @@ pub enum Envelope {
     EaseIn,
     /// Ramp up with a fast start that slows into full: `ease-in` turned half a turn.
     EaseOut,
+    /// Ramp down with a slow start: `ease-in` upside down.
+    EaseInDown,
+    /// Ramp down with a fast start that slows into off: `ease-out` upside down.
+    EaseOutDown,
     /// One smooth pulse: up from 0, full at the midpoint, back to 0.
     Sine,
     Hold,
@@ -30,7 +34,7 @@ pub enum Envelope {
 #[derive(Deserialize)]
 #[serde(
     untagged,
-    expecting = "a curve: ramp-up, ramp-down, ease-in, ease-out, sine, hold, or { points: [[time, level], …] }"
+    expecting = "a curve: ramp-up, ramp-down, ease-in, ease-out, ease-in-down, ease-out-down, sine, hold, or { points: [[time, level], …] }"
 )]
 enum EnvelopeEntry {
     Named(NamedEnvelope),
@@ -44,6 +48,8 @@ enum NamedEnvelope {
     RampDown,
     EaseIn,
     EaseOut,
+    EaseInDown,
+    EaseOutDown,
     Sine,
     Hold,
 }
@@ -57,6 +63,8 @@ impl TryFrom<EnvelopeEntry> for Envelope {
             EnvelopeEntry::Named(NamedEnvelope::RampDown) => return Ok(Self::RampDown),
             EnvelopeEntry::Named(NamedEnvelope::EaseIn) => return Ok(Self::EaseIn),
             EnvelopeEntry::Named(NamedEnvelope::EaseOut) => return Ok(Self::EaseOut),
+            EnvelopeEntry::Named(NamedEnvelope::EaseInDown) => return Ok(Self::EaseInDown),
+            EnvelopeEntry::Named(NamedEnvelope::EaseOutDown) => return Ok(Self::EaseOutDown),
             EnvelopeEntry::Named(NamedEnvelope::Sine) => return Ok(Self::Sine),
             EnvelopeEntry::Named(NamedEnvelope::Hold) => return Ok(Self::Hold),
             EnvelopeEntry::Points { points } => points,
@@ -87,6 +95,8 @@ impl Envelope {
             Self::RampDown => 1.0 - progress,
             Self::EaseIn => progress * progress,
             Self::EaseOut => progress * (2.0 - progress),
+            Self::EaseInDown => 1.0 - progress * progress,
+            Self::EaseOutDown => (1.0 - progress) * (1.0 - progress),
             Self::Sine => (1.0 - (TAU * progress).cos()) / 2.0,
             Self::Hold => 1.0,
             Self::Points(points) => interpolate(points, progress),
@@ -142,6 +152,18 @@ mod tests {
     }
 
     #[test]
+    fn decreasing_eases_are_the_rising_ones_upside_down() {
+        assert_close(
+            levels(&Envelope::EaseInDown),
+            [1.0, 0.9375, 0.75, 0.4375, 0.0],
+        );
+        assert_close(
+            levels(&Envelope::EaseOutDown),
+            [1.0, 0.5625, 0.25, 0.0625, 0.0],
+        );
+    }
+
+    #[test]
     fn sine_is_one_pulse_peaking_at_the_midpoint() {
         assert_close(levels(&Envelope::Sine), [0.0, 0.5, 1.0, 0.5, 0.0]);
     }
@@ -167,6 +189,8 @@ mod tests {
     fn reads_shape_names_and_points_from_yaml() {
         assert_eq!(parse("ease-in"), Ok(Envelope::EaseIn));
         assert_eq!(parse("ease-out"), Ok(Envelope::EaseOut));
+        assert_eq!(parse("ease-in-down"), Ok(Envelope::EaseInDown));
+        assert_eq!(parse("ease-out-down"), Ok(Envelope::EaseOutDown));
         assert_eq!(parse("ramp-down"), Ok(Envelope::RampDown));
         assert_eq!(
             parse("{ points: [[0, 0], [0.5, 1], [1, 0]] }"),
@@ -178,7 +202,7 @@ mod tests {
     fn rejects_unknown_shapes_and_points_out_of_range_or_order() {
         assert_eq!(
             parse("swell-up"),
-            Err("a curve: ramp-up, ramp-down, ease-in, ease-out, sine, hold, or { points: [[time, level], …] }".into())
+            Err("a curve: ramp-up, ramp-down, ease-in, ease-out, ease-in-down, ease-out-down, sine, hold, or { points: [[time, level], …] }".into())
         );
         assert_eq!(
             parse("{ points: [] }"),
