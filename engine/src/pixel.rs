@@ -36,8 +36,10 @@ const WHOLE_CANVAS: Canvas = Canvas {
 /// Where the shape sits, 0–1 along its travel, for effects that don't move it.
 const REST_POSITION: f64 = 0.5;
 /// A sparkle flash lasts this fraction of a cycle, fading linearly.
-// ponytail: fixed flash length; make it a param if the preview sheet asks for denser sparkle.
 const FLASH: f64 = 0.25;
+/// Mixed into the layer's seed once per extra flash of a dense sparkle, so each flash of a
+/// particle falls at its own moment. Unlike `LAYER_SEED`, so no flash mirrors another layer's.
+const FLASH_SEED: u64 = 0xBF58_476D_1CE4_E5B9;
 /// The share of its cycle a strobe is lit for.
 const STROBE_LIT: f64 = 0.2;
 /// The cycle `random` draws a sparkle or noise pixel's own phase for, one no layer counts to.
@@ -90,6 +92,15 @@ pub enum Shape {
     Wedge,
 }
 
+impl Shape {
+    fn takes_width_or_repeat(self) -> bool {
+        !matches!(
+            self,
+            Shape::Fill | Shape::Sweep | Shape::Gradient | Shape::OneByOne
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Effect {
@@ -102,7 +113,8 @@ pub enum Effect {
     Pulse,
     /// The shape jumps along its travel in steps of `width`, once per cycle.
     Chase,
-    /// Each pixel of the shape, held mid-travel, flashes once per cycle at a random moment.
+    /// Each pixel of the shape, held mid-travel, flashes once per cycle at a random moment. On
+    /// a shape without `width` or `repeat` of its own, they size and multiply the flashes.
     Sparkle,
     /// The shape glides along its travel and back, once per cycle.
     Bounce,
@@ -231,6 +243,12 @@ pub struct Layer {
     /// the travel splits into as many parts, each drawing the shape as the whole travel would,
     /// `width` and chase steps included.
     pub repeat: u32,
+    /// A sparkle's particles: squares this side of the area wide, each flashing as one; without
+    /// it, each pixel flashes on its own. `width`, for a shape that takes no `width` itself.
+    pub particle_size: Option<f64>,
+    /// How many times a sparkle's particle flashes per cycle, each at its own random moment:
+    /// `repeat`, for a shape that takes no `repeat` itself, else 1.
+    pub flashes: u32,
     /// One cycle of the effect.
     pub speed: Length,
     pub direction: Direction,
@@ -378,6 +396,7 @@ impl LayerEntry {
         if is_zero {
             return Err("speed must be above 0".into());
         }
+        let has_particles = self.effect == Effect::Sparkle && !self.shape.takes_width_or_repeat();
         Ok(Layer {
             area,
             shape: self.shape,
@@ -389,6 +408,8 @@ impl LayerEntry {
                 .transpose()?,
             width,
             repeat,
+            particle_size: params.width.filter(|_| has_particles),
+            flashes: if has_particles { repeat } else { 1 },
             speed,
             direction: params.direction.unwrap_or_default(),
             phase: params.phase.unwrap_or(0.0),
@@ -1036,13 +1057,30 @@ impl LayerFrame<'_> {
         from + (to - from) * eased
     }
 
-    /// A sparkle pixel's level: one flash per cycle, starting at a random moment. Each pixel
-    /// counts its cycles from its own random phase, so they don't all go dark together where
-    /// the layer's cycles meet, and the glow holds steady instead of pulsing on every cycle.
+    /// A sparkle pixel's level: the brightest of its particle's `flashes`, all drawn alike.
     fn flash(&self, x: f32, y: f32) -> f64 {
-        let cycles = self.cycles + random(self.seed, x, y, PIXEL_PHASE_DRAW);
+        let (x, y) = match self.layer.particle_size {
+            Some(size) => {
+                // A fixture on the area's far edge joins the last particle, not one of its own.
+                let last = (1.0 / size).ceil() - 1.0;
+                let particle =
+                    |position: f32| (f64::from(position) / size).floor().min(last) as f32;
+                (particle(x), particle(y))
+            }
+            None => (x, y),
+        };
+        (0..self.layer.flashes)
+            .map(|draw| self.one_flash(self.seed ^ FLASH_SEED.wrapping_mul(u64::from(draw)), x, y))
+            .fold(0.0, f64::max)
+    }
+
+    /// One flash per cycle, starting at a random moment. Each particle counts its cycles from
+    /// its own random phase, so they don't all go dark together where the layer's cycles meet,
+    /// and the glow holds steady instead of pulsing on every cycle.
+    fn one_flash(&self, seed: u64, x: f32, y: f32) -> f64 {
+        let cycles = self.cycles + random(seed, x, y, PIXEL_PHASE_DRAW);
         let cycle = cycles.floor();
-        let start = random(self.seed, x, y, cycle as i64) * (1.0 - FLASH);
+        let start = random(seed, x, y, cycle as i64) * (1.0 - FLASH);
         let since = cycles - cycle - start;
         if (0.0..FLASH).contains(&since) {
             1.0 - since / FLASH

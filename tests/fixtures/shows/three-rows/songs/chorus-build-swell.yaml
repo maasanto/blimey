@@ -19,6 +19,6 @@ cues:
       - area: { x: 0, y: 0.65, width: 1, height: 0.35 }
         shape: fill
         effect: sparkle
-        params: { color: steel-blue, width: 0.4, speed: 2 beats }
+        params: { color: steel-blue, speed: 2 beats }
         blend: add
         mute: [inner-wash]

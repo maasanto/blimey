@@ -519,6 +519,58 @@ fn a_steady_sparkle_keeps_an_even_glow_across_its_cycles() {
     );
 }
 
+#[test]
+fn a_fill_sparkles_width_sizes_its_particles_and_repeat_makes_them_denser() {
+    // 4 cycles of 1 beat, 16 frames each, on 256 white pixels.
+    let frames = |params: &str| {
+        let cue = format!(
+            "    shape: fill\n    effect: sparkle\n    seed: 7\n    params: {{ color: \"#ffffff\", speed: 1 beat{params} }}\n"
+        );
+        render("pixel-grid-16x16", &cue, Duration::ZERO, 64)
+    };
+    // Each channel's values over the frames, distinct: one per particle, plus unpatched ones.
+    let flash_patterns = |frames: &[RecordedFrame]| {
+        let channels: Vec<Vec<u8>> = frames
+            .iter()
+            .map(|frame| frame.artnet.values().flatten().copied().collect())
+            .collect();
+        (0..channels[0].len())
+            .map(|channel| {
+                channels
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .collect::<Vec<u8>>()
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    };
+    let glow = |frames: &[RecordedFrame]| -> u32 {
+        frames
+            .iter()
+            .flat_map(|frame| frame.artnet.values().flatten())
+            .map(|&value| u32::from(value))
+            .sum()
+    };
+
+    let pixels = frames("");
+    assert!(
+        flash_patterns(&pixels) > 200,
+        "each pixel flashes on its own"
+    );
+    assert_eq!(
+        flash_patterns(&frames(", width: 0.25")),
+        17,
+        "4 by 4 particles, each flashing as one, and the unpatched channels"
+    );
+    let dense = frames(", repeat: 4");
+    assert!(
+        glow(&dense) > glow(&pixels) * 2,
+        "4 flashes a cycle glow over twice as bright as 1: {} against {}",
+        glow(&dense),
+        glow(&pixels)
+    );
+}
+
 /// Compares `frames` with the reference dump at `name` under `dumps/pixel/`, or writes it when
 /// blessing.
 fn assert_reference(frames: &[RecordedFrame], name: &str) {
